@@ -88,7 +88,13 @@ export function channel(parameters: channel.Parameters) {
     // This handles both ed25519 and secp256k1 keys transparently
     // verifyPaymentChannelClaim expects XRP (not drops) -- it internally calls xrpToDrops
     const claimXrp = dropsToXrp(payload.amount).toString()
-    const isValid = verifyPaymentChannelClaim(channelId, claimXrp, signature, publicKey)
+    let isValid: boolean
+    try {
+      isValid = verifyPaymentChannelClaim(channelId, claimXrp, signature, publicKey)
+    } catch {
+      // xrpl.js throws on malformed or cross-curve signatures instead of returning false
+      isValid = false
+    }
 
     if (!isValid) {
       throw invalidSignature('Claim signature verification failed')
@@ -161,7 +167,15 @@ export declare namespace channel {
 }
 
 /**
- * Close a PayChannel on-chain by submitting a PaymentChannelClaim with tfClose.
+ * Close a PayChannel on-chain.
+ *
+ * Behavior depends on who submits:
+ * - **Source (funder)**: submits PaymentChannelClaim with tfClose + claim details.
+ *   This initiates the settle delay, after which the channel can be deleted.
+ * - **Destination (recipient)**: submits PaymentChannelClaim to redeem funds
+ *   (without tfClose, since only the source can set tfClose on current XRPL).
+ *
+ * The function looks up the channel on-chain to detect the caller's role.
  */
 export async function close(params: {
   seed: string
@@ -189,7 +203,11 @@ export async function close(params: {
   await client.connect()
 
   try {
-    // tfClose = 0x00010000
+    // Look up the channel to determine the caller's role
+    const channelObj = await lookupChannel(client, channelId)
+    const isSource = channelObj?.Account === wallet.classicAddress
+
+    // tfClose = 0x00010000 -- only the source can use this flag
     const TF_CLOSE = 0x00010000
 
     const channelClaim = {
@@ -200,7 +218,7 @@ export async function close(params: {
       Amount: amount,
       Signature: signature.toUpperCase(),
       PublicKey: channelPublicKey,
-      Flags: TF_CLOSE,
+      ...(isSource ? { Flags: TF_CLOSE } : {}),
     }
 
     const result = await client.submitAndWait(channelClaim, { wallet })
@@ -213,5 +231,20 @@ export async function close(params: {
     return { txHash: result.result.hash }
   } finally {
     await client.disconnect()
+  }
+}
+
+/**
+ * Look up a PayChannel object on-chain by channel ID.
+ */
+async function lookupChannel(client: Client, channelId: string): Promise<any | null> {
+  try {
+    const response = await client.request({
+      command: 'ledger_entry',
+      index: channelId,
+    } as any)
+    return (response.result as any).node ?? null
+  } catch {
+    return null
   }
 }
