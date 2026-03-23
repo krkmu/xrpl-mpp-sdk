@@ -59,8 +59,11 @@ async function checkTrustline(
       peer: currency.issuer,
     })
     return response.result.lines.some((line: any) => line.currency === currency.currency)
-  } catch {
-    return false
+  } catch (err: any) {
+    // Account not found -- no trustline possible
+    if (err?.data?.error === 'actNotFound') return false
+    // Re-throw network errors
+    throw err
   }
 }
 
@@ -76,7 +79,10 @@ export async function checkRippling(client: Client, issuer: string): Promise<boo
     })
     const flags = response.result.account_data.Flags ?? 0
     return (flags & LSF_DEFAULT_RIPPLE) !== 0
-  } catch {
-    return false
+  } catch (err: any) {
+    // Account not found -- rippling not possible
+    if (err?.data?.error === 'actNotFound') return false
+    // Re-throw network errors
+    throw err
   }
 }
