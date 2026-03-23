@@ -34,5 +34,17 @@
   },
   "files": {
     "includes": ["sdk/**", "test/**", "examples/**", "demo/**", "*.ts", "*.json"]
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["test/**"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noExplicitAny": "off"
+          }
+        }
+      }
+    }
+  ]
 }
