@@ -17,9 +17,18 @@ export async function runPreflight(params: {
   currency: XrplCurrency
   destination: string
   autoTrustline: boolean
+  autoTrustlineLimit?: string
   autoMPTAuthorize: boolean
 }): Promise<void> {
-  const { client, wallet, currency, destination, autoTrustline, autoMPTAuthorize } = params
+  const {
+    client,
+    wallet,
+    currency,
+    destination,
+    autoTrustline,
+    autoTrustlineLimit,
+    autoMPTAuthorize,
+  } = params
 
   // Verify destination exists
   await verifyDestination(client, destination)
@@ -31,6 +40,7 @@ export async function runPreflight(params: {
       wallet,
       currency,
       autoTrustline,
+      trustlineLimit: autoTrustlineLimit,
     })
 
     const ripplingEnabled = await checkRippling(client, currency.issuer)

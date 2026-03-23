@@ -49,26 +49,47 @@ describe('Input Validation', () => {
   })
 
   describe('Schema validation edge cases', () => {
-    it('charge amount as empty string -- schema accepts (validation is semantic)', async () => {
-      // The schema only checks type (string), not semantic validity
-      // Amount validation (>0, valid drops) happens in the verify step
+    it('charge amount as empty string -- schema rejects', async () => {
       const { charge } = await import('../../sdk/src/Methods.js')
-      const parsed = charge.schema.request.parse({
-        amount: '',
-        currency: 'XRP',
-        recipient: 'rN7bRFgBrNZKoY2uu015bdjah11UbRZY',
-      })
-      expect(parsed.amount).toBe('')
+      expect(() =>
+        charge.schema.request.parse({
+          amount: '',
+          currency: 'XRP',
+          recipient: 'rN7bRFgBrNZKoY2uu015bdjah11UbRZY',
+        }),
+      ).toThrow()
     })
 
-    it('charge currency as empty string -- schema accepts', async () => {
+    it('charge currency as empty string -- schema rejects', async () => {
+      const { charge } = await import('../../sdk/src/Methods.js')
+      expect(() =>
+        charge.schema.request.parse({
+          amount: '1000000',
+          currency: '',
+          recipient: 'rN7bRFgBrNZKoY2uu015bdjah11UbRZY',
+        }),
+      ).toThrow()
+    })
+
+    it('charge recipient as empty string -- schema rejects', async () => {
+      const { charge } = await import('../../sdk/src/Methods.js')
+      expect(() =>
+        charge.schema.request.parse({
+          amount: '1000000',
+          currency: 'XRP',
+          recipient: '',
+        }),
+      ).toThrow()
+    })
+
+    it('valid charge request -- schema accepts', async () => {
       const { charge } = await import('../../sdk/src/Methods.js')
       const parsed = charge.schema.request.parse({
         amount: '1000000',
-        currency: '',
+        currency: 'XRP',
         recipient: 'rN7bRFgBrNZKoY2uu015bdjah11UbRZY',
       })
-      expect(parsed.currency).toBe('')
+      expect(parsed.amount).toBe('1000000')
     })
   })
 })

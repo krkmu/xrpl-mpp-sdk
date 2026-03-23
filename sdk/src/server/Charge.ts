@@ -1,10 +1,19 @@
 import { Method, Receipt, type Store } from 'mppx'
-import { Client, decode } from 'xrpl'
+import { Client, decode, hashes } from 'xrpl'
 import { XRPL_RPC_URLS } from '../constants.js'
 import { fromTecResult, replayDetected, verificationFailed } from '../errors.js'
 import * as Methods from '../Methods.js'
-import type { ChargeServerConfig } from '../types.js'
-import { serializeCurrency } from '../utils/currency.js'
+import type { ChargeServerConfig, XrplCurrency } from '../types.js'
+import { parseCurrency, serializeCurrency } from '../utils/currency.js'
+
+/** Default max challenge age: 5 minutes. */
+const DEFAULT_MAX_CHALLENGE_AGE_MS = 5 * 60 * 1000
+
+/** Default max credential size: 64KB. */
+const DEFAULT_MAX_CREDENTIAL_SIZE = 64 * 1024
+
+/** tfPartialPayment flag -- partial payments can deliver less than Amount. */
+const TF_PARTIAL_PAYMENT = 0x00020000
 
 /**
  * Creates an XRPL charge method for use on the **server**.
@@ -29,7 +38,25 @@ import { serializeCurrency } from '../utils/currency.js'
  * ```
  */
 export function charge(parameters: charge.Parameters) {
-  const { recipient, currency, network = 'testnet', rpcUrl: customRpcUrl, store } = parameters
+  const {
+    recipient,
+    currency,
+    network = 'testnet',
+    rpcUrl: customRpcUrl,
+    store,
+    requireStore = true,
+    maxChallengeAge = DEFAULT_MAX_CHALLENGE_AGE_MS,
+    maxCredentialSize = DEFAULT_MAX_CREDENTIAL_SIZE,
+    pollTimeout = 60_000,
+    pollInterval = 1_000,
+  } = parameters
+
+  if (!store && requireStore) {
+    throw new Error(
+      '[xrpl-mpp-sdk] store is required for replay protection. ' +
+        'Pass requireStore: false to explicitly disable replay protection.',
+    )
+  }
 
   const rpcUrl = customRpcUrl ?? XRPL_RPC_URLS[network]
   const currencyStr = currency ? serializeCurrency(currency) : 'XRP'
@@ -64,8 +91,30 @@ export function charge(parameters: charge.Parameters) {
   })
 
   async function doVerify(credential: any): Promise<Receipt.Receipt> {
+    // Check credential size before processing
+    if (maxCredentialSize > 0) {
+      const size = JSON.stringify(credential).length
+      if (size > maxCredentialSize) {
+        throw verificationFailed(
+          'SUBMISSION_FAILED',
+          `Credential too large (${size} bytes, max ${maxCredentialSize})`,
+        )
+      }
+    }
+
     const { challenge } = credential
     const { request: challengeRequest } = challenge
+
+    // Check challenge TTL
+    if (maxChallengeAge > 0 && challenge.createdAt) {
+      const age = Date.now() - new Date(challenge.createdAt).getTime()
+      if (age > maxChallengeAge) {
+        throw verificationFailed(
+          'SUBMISSION_FAILED',
+          `Challenge expired (age: ${Math.round(age / 1000)}s, max: ${Math.round(maxChallengeAge / 1000)}s)`,
+        )
+      }
+    }
 
     // Check challenge replay
     if (store) {
@@ -79,6 +128,8 @@ export function charge(parameters: charge.Parameters) {
 
     const expectedAmount = challengeRequest.amount
     const expectedRecipient = challengeRequest.recipient
+    const expectedCurrency = parseCurrency(challengeRequest.currency)
+    const expectedInvoiceId = challengeRequest.methodDetails?.invoiceId as string | undefined
     const payload = credential.payload
 
     const client = new Client(rpcUrl)
@@ -87,10 +138,28 @@ export function charge(parameters: charge.Parameters) {
     try {
       switch (payload.type) {
         case 'hash': {
-          return await verifyPush(client, payload.hash, expectedAmount, expectedRecipient, store)
+          return await verifyPush(
+            client,
+            payload.hash,
+            expectedAmount,
+            expectedRecipient,
+            expectedCurrency,
+            store,
+            expectedInvoiceId,
+          )
         }
         case 'transaction': {
-          return await verifyPull(client, payload.blob, expectedAmount, expectedRecipient, store)
+          return await verifyPull(
+            client,
+            payload.blob,
+            expectedAmount,
+            expectedRecipient,
+            expectedCurrency,
+            store,
+            expectedInvoiceId,
+            pollTimeout,
+            pollInterval,
+          )
         }
         default:
           throw verificationFailed(
@@ -112,15 +181,20 @@ async function verifyPush(
   txHash: string,
   expectedAmount: string,
   expectedRecipient: string,
-  store?: Store.Store,
+  expectedCurrency: XrplCurrency,
+  store: Store.Store | undefined,
+  expectedInvoiceId?: string,
 ): Promise<Receipt.Receipt> {
-  // Check tx hash dedup BEFORE verification
+  // Mark tx hash as pending BEFORE verification to close the TOCTOU window.
+  // In distributed deployments, this prevents two instances from both passing
+  // the check before either marks the key.
   if (store) {
     const hashKey = `xrpl:tx:${txHash}`
     const hashUsed = await store.get(hashKey)
     if (hashUsed) {
       throw replayDetected(txHash)
     }
+    await store.put(hashKey, { status: 'pending', startedAt: Date.now() })
   }
 
   // Look up the transaction on-chain
@@ -139,12 +213,19 @@ async function verifyPush(
     throw fromTecResult(tecResult, `Transaction ${txHash} did not succeed`)
   }
 
-  // Validate the Payment fields match the challenge
-  validatePaymentFields(tx, expectedAmount, expectedRecipient)
+  // Validate the Payment fields match the challenge (use delivered_amount from meta)
+  validatePaymentFields(
+    tx,
+    expectedAmount,
+    expectedRecipient,
+    expectedCurrency,
+    expectedInvoiceId,
+    meta,
+  )
 
-  // Mark tx hash as used after successful verification
+  // Update to confirmed after successful verification
   if (store) {
-    await store.put(`xrpl:tx:${txHash}`, { usedAt: new Date().toISOString() })
+    await store.put(`xrpl:tx:${txHash}`, { status: 'confirmed', usedAt: new Date().toISOString() })
   }
 
   return Receipt.from({
@@ -163,7 +244,11 @@ async function verifyPull(
   blob: string,
   expectedAmount: string,
   expectedRecipient: string,
-  store?: Store.Store,
+  expectedCurrency: XrplCurrency,
+  store: Store.Store | undefined,
+  expectedInvoiceId: string | undefined,
+  pollTimeout: number,
+  pollInterval: number,
 ): Promise<Receipt.Receipt> {
   // Decode and validate the transaction before submitting
   const decoded = decode(blob) as any
@@ -176,10 +261,27 @@ async function verifyPull(
   }
 
   // Validate fields match challenge BEFORE submitting
-  validatePaymentFields(decoded, expectedAmount, expectedRecipient)
+  validatePaymentFields(
+    decoded,
+    expectedAmount,
+    expectedRecipient,
+    expectedCurrency,
+    expectedInvoiceId,
+  )
 
-  // Check blob dedup
-  // We use the hash computed from the blob as the dedup key
+  // Derive tx hash from blob BEFORE submit so we can dedup before hitting the network
+  const txHash = hashes.hashSignedTx(blob)
+
+  // Mark tx hash as pending BEFORE submitting to close the TOCTOU window
+  if (store && txHash) {
+    const hashKey = `xrpl:tx:${txHash}`
+    const hashUsed = await store.get(hashKey)
+    if (hashUsed) {
+      throw replayDetected(txHash)
+    }
+    await store.put(hashKey, { status: 'pending', startedAt: Date.now() })
+  }
+
   const submitResult = await client.submit(blob)
   const engineResult = submitResult.result.engine_result
 
@@ -187,21 +289,12 @@ async function verifyPull(
     throw fromTecResult(engineResult, `Transaction submission failed: ${engineResult}`)
   }
 
-  const txHash = submitResult.result.tx_json?.hash
-
-  // Check tx hash dedup
-  if (store && txHash) {
-    const hashKey = `xrpl:tx:${txHash}`
-    const hashUsed = await store.get(hashKey)
-    if (hashUsed) {
-      throw replayDetected(txHash)
-    }
-  }
-
-  // Wait for validation
+  // Wait for validation with configurable timeout and interval
   if (txHash) {
     let validated = false
-    for (let i = 0; i < 60; i++) {
+    const deadline = Date.now() + pollTimeout
+
+    while (Date.now() < deadline) {
       try {
         const txResponse = await client.request({
           command: 'tx',
@@ -221,19 +314,22 @@ async function verifyPull(
           throw err
         }
       }
-      await new Promise((r) => setTimeout(r, 1000))
+      await new Promise((r) => setTimeout(r, pollInterval))
     }
 
     if (!validated) {
       throw verificationFailed(
         'SUBMISSION_FAILED',
-        'Transaction not validated after 60 polling attempts',
+        `Transaction not validated within ${pollTimeout}ms`,
       )
     }
 
-    // Mark as used after successful validation
+    // Update to confirmed after successful validation
     if (store) {
-      await store.put(`xrpl:tx:${txHash}`, { usedAt: new Date().toISOString() })
+      await store.put(`xrpl:tx:${txHash}`, {
+        status: 'confirmed',
+        usedAt: new Date().toISOString(),
+      })
     }
 
     return Receipt.from({
@@ -248,12 +344,49 @@ async function verifyPull(
 }
 
 /**
- * Validate that a Payment transaction's Destination and Amount match expectations.
+ * Reject transactions with the tfPartialPayment flag.
+ * Partial payments can deliver less than Amount -- an attacker can pay
+ * a fraction of the requested amount while passing amount validation.
+ */
+function rejectPartialPayment(tx: any): void {
+  const flags = tx.Flags ?? 0
+  if ((flags & TF_PARTIAL_PAYMENT) !== 0) {
+    throw verificationFailed(
+      'SUBMISSION_FAILED',
+      'Partial payment flag (tfPartialPayment) is not permitted',
+    )
+  }
+}
+
+/**
+ * Validate that a Payment transaction's Destination, Amount, Currency,
+ * and InvoiceID match expectations.
+ *
+ * For on-chain verified transactions (push mode), uses delivered_amount from meta
+ * which reflects the actual amount received, not the specified maximum.
  *
  * Handles both legacy format (Amount at top level) and xrpl.js v4 format
  * (fields in tx_json, Amount renamed to DeliverMax).
  */
-function validatePaymentFields(tx: any, expectedAmount: string, expectedRecipient: string): void {
+function validatePaymentFields(
+  tx: any,
+  expectedAmount: string,
+  expectedRecipient: string,
+  expectedCurrency: XrplCurrency,
+  expectedInvoiceId?: string,
+  meta?: any,
+): void {
+  // Reject partial payments
+  rejectPartialPayment(tx)
+
+  // Validate InvoiceID if specified in the challenge
+  if (expectedInvoiceId && tx.InvoiceID !== expectedInvoiceId) {
+    throw verificationFailed(
+      'SUBMISSION_FAILED',
+      `InvoiceID mismatch: expected ${expectedInvoiceId}, got ${tx.InvoiceID ?? 'none'}`,
+    )
+  }
+
   // Validate destination
   const destination = tx.Destination
   if (destination !== expectedRecipient) {
@@ -263,18 +396,55 @@ function validatePaymentFields(tx: any, expectedAmount: string, expectedRecipien
     )
   }
 
-  // Validate amount -- xrpl.js v4 renames Amount to DeliverMax in tx responses
-  const txAmount = tx.Amount ?? tx.DeliverMax
-  if (typeof txAmount === 'string') {
-    // XRP native -- amount is drops string
+  // Use delivered_amount from meta when available (push mode / validated tx).
+  // delivered_amount reflects the actual amount received; tx.Amount is the maximum.
+  const txAmount = meta?.delivered_amount ?? tx.Amount ?? tx.DeliverMax
+
+  if (expectedCurrency === 'XRP') {
+    // XRP native -- amount must be a drops string
+    if (typeof txAmount !== 'string') {
+      throw verificationFailed('AMOUNT_MISMATCH', 'Expected XRP (drops string), got object')
+    }
     if (txAmount !== expectedAmount) {
       throw verificationFailed(
         'AMOUNT_MISMATCH',
         `Expected ${expectedAmount} drops, got ${txAmount}`,
       )
     }
-  } else if (txAmount && typeof txAmount === 'object') {
-    // IOU or MPT -- compare value field
+  } else if ('currency' in expectedCurrency) {
+    // IOU -- validate currency, issuer, and value
+    if (typeof txAmount !== 'object') {
+      throw verificationFailed('AMOUNT_MISMATCH', 'Expected IOU amount object, got string')
+    }
+    if (txAmount.currency !== expectedCurrency.currency) {
+      throw verificationFailed(
+        'AMOUNT_MISMATCH',
+        `Expected currency ${expectedCurrency.currency}, got ${txAmount.currency}`,
+      )
+    }
+    if (txAmount.issuer !== expectedCurrency.issuer) {
+      throw verificationFailed(
+        'AMOUNT_MISMATCH',
+        `Expected issuer ${expectedCurrency.issuer}, got ${txAmount.issuer}`,
+      )
+    }
+    if (txAmount.value !== expectedAmount) {
+      throw verificationFailed(
+        'AMOUNT_MISMATCH',
+        `Expected amount ${expectedAmount}, got ${txAmount.value}`,
+      )
+    }
+  } else if ('mpt_issuance_id' in expectedCurrency) {
+    // MPT -- validate mpt_issuance_id and value
+    if (typeof txAmount !== 'object') {
+      throw verificationFailed('AMOUNT_MISMATCH', 'Expected MPT amount object, got string')
+    }
+    if (txAmount.mpt_issuance_id !== expectedCurrency.mpt_issuance_id) {
+      throw verificationFailed(
+        'AMOUNT_MISMATCH',
+        `Expected MPT ${expectedCurrency.mpt_issuance_id}, got ${txAmount.mpt_issuance_id}`,
+      )
+    }
     if (txAmount.value !== expectedAmount) {
       throw verificationFailed(
         'AMOUNT_MISMATCH',
@@ -288,5 +458,15 @@ export declare namespace charge {
   export type Parameters = ChargeServerConfig & {
     /** Store for replay protection. */
     store?: Store.Store
+    /** Require a store for replay protection. @default true */
+    requireStore?: boolean
+    /** Max challenge age in milliseconds. 0 disables. @default 300000 (5 min) */
+    maxChallengeAge?: number
+    /** Max credential size in bytes. 0 disables. @default 65536 (64KB) */
+    maxCredentialSize?: number
+    /** Polling timeout for tx validation in milliseconds. @default 60000 */
+    pollTimeout?: number
+    /** Polling interval for tx validation in milliseconds. @default 1000 */
+    pollInterval?: number
   }
 }

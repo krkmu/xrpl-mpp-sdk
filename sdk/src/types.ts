@@ -33,6 +33,8 @@ export type ChargeClientConfig = {
   mode?: PaymentMode
   /** Auto-create trustline for IOUs if missing. */
   autoTrustline?: boolean
+  /** Maximum balance willing to hold from issuer when auto-creating trustlines. @default '10000' */
+  autoTrustlineLimit?: string
   /** Auto-authorize MPT holding if missing. */
   autoMPTAuthorize?: boolean
   /** Run pre-flight validation checks. */
