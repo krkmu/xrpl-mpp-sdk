@@ -1,1 +1,164 @@
-// TODO: Phase 3 -- ChannelStream and ChannelSession
+import { signPaymentChannelClaim } from 'xrpl'
+
+/**
+ * ChannelStream -- pay-per-token streaming via PayChannel claims.
+ *
+ * Signs cumulative claims as data chunks arrive. Configurable granularity:
+ * sign per token, per N tokens, or per chunk.
+ */
+export class ChannelStream {
+  readonly channelId: string
+  readonly privateKey: string
+  readonly dropsPerUnit: bigint
+
+  private cumulative = 0n
+  private units = 0n
+  private granularity: bigint
+  private lastSignature = ''
+  private lastSignedCumulative = 0n
+
+  constructor(params: {
+    channelId: string
+    privateKey: string
+    /** Cost per unit (token/byte/chunk) in drops. */
+    dropsPerUnit: string | bigint
+    /** Sign a new claim every N units. @default 1 */
+    granularity?: number
+  }) {
+    this.channelId = params.channelId
+    this.privateKey = params.privateKey
+    this.dropsPerUnit = BigInt(params.dropsPerUnit)
+    this.granularity = BigInt(params.granularity ?? 1)
+  }
+
+  /**
+   * Record consumption of units (tokens, bytes, chunks).
+   * Returns a signed claim if the granularity threshold was crossed.
+   */
+  tick(units = 1): ChannelClaim | null {
+    this.units += BigInt(units)
+    this.cumulative = this.units * this.dropsPerUnit
+
+    // Only sign if we've crossed a granularity boundary
+    const prevBucket = (this.units - BigInt(units)) / this.granularity
+    const currBucket = this.units / this.granularity
+
+    if (currBucket > prevBucket || this.lastSignedCumulative === 0n) {
+      return this.sign()
+    }
+    return null
+  }
+
+  /**
+   * Force-sign a claim for the current cumulative amount.
+   */
+  sign(): ChannelClaim {
+    const amount = this.cumulative.toString()
+    const signature = signPaymentChannelClaim(this.channelId, amount, this.privateKey)
+
+    this.lastSignature = signature
+    this.lastSignedCumulative = this.cumulative
+
+    return {
+      channelId: this.channelId,
+      amount,
+      signature,
+    }
+  }
+
+  /**
+   * Get the latest signed claim (for final settlement).
+   */
+  latest(): ChannelClaim | null {
+    if (!this.lastSignature) return null
+    return {
+      channelId: this.channelId,
+      amount: this.lastSignedCumulative.toString(),
+      signature: this.lastSignature,
+    }
+  }
+
+  /** Current cumulative amount in drops. */
+  get currentAmount(): string {
+    return this.cumulative.toString()
+  }
+
+  /** Total units consumed. */
+  get totalUnits(): string {
+    return this.units.toString()
+  }
+}
+
+/**
+ * ChannelSession -- session billing over a single PayChannel.
+ *
+ * Tracks N paid requests over one channel, signing claims as
+ * the session progresses. The server can settle at any time
+ * using the latest claim.
+ */
+export class ChannelSession {
+  readonly channelId: string
+  readonly privateKey: string
+  readonly dropsPerRequest: bigint
+
+  private requestCount = 0n
+  private stream: ChannelStream
+
+  constructor(params: {
+    channelId: string
+    privateKey: string
+    /** Cost per request in drops. */
+    dropsPerRequest: string | bigint
+    /** Sign every N requests. @default 1 */
+    granularity?: number
+  }) {
+    this.channelId = params.channelId
+    this.privateKey = params.privateKey
+    this.dropsPerRequest = BigInt(params.dropsPerRequest)
+    this.stream = new ChannelStream({
+      channelId: params.channelId,
+      privateKey: params.privateKey,
+      dropsPerUnit: params.dropsPerRequest,
+      granularity: params.granularity,
+    })
+  }
+
+  /**
+   * Record a paid request. Returns a signed claim if threshold crossed.
+   */
+  pay(): ChannelClaim | null {
+    this.requestCount++
+    return this.stream.tick(1)
+  }
+
+  /**
+   * Force-sign the current state for settlement.
+   */
+  settle(): ChannelClaim {
+    return this.stream.sign()
+  }
+
+  /**
+   * Get the latest signed claim.
+   */
+  latest(): ChannelClaim | null {
+    return this.stream.latest()
+  }
+
+  /** Number of paid requests so far. */
+  get requests(): number {
+    return Number(this.requestCount)
+  }
+
+  /** Current cumulative drops committed. */
+  get currentAmount(): string {
+    return this.stream.currentAmount
+  }
+}
+
+/** A signed PayChannel claim. */
+export type ChannelClaim = {
+  channelId: string
+  amount: string
+  signature: string
+}
