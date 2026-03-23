@@ -114,13 +114,16 @@ async function verifyPush(
   expectedRecipient: string,
   store?: Store.Store,
 ): Promise<Receipt.Receipt> {
-  // Check tx hash dedup BEFORE verification
+  // Mark tx hash as pending BEFORE verification to close the TOCTOU window.
+  // In distributed deployments, this prevents two instances from both passing
+  // the check before either marks the key.
   if (store) {
     const hashKey = `xrpl:tx:${txHash}`
     const hashUsed = await store.get(hashKey)
     if (hashUsed) {
       throw replayDetected(txHash)
     }
+    await store.put(hashKey, { status: 'pending', startedAt: Date.now() })
   }
 
   // Look up the transaction on-chain
@@ -142,9 +145,9 @@ async function verifyPush(
   // Validate the Payment fields match the challenge
   validatePaymentFields(tx, expectedAmount, expectedRecipient)
 
-  // Mark tx hash as used after successful verification
+  // Update to confirmed after successful verification
   if (store) {
-    await store.put(`xrpl:tx:${txHash}`, { usedAt: new Date().toISOString() })
+    await store.put(`xrpl:tx:${txHash}`, { status: 'confirmed', usedAt: new Date().toISOString() })
   }
 
   return Receipt.from({

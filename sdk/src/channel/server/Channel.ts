@@ -100,7 +100,10 @@ export function channel(parameters: channel.Parameters) {
       throw invalidSignature('Claim signature verification failed')
     }
 
-    // Check cumulative amount is strictly monotonic via store
+    // Check cumulative amount is strictly monotonic via store.
+    // NOTE: The verifyLock serializes within a single process. In distributed
+    // deployments (multiple instances sharing a Store), use a store with atomic
+    // check-and-set (e.g., Redis SETNX) to prevent TOCTOU races.
     if (store) {
       const cumulativeKey = `xrpl:channel:${channelId}`
       const state = (await store.get(cumulativeKey)) as any
@@ -119,7 +122,7 @@ export function channel(parameters: channel.Parameters) {
         }
       }
 
-      // Update cumulative amount
+      // Update cumulative immediately after check to minimize TOCTOU window
       await store.put(cumulativeKey, {
         cumulative: payload.amount,
         timestamp: Date.now(),
