@@ -3,8 +3,8 @@ import { Client, decode } from 'xrpl'
 import { XRPL_RPC_URLS } from '../constants.js'
 import { fromTecResult, replayDetected, verificationFailed } from '../errors.js'
 import * as Methods from '../Methods.js'
-import type { ChargeServerConfig } from '../types.js'
-import { serializeCurrency } from '../utils/currency.js'
+import type { ChargeServerConfig, XrplCurrency } from '../types.js'
+import { parseCurrency, serializeCurrency } from '../utils/currency.js'
 
 /**
  * Creates an XRPL charge method for use on the **server**.
@@ -79,6 +79,7 @@ export function charge(parameters: charge.Parameters) {
 
     const expectedAmount = challengeRequest.amount
     const expectedRecipient = challengeRequest.recipient
+    const expectedCurrency = parseCurrency(challengeRequest.currency)
     const payload = credential.payload
 
     const client = new Client(rpcUrl)
@@ -87,10 +88,24 @@ export function charge(parameters: charge.Parameters) {
     try {
       switch (payload.type) {
         case 'hash': {
-          return await verifyPush(client, payload.hash, expectedAmount, expectedRecipient, store)
+          return await verifyPush(
+            client,
+            payload.hash,
+            expectedAmount,
+            expectedRecipient,
+            expectedCurrency,
+            store,
+          )
         }
         case 'transaction': {
-          return await verifyPull(client, payload.blob, expectedAmount, expectedRecipient, store)
+          return await verifyPull(
+            client,
+            payload.blob,
+            expectedAmount,
+            expectedRecipient,
+            expectedCurrency,
+            store,
+          )
         }
         default:
           throw verificationFailed(
@@ -112,6 +127,7 @@ async function verifyPush(
   txHash: string,
   expectedAmount: string,
   expectedRecipient: string,
+  expectedCurrency: XrplCurrency,
   store?: Store.Store,
 ): Promise<Receipt.Receipt> {
   // Check tx hash dedup BEFORE verification
@@ -140,7 +156,7 @@ async function verifyPush(
   }
 
   // Validate the Payment fields match the challenge
-  validatePaymentFields(tx, expectedAmount, expectedRecipient)
+  validatePaymentFields(tx, expectedAmount, expectedRecipient, expectedCurrency)
 
   // Mark tx hash as used after successful verification
   if (store) {
@@ -163,6 +179,7 @@ async function verifyPull(
   blob: string,
   expectedAmount: string,
   expectedRecipient: string,
+  expectedCurrency: XrplCurrency,
   store?: Store.Store,
 ): Promise<Receipt.Receipt> {
   // Decode and validate the transaction before submitting
@@ -176,7 +193,7 @@ async function verifyPull(
   }
 
   // Validate fields match challenge BEFORE submitting
-  validatePaymentFields(decoded, expectedAmount, expectedRecipient)
+  validatePaymentFields(decoded, expectedAmount, expectedRecipient, expectedCurrency)
 
   // Check blob dedup
   // We use the hash computed from the blob as the dedup key
@@ -253,7 +270,12 @@ async function verifyPull(
  * Handles both legacy format (Amount at top level) and xrpl.js v4 format
  * (fields in tx_json, Amount renamed to DeliverMax).
  */
-function validatePaymentFields(tx: any, expectedAmount: string, expectedRecipient: string): void {
+function validatePaymentFields(
+  tx: any,
+  expectedAmount: string,
+  expectedRecipient: string,
+  expectedCurrency: XrplCurrency,
+): void {
   // Validate destination
   const destination = tx.Destination
   if (destination !== expectedRecipient) {
@@ -263,18 +285,54 @@ function validatePaymentFields(tx: any, expectedAmount: string, expectedRecipien
     )
   }
 
-  // Validate amount -- xrpl.js v4 renames Amount to DeliverMax in tx responses
+  // Validate amount and currency type
   const txAmount = tx.Amount ?? tx.DeliverMax
-  if (typeof txAmount === 'string') {
-    // XRP native -- amount is drops string
+
+  if (expectedCurrency === 'XRP') {
+    // XRP native -- amount must be a drops string
+    if (typeof txAmount !== 'string') {
+      throw verificationFailed('AMOUNT_MISMATCH', 'Expected XRP (drops string), got object')
+    }
     if (txAmount !== expectedAmount) {
       throw verificationFailed(
         'AMOUNT_MISMATCH',
         `Expected ${expectedAmount} drops, got ${txAmount}`,
       )
     }
-  } else if (txAmount && typeof txAmount === 'object') {
-    // IOU or MPT -- compare value field
+  } else if ('currency' in expectedCurrency) {
+    // IOU -- validate currency, issuer, and value
+    if (typeof txAmount !== 'object') {
+      throw verificationFailed('AMOUNT_MISMATCH', 'Expected IOU amount object, got string')
+    }
+    if (txAmount.currency !== expectedCurrency.currency) {
+      throw verificationFailed(
+        'AMOUNT_MISMATCH',
+        `Expected currency ${expectedCurrency.currency}, got ${txAmount.currency}`,
+      )
+    }
+    if (txAmount.issuer !== expectedCurrency.issuer) {
+      throw verificationFailed(
+        'AMOUNT_MISMATCH',
+        `Expected issuer ${expectedCurrency.issuer}, got ${txAmount.issuer}`,
+      )
+    }
+    if (txAmount.value !== expectedAmount) {
+      throw verificationFailed(
+        'AMOUNT_MISMATCH',
+        `Expected amount ${expectedAmount}, got ${txAmount.value}`,
+      )
+    }
+  } else if ('mpt_issuance_id' in expectedCurrency) {
+    // MPT -- validate mpt_issuance_id and value
+    if (typeof txAmount !== 'object') {
+      throw verificationFailed('AMOUNT_MISMATCH', 'Expected MPT amount object, got string')
+    }
+    if (txAmount.mpt_issuance_id !== expectedCurrency.mpt_issuance_id) {
+      throw verificationFailed(
+        'AMOUNT_MISMATCH',
+        `Expected MPT ${expectedCurrency.mpt_issuance_id}, got ${txAmount.mpt_issuance_id}`,
+      )
+    }
     if (txAmount.value !== expectedAmount) {
       throw verificationFailed(
         'AMOUNT_MISMATCH',
