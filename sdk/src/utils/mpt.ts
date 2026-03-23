@@ -53,7 +53,10 @@ async function checkMPTHolding(client: Client, account: string, mpt: MPToken): P
     return (response.result as any).account_objects.some(
       (obj: any) => obj.MPTokenIssuanceID === mpt.mpt_issuance_id,
     )
-  } catch {
-    return false
+  } catch (err: any) {
+    // Account not found -- no MPT holding possible
+    if (err?.data?.error === 'actNotFound') return false
+    // Re-throw network errors
+    throw err
   }
 }

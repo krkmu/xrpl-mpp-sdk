@@ -1,9 +1,18 @@
 import { Method, Receipt, type Store } from 'mppx'
 import { Client, dropsToXrp, verifyPaymentChannelClaim, Wallet } from 'xrpl'
 import { type NetworkId, XRPL_RPC_URLS } from '../../constants.js'
-import { invalidSignature, replayDetected, verificationFailed } from '../../errors.js'
+import {
+  channelClosed,
+  channelNotFound,
+  invalidSignature,
+  replayDetected,
+  verificationFailed,
+} from '../../errors.js'
 import type { ChannelServerConfig } from '../../types.js'
 import { channel as ChannelMethod } from '../Methods.js'
+
+/** Default max challenge age: 5 minutes. */
+const DEFAULT_MAX_CHALLENGE_AGE_MS = 5 * 60 * 1000
 
 /**
  * Creates an XRPL channel method for use on the **server**.
@@ -27,9 +36,24 @@ import { channel as ChannelMethod } from '../Methods.js'
  * ```
  */
 export function channel(parameters: channel.Parameters) {
-  const { publicKey, network = 'testnet', rpcUrl: customRpcUrl, store } = parameters
+  const {
+    publicKey,
+    network = 'testnet',
+    rpcUrl: customRpcUrl,
+    store,
+    requireStore = true,
+    maxChallengeAge = DEFAULT_MAX_CHALLENGE_AGE_MS,
+    verifyChannelOnChain = false,
+  } = parameters
 
-  const _rpcUrl = customRpcUrl ?? XRPL_RPC_URLS[network]
+  if (!store && requireStore) {
+    throw new Error(
+      '[xrpl-mpp-sdk] store is required for replay protection and cumulative tracking. ' +
+        'Pass requireStore: false to explicitly disable.',
+    )
+  }
+
+  const rpcUrl = customRpcUrl ?? XRPL_RPC_URLS[network]
 
   // Serialize verify operations to prevent concurrent race conditions
   let verifyLock: Promise<unknown> = Promise.resolve()
@@ -69,6 +93,17 @@ export function channel(parameters: channel.Parameters) {
     const { challenge } = credential
     const payload = credential.payload
 
+    // Check challenge TTL
+    if (maxChallengeAge > 0 && challenge.createdAt) {
+      const age = Date.now() - new Date(challenge.createdAt).getTime()
+      if (age > maxChallengeAge) {
+        throw verificationFailed(
+          'SUBMISSION_FAILED',
+          `Challenge expired (age: ${Math.round(age / 1000)}s, max: ${Math.round(maxChallengeAge / 1000)}s)`,
+        )
+      }
+    }
+
     const channelId = payload.channelId
     const newCumulative = BigInt(payload.amount)
     const signature = payload.signature
@@ -100,7 +135,40 @@ export function channel(parameters: channel.Parameters) {
       throw invalidSignature('Claim signature verification failed')
     }
 
+    // Optional on-chain channel state verification
+    if (verifyChannelOnChain) {
+      const client = new Client(rpcUrl)
+      await client.connect()
+      try {
+        const channelObj = await lookupChannel(client, channelId)
+        if (!channelObj) {
+          throw channelNotFound(channelId)
+        }
+        // Check if channel is expired
+        if (channelObj.Expiration) {
+          // XRPL Expiration is seconds since Ripple epoch (2000-01-01)
+          const rippleEpoch = 946684800
+          const expirationUnix = (channelObj.Expiration + rippleEpoch) * 1000
+          if (Date.now() > expirationUnix) {
+            throw channelClosed(channelId)
+          }
+        }
+        // Check cumulative does not exceed channel balance
+        const channelBalance = BigInt(channelObj.Amount)
+        if (newCumulative > channelBalance) {
+          throw verificationFailed(
+            'AMOUNT_MISMATCH',
+            `Cumulative ${newCumulative} exceeds channel balance ${channelBalance}`,
+          )
+        }
+      } finally {
+        await client.disconnect()
+      }
+    }
+
     // Check cumulative amount is strictly monotonic via store
+    // Note: in distributed deployments, concurrent requests may race here.
+    // For single-instance deployments, the verifyLock serializes access.
     if (store) {
       const cumulativeKey = `xrpl:channel:${channelId}`
       const state = (await store.get(cumulativeKey)) as any
@@ -163,6 +231,12 @@ export function channel(parameters: channel.Parameters) {
 export declare namespace channel {
   export type Parameters = ChannelServerConfig & {
     store?: Store.Store
+    /** Require a store for replay protection. @default true */
+    requireStore?: boolean
+    /** Max challenge age in milliseconds. 0 disables. @default 300000 (5 min) */
+    maxChallengeAge?: number
+    /** Verify channel existence, balance, and expiration on-chain. @default false */
+    verifyChannelOnChain?: boolean
   }
 }
 
@@ -244,7 +318,10 @@ async function lookupChannel(client: Client, channelId: string): Promise<any | n
       index: channelId,
     } as any)
     return (response.result as any).node ?? null
-  } catch {
-    return null
+  } catch (err: any) {
+    // entryNotFound means the channel does not exist -- return null
+    if (err?.data?.error === 'entryNotFound') return null
+    // Re-throw network errors so callers can handle them
+    throw err
   }
 }
