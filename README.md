@@ -346,8 +346,8 @@ All errors extend mppx's `PaymentError` base class and serialize to RFC 9457 Pro
 | `RLUSD_MAINNET` | `{ currency: 'RLUSD', issuer: 'rMxWzrBMyeKR9oJfYBrhAEGsxwsdLFSfim' }` |
 | `RLUSD_TESTNET` | `{ currency: 'RLUSD', issuer: 'rQhWct2fTR9z7bBQaflfqMEr2u8avFFpKH' }` |
 | `XRP_DECIMALS` | `6` |
-| `BASE_RESERVE_DROPS` | `'10000000'` (10 XRP) |
-| `OWNER_RESERVE_DROPS` | `'2000000'` (2 XRP) |
+| `BASE_RESERVE_DROPS` | `'1000000'` (1 XRP) |
+| `OWNER_RESERVE_DROPS` | `'200000'` (0.2 XRP) |
 
 ## Demos
 

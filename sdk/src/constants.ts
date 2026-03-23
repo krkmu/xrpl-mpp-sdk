@@ -51,8 +51,8 @@ export const XRP_DECIMALS = 6
 /** Default transaction timeout in seconds. */
 export const DEFAULT_TIMEOUT = 60
 
-/** Base reserve in drops (currently 10 XRP). */
-export const BASE_RESERVE_DROPS = '10000000'
+/** Base reserve in drops (currently 1 XRP since 2024-09). */
+export const BASE_RESERVE_DROPS = '1000000'
 
-/** Owner reserve per object in drops (currently 2 XRP). */
-export const OWNER_RESERVE_DROPS = '2000000'
+/** Owner reserve per object in drops (currently 0.2 XRP since 2024-09). */
+export const OWNER_RESERVE_DROPS = '200000'
