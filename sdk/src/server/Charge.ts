@@ -139,8 +139,8 @@ async function verifyPush(
     throw fromTecResult(tecResult, `Transaction ${txHash} did not succeed`)
   }
 
-  // Validate the Payment fields match the challenge
-  validatePaymentFields(tx, expectedAmount, expectedRecipient)
+  // Validate the Payment fields match the challenge (use delivered_amount from meta)
+  validatePaymentFields(tx, expectedAmount, expectedRecipient, meta)
 
   // Mark tx hash as used after successful verification
   if (store) {
@@ -248,12 +248,40 @@ async function verifyPull(
 }
 
 /**
- * Validate that a Payment transaction's Destination and Amount match expectations.
+ * Reject transactions with the tfPartialPayment flag.
+ * Partial payments can deliver less than Amount -- an attacker can pay
+ * a fraction of the requested amount while passing amount validation.
+ */
+const TF_PARTIAL_PAYMENT = 0x00020000
+
+function rejectPartialPayment(tx: any): void {
+  const flags = tx.Flags ?? 0
+  if ((flags & TF_PARTIAL_PAYMENT) !== 0) {
+    throw verificationFailed(
+      'SUBMISSION_FAILED',
+      'Partial payment flag (tfPartialPayment) is not permitted',
+    )
+  }
+}
+
+/**
+ * Validate that a Payment transaction's Destination, Amount, and Currency match expectations.
+ *
+ * For on-chain verified transactions (push mode), uses delivered_amount from meta
+ * which reflects the actual amount received, not the specified maximum.
  *
  * Handles both legacy format (Amount at top level) and xrpl.js v4 format
  * (fields in tx_json, Amount renamed to DeliverMax).
  */
-function validatePaymentFields(tx: any, expectedAmount: string, expectedRecipient: string): void {
+function validatePaymentFields(
+  tx: any,
+  expectedAmount: string,
+  expectedRecipient: string,
+  meta?: any,
+): void {
+  // Reject partial payments
+  rejectPartialPayment(tx)
+
   // Validate destination
   const destination = tx.Destination
   if (destination !== expectedRecipient) {
@@ -263,8 +291,9 @@ function validatePaymentFields(tx: any, expectedAmount: string, expectedRecipien
     )
   }
 
-  // Validate amount -- xrpl.js v4 renames Amount to DeliverMax in tx responses
-  const txAmount = tx.Amount ?? tx.DeliverMax
+  // Use delivered_amount from meta when available (push mode / validated tx).
+  // delivered_amount reflects the actual amount received; tx.Amount is the maximum.
+  const txAmount = meta?.delivered_amount ?? tx.Amount ?? tx.DeliverMax
   if (typeof txAmount === 'string') {
     // XRP native -- amount is drops string
     if (txAmount !== expectedAmount) {
