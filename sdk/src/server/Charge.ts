@@ -29,7 +29,15 @@ import { serializeCurrency } from '../utils/currency.js'
  * ```
  */
 export function charge(parameters: charge.Parameters) {
-  const { recipient, currency, network = 'testnet', rpcUrl: customRpcUrl, store } = parameters
+  const {
+    recipient,
+    currency,
+    network = 'testnet',
+    rpcUrl: customRpcUrl,
+    store,
+    pollTimeout = 60_000,
+    pollInterval = 1_000,
+  } = parameters
 
   const rpcUrl = customRpcUrl ?? XRPL_RPC_URLS[network]
   const currencyStr = currency ? serializeCurrency(currency) : 'XRP'
@@ -90,7 +98,15 @@ export function charge(parameters: charge.Parameters) {
           return await verifyPush(client, payload.hash, expectedAmount, expectedRecipient, store)
         }
         case 'transaction': {
-          return await verifyPull(client, payload.blob, expectedAmount, expectedRecipient, store)
+          return await verifyPull(
+            client,
+            payload.blob,
+            expectedAmount,
+            expectedRecipient,
+            store,
+            pollTimeout,
+            pollInterval,
+          )
         }
         default:
           throw verificationFailed(
@@ -163,7 +179,9 @@ async function verifyPull(
   blob: string,
   expectedAmount: string,
   expectedRecipient: string,
-  store?: Store.Store,
+  store: Store.Store | undefined,
+  pollTimeout: number,
+  pollInterval: number,
 ): Promise<Receipt.Receipt> {
   // Decode and validate the transaction before submitting
   const decoded = decode(blob) as any
@@ -198,10 +216,12 @@ async function verifyPull(
     }
   }
 
-  // Wait for validation
+  // Wait for validation with configurable timeout and interval
   if (txHash) {
     let validated = false
-    for (let i = 0; i < 60; i++) {
+    const deadline = Date.now() + pollTimeout
+
+    while (Date.now() < deadline) {
       try {
         const txResponse = await client.request({
           command: 'tx',
@@ -221,13 +241,13 @@ async function verifyPull(
           throw err
         }
       }
-      await new Promise((r) => setTimeout(r, 1000))
+      await new Promise((r) => setTimeout(r, pollInterval))
     }
 
     if (!validated) {
       throw verificationFailed(
         'SUBMISSION_FAILED',
-        'Transaction not validated after 60 polling attempts',
+        `Transaction not validated within ${pollTimeout}ms`,
       )
     }
 
@@ -288,5 +308,9 @@ export declare namespace charge {
   export type Parameters = ChargeServerConfig & {
     /** Store for replay protection. */
     store?: Store.Store
+    /** Polling timeout for tx validation in milliseconds. @default 60000 */
+    pollTimeout?: number
+    /** Polling interval for tx validation in milliseconds. @default 1000 */
+    pollInterval?: number
   }
 }
