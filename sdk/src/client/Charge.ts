@@ -32,6 +32,7 @@ export function charge(parameters: charge.Parameters) {
     seed,
     mode: defaultMode = 'pull',
     autoTrustline = false,
+    autoTrustlineLimit,
     autoMPTAuthorize = false,
     preflight: runPreflightCheck = false,
     network: defaultNetwork = 'testnet',
@@ -69,6 +70,7 @@ export function charge(parameters: charge.Parameters) {
             currency,
             destination: recipient,
             autoTrustline,
+            autoTrustlineLimit,
             autoMPTAuthorize,
           })
         }

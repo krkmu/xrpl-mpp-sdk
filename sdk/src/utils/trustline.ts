@@ -14,8 +14,10 @@ export async function ensureTrustline(params: {
   wallet: Wallet
   currency: IssuedCurrency
   autoTrustline: boolean
+  /** Maximum balance willing to hold from issuer. @default '10000' */
+  trustlineLimit?: string
 }): Promise<void> {
-  const { client, wallet, currency, autoTrustline } = params
+  const { client, wallet, currency, autoTrustline, trustlineLimit } = params
 
   const hasTrustline = await checkTrustline(client, wallet.classicAddress, currency)
   if (hasTrustline) return
@@ -33,7 +35,7 @@ export async function ensureTrustline(params: {
     LimitAmount: {
       currency: currency.currency,
       issuer: currency.issuer,
-      value: '1000000000',
+      value: trustlineLimit ?? '10000',
     },
   }
 
