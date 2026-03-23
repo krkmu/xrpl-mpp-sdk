@@ -1,5 +1,5 @@
 import { Method, Receipt, type Store } from 'mppx'
-import { Client, decode } from 'xrpl'
+import { Client, decode, hashes } from 'xrpl'
 import { XRPL_RPC_URLS } from '../constants.js'
 import { fromTecResult, replayDetected, verificationFailed } from '../errors.js'
 import * as Methods from '../Methods.js'
@@ -178,24 +178,23 @@ async function verifyPull(
   // Validate fields match challenge BEFORE submitting
   validatePaymentFields(decoded, expectedAmount, expectedRecipient)
 
-  // Check blob dedup
-  // We use the hash computed from the blob as the dedup key
-  const submitResult = await client.submit(blob)
-  const engineResult = submitResult.result.engine_result
+  // Derive tx hash from blob BEFORE submit so we can dedup before hitting the network
+  const txHash = hashes.hashSignedTx(blob)
 
-  if (engineResult !== 'tesSUCCESS' && engineResult !== 'terQUEUED') {
-    throw fromTecResult(engineResult, `Transaction submission failed: ${engineResult}`)
-  }
-
-  const txHash = submitResult.result.tx_json?.hash
-
-  // Check tx hash dedup
+  // Check tx hash dedup BEFORE submitting
   if (store && txHash) {
     const hashKey = `xrpl:tx:${txHash}`
     const hashUsed = await store.get(hashKey)
     if (hashUsed) {
       throw replayDetected(txHash)
     }
+  }
+
+  const submitResult = await client.submit(blob)
+  const engineResult = submitResult.result.engine_result
+
+  if (engineResult !== 'tesSUCCESS' && engineResult !== 'terQUEUED') {
+    throw fromTecResult(engineResult, `Transaction submission failed: ${engineResult}`)
   }
 
   // Wait for validation
