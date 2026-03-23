@@ -28,8 +28,18 @@ import { serializeCurrency } from '../utils/currency.js'
  * })
  * ```
  */
+/** Default max challenge age: 5 minutes. */
+const DEFAULT_MAX_CHALLENGE_AGE_MS = 5 * 60 * 1000
+
 export function charge(parameters: charge.Parameters) {
-  const { recipient, currency, network = 'testnet', rpcUrl: customRpcUrl, store } = parameters
+  const {
+    recipient,
+    currency,
+    network = 'testnet',
+    rpcUrl: customRpcUrl,
+    store,
+    maxChallengeAge = DEFAULT_MAX_CHALLENGE_AGE_MS,
+  } = parameters
 
   const rpcUrl = customRpcUrl ?? XRPL_RPC_URLS[network]
   const currencyStr = currency ? serializeCurrency(currency) : 'XRP'
@@ -66,6 +76,17 @@ export function charge(parameters: charge.Parameters) {
   async function doVerify(credential: any): Promise<Receipt.Receipt> {
     const { challenge } = credential
     const { request: challengeRequest } = challenge
+
+    // Check challenge TTL
+    if (maxChallengeAge > 0 && challenge.createdAt) {
+      const age = Date.now() - new Date(challenge.createdAt).getTime()
+      if (age > maxChallengeAge) {
+        throw verificationFailed(
+          'SUBMISSION_FAILED',
+          `Challenge expired (age: ${Math.round(age / 1000)}s, max: ${Math.round(maxChallengeAge / 1000)}s)`,
+        )
+      }
+    }
 
     // Check challenge replay
     if (store) {
@@ -288,5 +309,7 @@ export declare namespace charge {
   export type Parameters = ChargeServerConfig & {
     /** Store for replay protection. */
     store?: Store.Store
+    /** Max challenge age in milliseconds. 0 disables. @default 300000 (5 min) */
+    maxChallengeAge?: number
   }
 }

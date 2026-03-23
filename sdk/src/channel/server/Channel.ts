@@ -26,8 +26,17 @@ import { channel as ChannelMethod } from '../Methods.js'
  * })
  * ```
  */
+/** Default max challenge age: 5 minutes. */
+const DEFAULT_MAX_CHALLENGE_AGE_MS = 5 * 60 * 1000
+
 export function channel(parameters: channel.Parameters) {
-  const { publicKey, network = 'testnet', rpcUrl: customRpcUrl, store } = parameters
+  const {
+    publicKey,
+    network = 'testnet',
+    rpcUrl: customRpcUrl,
+    store,
+    maxChallengeAge = DEFAULT_MAX_CHALLENGE_AGE_MS,
+  } = parameters
 
   const _rpcUrl = customRpcUrl ?? XRPL_RPC_URLS[network]
 
@@ -68,6 +77,17 @@ export function channel(parameters: channel.Parameters) {
   async function doVerify(credential: any): Promise<Receipt.Receipt> {
     const { challenge } = credential
     const payload = credential.payload
+
+    // Check challenge TTL
+    if (maxChallengeAge > 0 && challenge.createdAt) {
+      const age = Date.now() - new Date(challenge.createdAt).getTime()
+      if (age > maxChallengeAge) {
+        throw verificationFailed(
+          'SUBMISSION_FAILED',
+          `Challenge expired (age: ${Math.round(age / 1000)}s, max: ${Math.round(maxChallengeAge / 1000)}s)`,
+        )
+      }
+    }
 
     const channelId = payload.channelId
     const newCumulative = BigInt(payload.amount)
@@ -163,6 +183,8 @@ export function channel(parameters: channel.Parameters) {
 export declare namespace channel {
   export type Parameters = ChannelServerConfig & {
     store?: Store.Store
+    /** Max challenge age in milliseconds. 0 disables. @default 300000 (5 min) */
+    maxChallengeAge?: number
   }
 }
 
