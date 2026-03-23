@@ -28,11 +28,11 @@ export const charge = Method.from({
     },
     request: z.object({
       /** Payment amount in drops (XRP) or base units (IOU/MPT). */
-      amount: z.string(),
+      amount: z.string().check(z.minLength(1, 'amount must not be empty')),
       /** Currency identifier: "XRP", or JSON-encoded IssuedCurrency/MPT. */
-      currency: z.string(),
+      currency: z.string().check(z.minLength(1, 'currency must not be empty')),
       /** Recipient XRPL classic address (r...). */
-      recipient: z.string(),
+      recipient: z.string().check(z.minLength(1, 'recipient must not be empty')),
       /** Optional human-readable description. */
       description: z.optional(z.string()),
       /** Merchant-provided reconciliation ID. */
