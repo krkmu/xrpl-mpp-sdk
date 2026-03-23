@@ -79,6 +79,7 @@ export function charge(parameters: charge.Parameters) {
 
     const expectedAmount = challengeRequest.amount
     const expectedRecipient = challengeRequest.recipient
+    const expectedInvoiceId = challengeRequest.methodDetails?.invoiceId as string | undefined
     const payload = credential.payload
 
     const client = new Client(rpcUrl)
@@ -87,10 +88,24 @@ export function charge(parameters: charge.Parameters) {
     try {
       switch (payload.type) {
         case 'hash': {
-          return await verifyPush(client, payload.hash, expectedAmount, expectedRecipient, store)
+          return await verifyPush(
+            client,
+            payload.hash,
+            expectedAmount,
+            expectedRecipient,
+            store,
+            expectedInvoiceId,
+          )
         }
         case 'transaction': {
-          return await verifyPull(client, payload.blob, expectedAmount, expectedRecipient, store)
+          return await verifyPull(
+            client,
+            payload.blob,
+            expectedAmount,
+            expectedRecipient,
+            store,
+            expectedInvoiceId,
+          )
         }
         default:
           throw verificationFailed(
@@ -112,7 +127,8 @@ async function verifyPush(
   txHash: string,
   expectedAmount: string,
   expectedRecipient: string,
-  store?: Store.Store,
+  store: Store.Store | undefined,
+  expectedInvoiceId?: string,
 ): Promise<Receipt.Receipt> {
   // Check tx hash dedup BEFORE verification
   if (store) {
@@ -140,7 +156,7 @@ async function verifyPush(
   }
 
   // Validate the Payment fields match the challenge
-  validatePaymentFields(tx, expectedAmount, expectedRecipient)
+  validatePaymentFields(tx, expectedAmount, expectedRecipient, expectedInvoiceId)
 
   // Mark tx hash as used after successful verification
   if (store) {
@@ -163,7 +179,8 @@ async function verifyPull(
   blob: string,
   expectedAmount: string,
   expectedRecipient: string,
-  store?: Store.Store,
+  store: Store.Store | undefined,
+  expectedInvoiceId?: string,
 ): Promise<Receipt.Receipt> {
   // Decode and validate the transaction before submitting
   const decoded = decode(blob) as any
@@ -176,7 +193,7 @@ async function verifyPull(
   }
 
   // Validate fields match challenge BEFORE submitting
-  validatePaymentFields(decoded, expectedAmount, expectedRecipient)
+  validatePaymentFields(decoded, expectedAmount, expectedRecipient, expectedInvoiceId)
 
   // Check blob dedup
   // We use the hash computed from the blob as the dedup key
@@ -253,7 +270,20 @@ async function verifyPull(
  * Handles both legacy format (Amount at top level) and xrpl.js v4 format
  * (fields in tx_json, Amount renamed to DeliverMax).
  */
-function validatePaymentFields(tx: any, expectedAmount: string, expectedRecipient: string): void {
+function validatePaymentFields(
+  tx: any,
+  expectedAmount: string,
+  expectedRecipient: string,
+  expectedInvoiceId?: string,
+): void {
+  // Validate InvoiceID if specified in the challenge
+  if (expectedInvoiceId && tx.InvoiceID !== expectedInvoiceId) {
+    throw verificationFailed(
+      'SUBMISSION_FAILED',
+      `InvoiceID mismatch: expected ${expectedInvoiceId}, got ${tx.InvoiceID ?? 'none'}`,
+    )
+  }
+
   // Validate destination
   const destination = tx.Destination
   if (destination !== expectedRecipient) {
