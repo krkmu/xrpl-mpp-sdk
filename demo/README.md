@@ -1,26 +1,27 @@
-# xrpl-mpp-sdk Demos
+# Demos
 
-## Overview
-
-| Demo | Script(s) | What it does |
-|---|---|---|
-| XRP Charge | `xrp-server.ts` + `xrp-client.ts` | Two-terminal 402 charge flow paying 1 XRP |
-| IOU Charge | `iou-charge.ts` | All-in-one: creates issuer, trustlines, issues tokens, runs charge flow |
-| MPT Charge | `mpt-charge.ts` | All-in-one: creates MPT issuance, authorizes holders, runs charge flow |
-| PayChannel | `channel-server.ts` + `channel-client.ts` | Two-terminal: opens channel, 5 off-chain claims, closes channel |
-| Error Showcase | `error-showcase.ts` | 11 error cases with fail-fix-validate pattern |
+All demos run on XRPL testnet. Zero environment variables -- every script generates its own wallets and funds them via faucet automatically. Output is styled with timestamps, colored tags, and box-drawn headers.
 
 ## Prerequisites
 
 - Node.js 20+
 - pnpm
-- Internet connection (all demos run on XRPL testnet)
+- Internet connection (testnet)
 
-No environment variables needed. Every script generates its own wallets and funds them via the testnet faucet automatically.
+## Files
 
-## Demo 1: XRP Charge
+| File | Type | What it does |
+|---|---|---|
+| `log.ts` | Shared utility | Styled terminal output (timestamps, colors, boxes) |
+| `xrp-server.ts` | Two-terminal | Server: 402-gated resource, charges 1 XRP |
+| `xrp-client.ts` | Two-terminal | Client: pays 1 XRP, prints receipt + explorer link |
+| `iou-charge.ts` | All-in-one | Creates issuer, DefaultRipple, trustlines, issues USD, runs charge |
+| `mpt-charge.ts` | All-in-one | Creates MPT issuance, authorizes holders, issues tokens, runs charge |
+| `channel-server.ts` | Two-terminal | Server: verifies off-chain PayChannel claims (0.1 XRP each) |
+| `channel-client.ts` | Two-terminal | Client: opens channel, 5 paid requests, closes channel |
+| `error-showcase.ts` | All-in-one | 11 error cases with fail-fix-validate pattern |
 
-Two terminals -- server accepts 1 XRP payments, client pays and gets content.
+## XRP Charge
 
 ```bash
 # Terminal 1
@@ -30,46 +31,25 @@ npx tsx demo/xrp-server.ts
 npx tsx demo/xrp-client.ts
 ```
 
-Expected output:
+Server funds a recipient wallet, starts HTTP on :3000. Client funds a payer wallet, requests the resource, gets 402, signs Payment tx, retries with credential, gets 200 + receipt with explorer link.
 
-```
-# Server
-[server] Recipient: rXXX...
-[server] Ready on http://localhost:3000 -- pay 1 XRP to access /resource
-[server] 402 /resource
-[server] 200 /resource
-
-# Client
-[client] Wallet: rYYY...
-[client] Requesting http://localhost:3000/resource...
-[client] Response status: 200
-[client] Body: { "message": "Access granted -- paid 1 XRP", ... }
-[client] Explorer: https://testnet.xrpl.org/transactions/ABC123...
-```
-
-## Demo 2: IOU Charge
-
-Single script -- creates issuer + trustlines + issues USD tokens, then runs charge flow.
+## IOU Charge
 
 ```bash
 npx tsx demo/iou-charge.ts
 ```
 
-Expected output: issuer setup (AccountSet, TrustSet x2, Payment), then 402 -> 200 with IOU payment. Explorer links for every on-chain tx.
+Funds 3 wallets (issuer, server, client). Enables DefaultRipple on issuer. Creates trustlines for server and client. Issues 1000 USD to client. Starts MPP server on :3001. Client pays 10 USD. Prints explorer link for every tx (AccountSet, TrustSet x2, issuance, payment).
 
-## Demo 3: MPT Charge
-
-Single script -- creates MPT issuance, authorizes holders, issues tokens, runs charge flow.
+## MPT Charge
 
 ```bash
 npx tsx demo/mpt-charge.ts
 ```
 
-Expected output: MPTokenIssuanceCreate, MPTokenAuthorize x2, Payment (issuance), then 402 -> 200 with MPT payment. Explorer links for every on-chain tx.
+Funds 3 wallets. Creates MPTokenIssuance (tfMPTCanTransfer). Authorizes server and client. Issues 10000 MPT to client. Starts MPP server on :3002. Client pays 100 MPT. Prints explorer link for every tx.
 
-## Demo 4: PayChannel
-
-Two terminals -- client opens a channel, makes 5 off-chain micropayments (0.1 XRP each), closes.
+## PayChannel
 
 ```bash
 # Terminal 1
@@ -79,51 +59,41 @@ npx tsx demo/channel-server.ts
 npx tsx demo/channel-client.ts
 ```
 
-Expected output:
+Server funds a wallet, exposes /info, /setup, /resource, /summary. Client funds a wallet, opens a 10 XRP channel (PaymentChannelCreate), configures the server, makes 5 paid requests (cumulative 100k, 200k, 300k, 400k, 500k drops), closes the channel (PaymentChannelClaim tfClose). 2 on-chain txs, 5 off-chain claims. Prints explorer links for create + close.
 
-```
-# Client
-[client] Channel: ABCDEF...
-[client] Create tx: https://testnet.xrpl.org/transactions/...
-  [1/5] 200 OK -- cumulative: 100000 drops
-  [2/5] 200 OK -- cumulative: 200000 drops
-  [3/5] 200 OK -- cumulative: 300000 drops
-  [4/5] 200 OK -- cumulative: 400000 drops
-  [5/5] 200 OK -- cumulative: 500000 drops
-[client] Close tx: https://testnet.xrpl.org/transactions/...
-
-=== Summary ===
-  Off-chain claims: 5
-  Total settled: 500000 drops (0.5 XRP)
-  On-chain txs: 2 (create + close)
-```
-
-## Demo 5: Error Showcase
-
-Single script -- demonstrates 11 error cases with fail-fix-validate pattern.
+## Error Showcase
 
 ```bash
 npx tsx demo/error-showcase.ts
 ```
 
-Cases covered:
-1. INSUFFICIENT_BALANCE -- unfunded wallet
-2. RECIPIENT_NOT_FOUND -- non-existent destination
-3. AMOUNT_MISMATCH -- wrong payment amount
-4. MISSING_TRUSTLINE -- IOU without trustline
-5. PAYMENT_PATH_FAILED -- rippling disabled
-6. INSUFFICIENT_IOU_BALANCE -- zero token balance
-7. MPT_NOT_AUTHORIZED -- MPT not authorized
-8. INSUFFICIENT_MPT_BALANCE -- zero MPT balance
-9. WRONG_SIGNER -- channel claim with wrong key
-10. REPLAY_DETECTED -- same cumulative amount twice
-11. OVERPAY -- claim more than channel deposit
+Funds 10+ wallets and runs 11 cases sequentially:
 
-Each case: attempt (fail) -> fix -> retry (succeed) -> print explorer link.
+| # | Case | Error triggered | Fix applied |
+|---|---|---|---|
+| 1 | INSUFFICIENT_BALANCE | Unfunded wallet | Fund via faucet |
+| 2 | RECIPIENT_NOT_FOUND | Non-existent destination | Fund destination |
+| 3 | AMOUNT_MISMATCH | Client pays wrong amount | Correct amount |
+| 4 | MISSING_TRUSTLINE | IOU without trustline | Create trustline + issue tokens |
+| 5 | PAYMENT_PATH_FAILED | Rippling disabled | Enable DefaultRipple |
+| 6 | INSUFFICIENT_IOU_BALANCE | Zero token balance | Issue tokens |
+| 7 | MPT_NOT_AUTHORIZED | MPT not authorized | Authorize + issue |
+| 8 | INSUFFICIENT_MPT_BALANCE | Zero MPT balance | Issue tokens |
+| 9 | WRONG_SIGNER | Claim with wrong key | Sign with correct key |
+| 10 | REPLAY_DETECTED | Same cumulative twice | Increment cumulative |
+| 11 | OVERPAY | Claim > channel deposit | Correct amount |
+
+## Streaming (offline)
+
+```bash
+npx tsx examples/stream-llm.ts
+```
+
+Simulates pay-per-token LLM streaming using ChannelStream. Signs claims every 10 tokens. No testnet needed.
 
 ## Notes
 
-- All wallets are ephemeral testnet wallets -- no real funds involved
+- All wallets are ephemeral testnet wallets -- no real funds
 - Testnet explorer: https://testnet.xrpl.org/transactions/
 - Testnet faucet: https://faucet.altnet.rippletest.net/accounts
 - Testnet WebSocket: wss://s.altnet.rippletest.net:51233

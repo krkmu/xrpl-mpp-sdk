@@ -415,8 +415,17 @@ xrpl-mpp-sdk/
     security/                # Replay, tamper, input validation, channel auth (25 tests)
     xrpl/                    # Charge, channel, trustline, MPT, dual-curve (39 tests)
     utils/test-helpers.ts
-  demo/                      # Self-contained testnet demos (see above)
-  examples/                  # Code examples (stream-llm, server/client patterns)
+  demo/
+    log.ts                   # Shared styled terminal output utility
+    xrp-server.ts            # XRP charge server (two-terminal)
+    xrp-client.ts            # XRP charge client (two-terminal)
+    iou-charge.ts            # IOU charge all-in-one
+    mpt-charge.ts            # MPT charge all-in-one
+    channel-server.ts        # PayChannel server (two-terminal)
+    channel-client.ts        # PayChannel client (two-terminal)
+    error-showcase.ts        # 11 error cases, fail-fix-validate
+  examples/
+    stream-llm.ts            # Pay-per-token streaming simulation (offline)
 ```
 
 ## Development
