@@ -28,7 +28,7 @@ pnpm add xrpl-mpp-sdk xrpl mppx
 import { Mppx } from 'mppx/client'
 import { charge } from 'xrpl-mpp-sdk/client'
 
-const mppx = Mppx.create({
+Mppx.create({
   methods: [
     charge({
       seed: 'sEdV...',
@@ -39,7 +39,7 @@ const mppx = Mppx.create({
 })
 
 // Automatically handles 402 challenges
-const response = await mppx.fetch('https://api.example.com/resource')
+const response = await fetch('https://api.example.com/resource')
 ```
 
 ### Server (charge for resources)
@@ -49,6 +49,7 @@ import { Mppx, Store } from 'mppx/server'
 import { charge } from 'xrpl-mpp-sdk/server'
 
 const mppx = Mppx.create({
+  secretKey: process.env.MPP_SECRET_KEY,
   methods: [
     charge({
       recipient: 'rN7bRFgBrNZKoY2uu015bdjah11UbRZY',
@@ -94,6 +95,69 @@ const claim = stream.tick(1)
 if (claim) {
   // Send claim to server
 }
+```
+
+## Demos
+
+Each demo runs against the XRPL testnet with real transactions. Setup scripts generate wallets, fund them via faucet, and create any required on-chain objects (trustlines, MPT issuances, channels).
+
+### XRP Charge (two terminals)
+
+```bash
+# Setup -- funds wallets, prints commands for server + client
+npx tsx demo/setup-xrp.ts
+
+# Terminal 1 (server)
+XRPL_RECIPIENT=rXXX npx tsx demo/server.ts
+
+# Terminal 2 (client)
+XRPL_SEED=sEdXXX npx tsx demo/client.ts
+```
+
+### IOU Charge (two terminals)
+
+```bash
+# Setup -- creates issuer, enables DefaultRipple, sets trustlines, issues tokens
+npx tsx demo/setup-iou.ts
+
+# Terminal 1 (server) -- copy from setup output
+XRPL_RECIPIENT=rXXX XRPL_CURRENCY='{"currency":"USD","issuer":"rISSUER"}' XRPL_AMOUNT=10 npx tsx demo/server.ts
+
+# Terminal 2 (client) -- copy from setup output
+XRPL_SEED=sEdXXX npx tsx demo/client.ts
+```
+
+### MPT Charge (two terminals)
+
+```bash
+# Setup -- creates MPT issuance, authorizes holders, issues tokens
+npx tsx demo/setup-mpt.ts
+
+# Terminal 1 (server) -- copy from setup output
+XRPL_RECIPIENT=rXXX XRPL_CURRENCY='{"mpt_issuance_id":"..."}' XRPL_AMOUNT=100 npx tsx demo/server.ts
+
+# Terminal 2 (client) -- copy from setup output
+XRPL_SEED=sEdXXX npx tsx demo/client.ts
+```
+
+### PayChannel (two terminals)
+
+```bash
+# Setup -- funds wallets + opens a PayChannel
+npx tsx demo/setup-channel.ts
+
+# Terminal 1 (server) -- copy from setup output
+XRPL_CHANNEL_ID=... XRPL_CHANNEL_PUBKEY=ED... XRPL_RECIPIENT=rXXX npx tsx demo/server-channel.ts
+
+# Terminal 2 (client) -- copy from setup output
+XRPL_SEED=sEdXXX XRPL_CHANNEL_ID=... npx tsx demo/client-channel.ts
+```
+
+### Other demos
+
+```bash
+npx tsx demo/error-showcase.ts   # All 11 error cases (offline)
+npx tsx examples/stream-llm.ts   # Pay-per-token streaming simulation (offline)
 ```
 
 ## Export Map
@@ -143,20 +207,6 @@ XRPL tecResult codes are mapped to MPP error types:
 | `tecNO_AUTH` | `TRUSTLINE_NOT_AUTHORIZED` | VerificationFailedError |
 | `tecNO_LINE` | `MISSING_TRUSTLINE` | VerificationFailedError |
 | `temBAD_AMOUNT` | `INVALID_AMOUNT` | VerificationFailedError |
-
-## Demos
-
-See [demo/README.md](demo/README.md) for runnable two-terminal demos:
-
-- `demo/charge-xrp.sh` -- XRP charge with explorer links
-- `demo/charge-iou.sh` -- IOU charge with auto-trustline
-- `demo/charge-mpt.sh` -- MPT charge with auto-authorize
-- `demo/channel.sh` -- PayChannel lifecycle (create, 5 claims, close)
-- `demo/error-showcase.ts` -- All error cases demonstrated
-
-```bash
-npx tsx demo/error-showcase.ts
-```
 
 ## Development
 

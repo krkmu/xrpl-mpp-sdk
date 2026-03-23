@@ -25,7 +25,7 @@ import { channel as ChannelMethod } from '../Methods.js'
  * ```
  */
 export function channel(parameters: channel.Parameters) {
-  const { seed, network: defaultNetwork = 'testnet', rpcUrl: defaultRpcUrl } = parameters
+  const { seed, network: defaultNetwork = 'testnet', rpcUrl: _defaultRpcUrl } = parameters
 
   if (!seed) {
     throw new Error('seed is required for client channel method.')
