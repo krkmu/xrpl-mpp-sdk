@@ -8,7 +8,7 @@ import { dropsToXrp, signPaymentChannelClaim } from 'xrpl'
  */
 export class ChannelStream {
   readonly channelId: string
-  readonly privateKey: string
+  readonly #privateKey: string
   readonly dropsPerUnit: bigint
 
   private cumulative = 0n
@@ -26,7 +26,7 @@ export class ChannelStream {
     granularity?: number
   }) {
     this.channelId = params.channelId
-    this.privateKey = params.privateKey
+    this.#privateKey = params.privateKey
     this.dropsPerUnit = BigInt(params.dropsPerUnit)
     this.granularity = BigInt(params.granularity ?? 1)
   }
@@ -56,7 +56,7 @@ export class ChannelStream {
     const amount = this.cumulative.toString()
     // signPaymentChannelClaim expects XRP (not drops) -- it internally calls xrpToDrops
     const amountXrp = dropsToXrp(amount).toString()
-    const signature = signPaymentChannelClaim(this.channelId, amountXrp, this.privateKey)
+    const signature = signPaymentChannelClaim(this.channelId, amountXrp, this.#privateKey)
 
     this.lastSignature = signature
     this.lastSignedCumulative = this.cumulative
@@ -100,7 +100,6 @@ export class ChannelStream {
  */
 export class ChannelSession {
   readonly channelId: string
-  readonly privateKey: string
   readonly dropsPerRequest: bigint
 
   private requestCount = 0n
@@ -115,7 +114,6 @@ export class ChannelSession {
     granularity?: number
   }) {
     this.channelId = params.channelId
-    this.privateKey = params.privateKey
     this.dropsPerRequest = BigInt(params.dropsPerRequest)
     this.stream = new ChannelStream({
       channelId: params.channelId,
