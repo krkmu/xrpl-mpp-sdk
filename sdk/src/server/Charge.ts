@@ -129,8 +129,10 @@ async function verifyPush(
     transaction: txHash,
   })
 
-  const tx = txResponse.result as any
-  const meta = tx.meta ?? tx.metaData
+  const result = txResponse.result as any
+  // xrpl.js v4: transaction fields are nested under tx_json
+  const tx = result.tx_json ?? result
+  const meta = result.meta ?? result.metaData ?? tx.meta ?? tx.metaData
 
   if (!meta || meta.TransactionResult !== 'tesSUCCESS') {
     const tecResult = meta?.TransactionResult ?? 'unknown'
@@ -247,6 +249,9 @@ async function verifyPull(
 
 /**
  * Validate that a Payment transaction's Destination and Amount match expectations.
+ *
+ * Handles both legacy format (Amount at top level) and xrpl.js v4 format
+ * (fields in tx_json, Amount renamed to DeliverMax).
  */
 function validatePaymentFields(tx: any, expectedAmount: string, expectedRecipient: string): void {
   // Validate destination
@@ -258,8 +263,8 @@ function validatePaymentFields(tx: any, expectedAmount: string, expectedRecipien
     )
   }
 
-  // Validate amount
-  const txAmount = tx.Amount
+  // Validate amount -- xrpl.js v4 renames Amount to DeliverMax in tx responses
+  const txAmount = tx.Amount ?? tx.DeliverMax
   if (typeof txAmount === 'string') {
     // XRP native -- amount is drops string
     if (txAmount !== expectedAmount) {
