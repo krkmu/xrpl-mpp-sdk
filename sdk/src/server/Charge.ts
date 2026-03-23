@@ -28,8 +28,18 @@ import { serializeCurrency } from '../utils/currency.js'
  * })
  * ```
  */
+/** Default max credential size: 64KB. */
+const DEFAULT_MAX_CREDENTIAL_SIZE = 64 * 1024
+
 export function charge(parameters: charge.Parameters) {
-  const { recipient, currency, network = 'testnet', rpcUrl: customRpcUrl, store } = parameters
+  const {
+    recipient,
+    currency,
+    network = 'testnet',
+    rpcUrl: customRpcUrl,
+    store,
+    maxCredentialSize = DEFAULT_MAX_CREDENTIAL_SIZE,
+  } = parameters
 
   const rpcUrl = customRpcUrl ?? XRPL_RPC_URLS[network]
   const currencyStr = currency ? serializeCurrency(currency) : 'XRP'
@@ -64,6 +74,17 @@ export function charge(parameters: charge.Parameters) {
   })
 
   async function doVerify(credential: any): Promise<Receipt.Receipt> {
+    // Check credential size before processing
+    if (maxCredentialSize > 0) {
+      const size = JSON.stringify(credential).length
+      if (size > maxCredentialSize) {
+        throw verificationFailed(
+          'SUBMISSION_FAILED',
+          `Credential too large (${size} bytes, max ${maxCredentialSize})`,
+        )
+      }
+    }
+
     const { challenge } = credential
     const { request: challengeRequest } = challenge
 
@@ -288,5 +309,7 @@ export declare namespace charge {
   export type Parameters = ChargeServerConfig & {
     /** Store for replay protection. */
     store?: Store.Store
+    /** Max credential size in bytes. 0 disables. @default 65536 (64KB) */
+    maxCredentialSize?: number
   }
 }
