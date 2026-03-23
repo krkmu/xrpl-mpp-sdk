@@ -704,7 +704,7 @@ async function main() {
   // ---- CASE 11 ----
   header('OVERPAY (channel)')
   {
-    log.loading('Opening 1 XRP channel...')
+    log.loading('Opening 1 XRP channel (deposit: 1,000,000 drops)...')
     const { channelId } = await openChannel({
       seed: channelFunder.seed!,
       destination: channelReceiver.classicAddress,
@@ -713,10 +713,15 @@ async function main() {
       network: NETWORK,
     })
 
-    const store = Store.memory()
-    const srvMethod = serverChannel({ publicKey: channelFunder.publicKey, network: NETWORK, store })
+    // Use one store for the fail attempt
+    const failStore = Store.memory()
+    const failMethod = serverChannel({
+      publicKey: channelFunder.publicKey,
+      network: NETWORK,
+      store: failStore,
+    })
 
-    log.loading('Claiming 2 XRP from a 1 XRP channel...')
+    log.loading('Claiming 2,000,000 drops from a 1,000,000 drop channel...')
     const overSig = signPaymentChannelClaim(
       channelId,
       dropsToXrp('2000000').toString(),
@@ -740,22 +745,38 @@ async function main() {
     })
 
     try {
-      await srvMethod.verify({ credential: credOver as any, request: chOver.request })
-      log.info('Signature valid locally, but on-chain close would fail (Balance > channel Amount)')
+      await failMethod.verify({ credential: credOver as any, request: chOver.request })
+      // Signature is valid locally -- the overpay is only caught on-chain at close
+      log.error('Signature valid locally, but on-chain close would fail (Balance > deposit)')
     } catch (err: any) {
       log.error(err.message.slice(0, 120))
     }
 
+    // Fresh store for the retry so the overpay doesn't pollute cumulative tracking
     log.fix('Claiming correct amount (500,000 drops = 0.5 XRP)...')
+    const retryStore = Store.memory()
+    const retryMethod = serverChannel({
+      publicKey: channelFunder.publicKey,
+      network: NETWORK,
+      store: retryStore,
+    })
+
     const goodSig = signPaymentChannelClaim(
       channelId,
       dropsToXrp('500000').toString(),
       channelFunder.privateKey,
     )
     const chGood = {
-      ...chOver,
       id: `over-fix-${Date.now()}`,
-      request: { ...chOver.request, amount: '500000' },
+      realm: 'error-showcase',
+      method: 'xrpl' as const,
+      intent: 'channel' as const,
+      request: {
+        amount: '500000',
+        channelId,
+        recipient: channelReceiver.classicAddress,
+        methodDetails: { network: NETWORK, reference: crypto.randomUUID(), cumulativeAmount: '0' },
+      },
     }
     const credGood = Credential.from({
       challenge: chGood as any,
@@ -764,7 +785,7 @@ async function main() {
 
     log.loading('Retrying...')
     try {
-      const receipt = await srvMethod.verify({
+      const receipt = await retryMethod.verify({
         credential: credGood as any,
         request: chGood.request,
       })
