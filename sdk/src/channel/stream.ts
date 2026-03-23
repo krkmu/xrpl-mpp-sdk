@@ -1,4 +1,4 @@
-import { signPaymentChannelClaim } from 'xrpl'
+import { dropsToXrp, signPaymentChannelClaim } from 'xrpl'
 
 /**
  * ChannelStream -- pay-per-token streaming via PayChannel claims.
@@ -54,7 +54,9 @@ export class ChannelStream {
    */
   sign(): ChannelClaim {
     const amount = this.cumulative.toString()
-    const signature = signPaymentChannelClaim(this.channelId, amount, this.privateKey)
+    // signPaymentChannelClaim expects XRP (not drops) -- it internally calls xrpToDrops
+    const amountXrp = dropsToXrp(amount).toString()
+    const signature = signPaymentChannelClaim(this.channelId, amountXrp, this.privateKey)
 
     this.lastSignature = signature
     this.lastSignedCumulative = this.cumulative

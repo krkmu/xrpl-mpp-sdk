@@ -1,5 +1,5 @@
 import { Credential, Method } from 'mppx'
-import { Client, signPaymentChannelClaim, Wallet } from 'xrpl'
+import { Client, dropsToXrp, signPaymentChannelClaim, Wallet } from 'xrpl'
 import { z } from 'zod/mini'
 import { type NetworkId, XRPL_RPC_URLS } from '../../constants.js'
 import type { ChannelClientConfig } from '../../types.js'
@@ -54,7 +54,9 @@ export function channel(parameters: channel.Parameters) {
       const cumulativeStr = cumulativeAmount.toString()
 
       // Sign the claim using xrpl.js -- handles both ed25519 and secp256k1
-      const signature = signPaymentChannelClaim(channelId, cumulativeStr, wallet.privateKey)
+      // Note: signPaymentChannelClaim expects XRP (not drops) -- it internally calls xrpToDrops
+      const cumulativeXrp = dropsToXrp(cumulativeStr).toString()
+      const signature = signPaymentChannelClaim(channelId, cumulativeXrp, wallet.privateKey)
 
       return Credential.serialize({
         challenge,

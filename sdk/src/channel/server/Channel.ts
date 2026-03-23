@@ -1,5 +1,5 @@
 import { Method, Receipt, type Store } from 'mppx'
-import { Client, verifyPaymentChannelClaim, Wallet } from 'xrpl'
+import { Client, dropsToXrp, verifyPaymentChannelClaim, Wallet } from 'xrpl'
 import { type NetworkId, XRPL_RPC_URLS } from '../../constants.js'
 import { invalidSignature, replayDetected, verificationFailed } from '../../errors.js'
 import type { ChannelServerConfig } from '../../types.js'
@@ -79,7 +79,9 @@ export function channel(parameters: channel.Parameters) {
 
     // Verify the claim signature using xrpl.js
     // This handles both ed25519 and secp256k1 keys transparently
-    const isValid = verifyPaymentChannelClaim(channelId, payload.amount, signature, publicKey)
+    // verifyPaymentChannelClaim expects XRP (not drops) -- it internally calls xrpToDrops
+    const claimXrp = dropsToXrp(payload.amount).toString()
+    const isValid = verifyPaymentChannelClaim(channelId, claimXrp, signature, publicKey)
 
     if (!isValid) {
       throw invalidSignature('Claim signature verification failed')
@@ -159,10 +161,20 @@ export async function close(params: {
   channelId: string
   amount: string
   signature: string
+  /** The channel's public key (from PaymentChannelCreate). Required for signature verification. */
+  channelPublicKey: string
   network?: NetworkId
   rpcUrl?: string
 }): Promise<{ txHash: string }> {
-  const { seed, channelId, amount, signature, network = 'testnet', rpcUrl } = params
+  const {
+    seed,
+    channelId,
+    amount,
+    signature,
+    channelPublicKey,
+    network = 'testnet',
+    rpcUrl,
+  } = params
 
   const wallet = Wallet.fromSeed(seed)
   const resolvedRpcUrl = rpcUrl ?? XRPL_RPC_URLS[network]
@@ -180,7 +192,7 @@ export async function close(params: {
       Balance: amount,
       Amount: amount,
       Signature: signature.toUpperCase(),
-      PublicKey: wallet.publicKey,
+      PublicKey: channelPublicKey,
       Flags: TF_CLOSE,
     }
 
