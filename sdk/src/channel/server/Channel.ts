@@ -244,7 +244,10 @@ async function lookupChannel(client: Client, channelId: string): Promise<any | n
       index: channelId,
     } as any)
     return (response.result as any).node ?? null
-  } catch {
-    return null
+  } catch (err: any) {
+    // entryNotFound means the channel does not exist -- return null
+    if (err?.data?.error === 'entryNotFound') return null
+    // Re-throw network errors so callers can handle them
+    throw err
   }
 }
