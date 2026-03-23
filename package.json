@@ -1,0 +1,62 @@
+{
+  "name": "xrpl-mpp-sdk",
+  "version": "0.1.0",
+  "description": "XRPL payment method for the Machine Payments Protocol (MPP)",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "default": "./dist/client/index.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "default": "./dist/server/index.js"
+    },
+    "./channel": {
+      "types": "./dist/channel/index.d.ts",
+      "default": "./dist/channel/index.js"
+    },
+    "./channel/client": {
+      "types": "./dist/channel/client/index.d.ts",
+      "default": "./dist/channel/client/index.js"
+    },
+    "./channel/server": {
+      "types": "./dist/channel/server/index.d.ts",
+      "default": "./dist/channel/server/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "check:types": "tsc --noEmit",
+    "lint": "biome check --write .",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "peerDependencies": {
+    "mppx": ">=0.4.0",
+    "xrpl": ">=4.0.0"
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
+  },
+  "license": "MIT",
+  "sideEffects": false,
+  "packageManager": "pnpm@10.19.0",
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.8",
+    "@types/node": "^25.5.0",
+    "tsup": "^8.5.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  }
+}
