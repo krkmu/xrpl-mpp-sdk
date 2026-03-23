@@ -35,15 +35,22 @@ export function channel(parameters: channel.Parameters) {
   let verifyLock: Promise<unknown> = Promise.resolve()
 
   return Method.toServer(ChannelMethod, {
-    request({ request }) {
-      // Inject cumulative amount and network into methodDetails
+    async request({ request }) {
+      // Look up current cumulative from store so clients know where to resume
+      let cumulativeAmount = '0'
+      if (store && request.channelId) {
+        const state = (await store.get(`xrpl:channel:${request.channelId}`)) as any
+        if (state?.cumulative) {
+          cumulativeAmount = state.cumulative
+        }
+      }
       return {
         ...request,
         methodDetails: {
           ...request.methodDetails,
           reference: crypto.randomUUID(),
           network,
-          // cumulativeAmount will be injected per-channel from store if available
+          cumulativeAmount,
         },
       }
     },

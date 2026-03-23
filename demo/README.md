@@ -1,68 +1,129 @@
 # xrpl-mpp-sdk Demos
 
-All demos use real XRPL testnet wallets funded via faucet at runtime.
+## Overview
+
+| Demo | Script(s) | What it does |
+|---|---|---|
+| XRP Charge | `xrp-server.ts` + `xrp-client.ts` | Two-terminal 402 charge flow paying 1 XRP |
+| IOU Charge | `iou-charge.ts` | All-in-one: creates issuer, trustlines, issues tokens, runs charge flow |
+| MPT Charge | `mpt-charge.ts` | All-in-one: creates MPT issuance, authorizes holders, runs charge flow |
+| PayChannel | `channel-server.ts` + `channel-client.ts` | Two-terminal: opens channel, 5 off-chain claims, closes channel |
+| Error Showcase | `error-showcase.ts` | 11 error cases with fail-fix-validate pattern |
 
 ## Prerequisites
 
 - Node.js 20+
 - pnpm
+- Internet connection (all demos run on XRPL testnet)
 
-## How it works
+No environment variables needed. Every script generates its own wallets and funds them via the testnet faucet automatically.
 
-1. Run a **setup script** -- it generates wallets, funds them, creates any required on-chain objects, and prints the commands you need for server + client.
-2. Copy the **server command** into Terminal 1.
-3. Copy the **client command** into Terminal 2.
-4. Watch the full MPP 402 flow: challenge -> credential -> payment -> receipt.
+## Demo 1: XRP Charge
 
-## XRP Charge
+Two terminals -- server accepts 1 XRP payments, client pays and gets content.
 
 ```bash
-npx tsx demo/setup-xrp.ts          # funds 2 wallets, prints commands
-# Terminal 1: run the server command from setup output
-# Terminal 2: run the client command from setup output
+# Terminal 1
+npx tsx demo/xrp-server.ts
+
+# Terminal 2
+npx tsx demo/xrp-client.ts
 ```
 
-## IOU Charge
+Expected output:
+
+```
+# Server
+[server] Recipient: rXXX...
+[server] Ready on http://localhost:3000 -- pay 1 XRP to access /resource
+[server] 402 /resource
+[server] 200 /resource
+
+# Client
+[client] Wallet: rYYY...
+[client] Requesting http://localhost:3000/resource...
+[client] Response status: 200
+[client] Body: { "message": "Access granted -- paid 1 XRP", ... }
+[client] Explorer: https://testnet.xrpl.org/transactions/ABC123...
+```
+
+## Demo 2: IOU Charge
+
+Single script -- creates issuer + trustlines + issues USD tokens, then runs charge flow.
 
 ```bash
-npx tsx demo/setup-iou.ts          # creates issuer, DefaultRipple, trustlines, issues tokens
-# Terminal 1: run the server command from setup output
-# Terminal 2: run the client command from setup output
+npx tsx demo/iou-charge.ts
 ```
 
-## MPT Charge
+Expected output: issuer setup (AccountSet, TrustSet x2, Payment), then 402 -> 200 with IOU payment. Explorer links for every on-chain tx.
+
+## Demo 3: MPT Charge
+
+Single script -- creates MPT issuance, authorizes holders, issues tokens, runs charge flow.
 
 ```bash
-npx tsx demo/setup-mpt.ts          # creates MPT issuance, authorizes holders, issues tokens
-# Terminal 1: run the server command from setup output
-# Terminal 2: run the client command from setup output
+npx tsx demo/mpt-charge.ts
 ```
 
-## PayChannel
+Expected output: MPTokenIssuanceCreate, MPTokenAuthorize x2, Payment (issuance), then 402 -> 200 with MPT payment. Explorer links for every on-chain tx.
+
+## Demo 4: PayChannel
+
+Two terminals -- client opens a channel, makes 5 off-chain micropayments (0.1 XRP each), closes.
 
 ```bash
-npx tsx demo/setup-channel.ts      # funds wallets, opens PayChannel
-# Terminal 1: run the server command from setup output
-# Terminal 2: run the client command from setup output (makes 5 off-chain requests)
+# Terminal 1
+npx tsx demo/channel-server.ts
+
+# Terminal 2
+npx tsx demo/channel-client.ts
 ```
 
-## Offline demos
+Expected output:
+
+```
+# Client
+[client] Channel: ABCDEF...
+[client] Create tx: https://testnet.xrpl.org/transactions/...
+  [1/5] 200 OK -- cumulative: 100000 drops
+  [2/5] 200 OK -- cumulative: 200000 drops
+  [3/5] 200 OK -- cumulative: 300000 drops
+  [4/5] 200 OK -- cumulative: 400000 drops
+  [5/5] 200 OK -- cumulative: 500000 drops
+[client] Close tx: https://testnet.xrpl.org/transactions/...
+
+=== Summary ===
+  Off-chain claims: 5
+  Total settled: 500000 drops (0.5 XRP)
+  On-chain txs: 2 (create + close)
+```
+
+## Demo 5: Error Showcase
+
+Single script -- demonstrates 11 error cases with fail-fix-validate pattern.
 
 ```bash
-npx tsx demo/error-showcase.ts     # all 11 error cases
-npx tsx examples/stream-llm.ts     # pay-per-token streaming simulation
+npx tsx demo/error-showcase.ts
 ```
 
-## Files
+Cases covered:
+1. INSUFFICIENT_BALANCE -- unfunded wallet
+2. RECIPIENT_NOT_FOUND -- non-existent destination
+3. AMOUNT_MISMATCH -- wrong payment amount
+4. MISSING_TRUSTLINE -- IOU without trustline
+5. PAYMENT_PATH_FAILED -- rippling disabled
+6. INSUFFICIENT_IOU_BALANCE -- zero token balance
+7. MPT_NOT_AUTHORIZED -- MPT not authorized
+8. INSUFFICIENT_MPT_BALANCE -- zero MPT balance
+9. WRONG_SIGNER -- channel claim with wrong key
+10. REPLAY_DETECTED -- same cumulative amount twice
+11. OVERPAY -- claim more than channel deposit
 
-| File | Purpose |
-|---|---|
-| `setup-xrp.ts` | Fund 2 wallets for XRP charge |
-| `setup-iou.ts` | Create issuer + trustlines + issue IOUs |
-| `setup-mpt.ts` | Create MPT issuance + authorize + issue tokens |
-| `setup-channel.ts` | Fund wallets + open PayChannel |
-| `server.ts` | HTTP server with MPP 402 charge handler |
-| `client.ts` | HTTP client with auto-402 handling |
-| `server-channel.ts` | HTTP server with MPP 402 channel handler |
-| `client-channel.ts` | HTTP client making N off-chain channel requests |
-| `error-showcase.ts` | Demonstrates all SDK error types |
+Each case: attempt (fail) -> fix -> retry (succeed) -> print explorer link.
+
+## Notes
+
+- All wallets are ephemeral testnet wallets -- no real funds involved
+- Testnet explorer: https://testnet.xrpl.org/transactions/
+- Testnet faucet: https://faucet.altnet.rippletest.net/accounts
+- Testnet WebSocket: wss://s.altnet.rippletest.net:51233

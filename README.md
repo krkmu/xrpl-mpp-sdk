@@ -99,65 +99,58 @@ if (claim) {
 
 ## Demos
 
-Each demo runs against the XRPL testnet with real transactions. Setup scripts generate wallets, fund them via faucet, and create any required on-chain objects (trustlines, MPT issuances, channels).
+All demos run on XRPL testnet. Zero env vars -- every script generates wallets and funds them via faucet automatically. See [demo/README.md](demo/README.md) for full details.
 
 ### XRP Charge (two terminals)
 
 ```bash
-# Setup -- funds wallets, prints commands for server + client
-npx tsx demo/setup-xrp.ts
+# Terminal 1
+npx tsx demo/xrp-server.ts
 
-# Terminal 1 (server)
-XRPL_RECIPIENT=rXXX npx tsx demo/server.ts
-
-# Terminal 2 (client)
-XRPL_SEED=sEdXXX npx tsx demo/client.ts
+# Terminal 2
+npx tsx demo/xrp-client.ts
 ```
 
-### IOU Charge (two terminals)
+### IOU Charge (all-in-one)
 
 ```bash
-# Setup -- creates issuer, enables DefaultRipple, sets trustlines, issues tokens
-npx tsx demo/setup-iou.ts
-
-# Terminal 1 (server) -- copy from setup output
-XRPL_RECIPIENT=rXXX XRPL_CURRENCY='{"currency":"USD","issuer":"rISSUER"}' XRPL_AMOUNT=10 npx tsx demo/server.ts
-
-# Terminal 2 (client) -- copy from setup output
-XRPL_SEED=sEdXXX npx tsx demo/client.ts
+npx tsx demo/iou-charge.ts
 ```
 
-### MPT Charge (two terminals)
+Creates issuer, enables DefaultRipple, sets up trustlines, issues tokens, runs the full 402 charge flow.
+
+### MPT Charge (all-in-one)
 
 ```bash
-# Setup -- creates MPT issuance, authorizes holders, issues tokens
-npx tsx demo/setup-mpt.ts
-
-# Terminal 1 (server) -- copy from setup output
-XRPL_RECIPIENT=rXXX XRPL_CURRENCY='{"mpt_issuance_id":"..."}' XRPL_AMOUNT=100 npx tsx demo/server.ts
-
-# Terminal 2 (client) -- copy from setup output
-XRPL_SEED=sEdXXX npx tsx demo/client.ts
+npx tsx demo/mpt-charge.ts
 ```
+
+Creates MPT issuance, authorizes holders, issues tokens, runs the full 402 charge flow.
 
 ### PayChannel (two terminals)
 
 ```bash
-# Setup -- funds wallets + opens a PayChannel
-npx tsx demo/setup-channel.ts
+# Terminal 1
+npx tsx demo/channel-server.ts
 
-# Terminal 1 (server) -- copy from setup output
-XRPL_CHANNEL_ID=... XRPL_CHANNEL_PUBKEY=ED... XRPL_RECIPIENT=rXXX npx tsx demo/server-channel.ts
-
-# Terminal 2 (client) -- copy from setup output
-XRPL_SEED=sEdXXX XRPL_CHANNEL_ID=... npx tsx demo/client-channel.ts
+# Terminal 2
+npx tsx demo/channel-client.ts
 ```
 
-### Other demos
+Opens channel (10 XRP), makes 5 off-chain claims (0.1 XRP each), closes channel. 2 on-chain txs, 5 off-chain claims.
+
+### Error Showcase
 
 ```bash
-npx tsx demo/error-showcase.ts   # All 11 error cases (offline)
-npx tsx examples/stream-llm.ts   # Pay-per-token streaming simulation (offline)
+npx tsx demo/error-showcase.ts
+```
+
+11 error cases with fail-fix-validate pattern: insufficient balance, missing trustline, wrong signer, replay detection, and more.
+
+### Streaming (offline)
+
+```bash
+npx tsx examples/stream-llm.ts
 ```
 
 ## Export Map
