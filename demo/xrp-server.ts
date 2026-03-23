@@ -3,107 +3,115 @@
  * Generates a recipient wallet, starts HTTP server, serves a 402-gated resource.
  * Run: npx tsx demo/xrp-server.ts
  */
-
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { Mppx, Store } from 'mppx/server'
 import { Client } from 'xrpl'
 import { XRPL_RPC_URLS } from '../sdk/src/constants.js'
 import { charge } from '../sdk/src/server/Charge.js'
+import * as log from './log.js'
 
 async function main() {
-  // 1. Connect to XRPL testnet and fund a recipient wallet
+  log.box(['XRPL MPP Server -- XRP Charge'])
+  log.separator()
+
+  log.loading('Connecting to XRPL testnet...')
   const xrplClient = new Client(XRPL_RPC_URLS.testnet)
   await xrplClient.connect()
+
+  log.loading('Funding recipient wallet via faucet...')
   const { wallet } = await xrplClient.fundWallet()
   await xrplClient.disconnect()
 
-  console.log(`[server] Recipient: ${wallet.classicAddress}`)
+  log.wallet('Recipient', wallet.classicAddress)
+  log.separator()
 
-  // 2. Create store for replay protection
   const store = Store.memory()
-
-  // 3. Create the XRPL charge method for the server
   const chargeMethod = charge({
     recipient: wallet.classicAddress,
     network: 'testnet',
     store,
   })
 
-  // 4. Create the mppx server instance
   const mppx = Mppx.create({
     secretKey: 'xrpl-mpp-demo-secret',
     methods: [chargeMethod],
   })
 
-  // 5. Create the handler for XRP charge -- 1,000,000 drops = 1 XRP
   const handler = (mppx as any)['xrpl/charge']({ amount: '1000000', currency: 'XRP' })
-
-  // 6. Bridge helpers: Node HTTP <-> Web Request/Response
 
   function toWebRequest(req: IncomingMessage): Request {
     const host = req.headers.host ?? 'localhost:3000'
     const url = `http://${host}${req.url ?? '/'}`
     const headers = new Headers()
-    for (const [key, value] of Object.entries(req.headers)) {
-      if (value === undefined) continue
-      if (Array.isArray(value)) {
-        for (const v of value) {
-          headers.append(key, v)
-        }
+    for (const [k, v] of Object.entries(req.headers)) {
+      if (v === undefined) continue
+      if (Array.isArray(v)) {
+        for (const val of v) headers.append(k, val)
       } else {
-        headers.set(key, value)
+        headers.set(k, v)
       }
     }
-    return new Request(url, {
-      method: req.method ?? 'GET',
-      headers,
-    })
+    return new Request(url, { method: req.method ?? 'GET', headers })
   }
 
   async function sendWebResponse(webRes: Response, res: ServerResponse): Promise<void> {
     res.statusCode = webRes.status
-    for (const [key, value] of webRes.headers.entries()) {
-      res.setHeader(key, value)
-    }
-    const body = await webRes.text()
-    res.end(body)
+    for (const [k, v] of webRes.headers.entries()) res.setHeader(k, v)
+    res.end(await webRes.text())
   }
 
-  // 7. Create and start the HTTP server
   const server = createServer(async (req, res) => {
     const path = req.url ?? '/'
 
     if (path === '/' || path === '/resource') {
+      log.request(req.method ?? 'GET', path)
       const webReq = toWebRequest(req)
       const result = await handler(webReq)
 
       if (result.status === 402) {
-        console.log(`[server] 402 ${path}`)
+        log.challenge('Payment required -- 1,000,000 drops (1 XRP)')
+        log.response(402, 'challenge sent')
         await sendWebResponse(result.challenge as Response, res)
         return
       }
 
-      console.log(`[server] 200 ${path}`)
-      const payload = Response.json({
-        message: 'Access granted -- paid 1 XRP',
-        timestamp: new Date().toISOString(),
-      })
-      const finalResponse = result.withReceipt(payload) as Response
-      await sendWebResponse(finalResponse, res)
+      log.verify('Verifying payment credential...')
+      log.success('Payment verified')
+      if (result.receipt?.reference) {
+        log.tx(result.receipt.reference, log.explorerLink(result.receipt.reference))
+      }
+      log.response(200, 'access granted')
+      await sendWebResponse(
+        result.withReceipt(
+          Response.json({
+            message: 'Access granted -- paid 1 XRP',
+            timestamp: new Date().toISOString(),
+          }),
+        ) as Response,
+        res,
+      )
       return
     }
 
     res.statusCode = 404
     res.end('Not found')
-    console.log(`[server] 404 ${path}`)
   })
 
   server.listen(3000, () => {
-    console.log('[server] Ready on http://localhost:3000 -- pay 1 XRP to access /resource')
+    log.separator()
+    log.box([
+      'Endpoints:',
+      '',
+      'GET /resource  ->  charge 1 XRP (1,000,000 drops)',
+      '',
+      'Waiting for requests...',
+    ])
+    log.separator()
+    log.server('Listening on http://localhost:3000')
   })
 }
 
 main().catch((err) => {
-  console.error('[server] Fatal error:', err)
+  log.error(`Fatal: ${err.message}`)
   process.exit(1)
 })

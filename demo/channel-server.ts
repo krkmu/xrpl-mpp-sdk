@@ -3,12 +3,12 @@
  * Generates a recipient wallet, waits for client to set up channel, serves 402-gated resource.
  * Run: npx tsx demo/channel-server.ts
  */
-
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { Mppx, Store } from 'mppx/server'
 import { Client } from 'xrpl'
 import { channel } from '../sdk/src/channel/server/Channel.js'
 import { XRPL_RPC_URLS } from '../sdk/src/constants.js'
+import * as log from './log.js'
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -23,12 +23,12 @@ function toWebRequest(req: IncomingMessage): Request {
   const host = req.headers.host ?? 'localhost:3000'
   const url = `http://${host}${req.url ?? '/'}`
   const headers = new Headers()
-  for (const [key, value] of Object.entries(req.headers)) {
-    if (value === undefined) continue
-    if (Array.isArray(value)) {
-      for (const v of value) headers.append(key, v)
+  for (const [k, v] of Object.entries(req.headers)) {
+    if (v === undefined) continue
+    if (Array.isArray(v)) {
+      for (const val of v) headers.append(k, val)
     } else {
-      headers.set(key, value)
+      headers.set(k, v)
     }
   }
   return new Request(url, { method: req.method ?? 'GET', headers })
@@ -36,19 +36,24 @@ function toWebRequest(req: IncomingMessage): Request {
 
 async function sendWebResponse(webRes: Response, res: ServerResponse): Promise<void> {
   res.statusCode = webRes.status
-  for (const [key, value] of webRes.headers.entries()) {
-    res.setHeader(key, value)
-  }
+  for (const [k, v] of webRes.headers.entries()) res.setHeader(k, v)
   res.end(await webRes.text())
 }
 
 async function main() {
+  log.box(['XRPL MPP Server -- PayChannel'])
+  log.separator()
+
+  log.loading('Connecting to XRPL testnet...')
   const xrplClient = new Client(XRPL_RPC_URLS.testnet)
   await xrplClient.connect()
+
+  log.loading('Funding recipient wallet via faucet...')
   const { wallet } = await xrplClient.fundWallet()
   await xrplClient.disconnect()
 
-  console.log(`[server] Address: ${wallet.classicAddress}`)
+  log.wallet('Recipient', wallet.classicAddress)
+  log.separator()
 
   let channelId: string | null = null
   let handler: any = null
@@ -56,47 +61,35 @@ async function main() {
   let latestCumulative = '0'
   const store = Store.memory()
 
-  const server = createServer(async (req, res) => {
+  const httpServer = createServer(async (req, res) => {
     const path = req.url ?? '/'
     const method = req.method ?? 'GET'
 
     try {
-      // GET /info -- return server address for client to open channel to
       if (method === 'GET' && path === '/info') {
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ address: wallet.classicAddress }))
         return
       }
 
-      // POST /setup -- client sends channelId + publicKey after opening channel
       if (method === 'POST' && path === '/setup') {
         const body = JSON.parse(await readBody(req))
         channelId = body.channelId
 
-        const channelMethod = channel({
-          publicKey: body.publicKey,
-          network: 'testnet',
-          store,
-        })
-
-        const mppx = Mppx.create({
-          secretKey: 'channel-demo-secret',
-          methods: [channelMethod],
-        })
-
+        const channelMethod = channel({ publicKey: body.publicKey, network: 'testnet', store })
+        const mppx = Mppx.create({ secretKey: 'channel-demo-secret', methods: [channelMethod] })
         handler = (mppx as any)['xrpl/channel']({
           amount: '100000',
           channelId,
           recipient: wallet.classicAddress,
         })
 
-        console.log(`[server] Channel configured: ${channelId}`)
+        log.success(`Channel configured: ${channelId}`)
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ status: 'ok' }))
         return
       }
 
-      // GET /resource -- 402/200 MPP channel flow
       if (method === 'GET' && path === '/resource') {
         if (!handler) {
           res.writeHead(503)
@@ -104,11 +97,12 @@ async function main() {
           return
         }
 
-        const webReq = toWebRequest(req)
-        const result = await handler(webReq)
+        log.request('GET', '/resource')
+        const result = await handler(toWebRequest(req))
 
         if (result.status === 402) {
-          console.log('[server] 402 /resource')
+          log.challenge('Payment required -- 100,000 drops (0.1 XRP)')
+          log.response(402, 'challenge sent')
           await sendWebResponse(result.challenge as Response, res)
           return
         }
@@ -117,9 +111,9 @@ async function main() {
         const state = (await store.get(`xrpl:channel:${channelId}`)) as any
         latestCumulative = state?.cumulative ?? latestCumulative
 
-        console.log(
-          `[server] 200 /resource -- claim #${claimCount}, cumulative: ${latestCumulative} drops`,
-        )
+        log.verify(`Claim #${claimCount}`)
+        log.success(`Verified -- cumulative: ${latestCumulative} drops`)
+        log.response(200, 'access granted')
 
         await sendWebResponse(
           result.withReceipt(
@@ -133,17 +127,15 @@ async function main() {
         return
       }
 
-      // GET /summary -- return final state (called by client before closing)
       if (method === 'GET' && path === '/summary') {
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ claimCount, cumulative: latestCumulative }))
-
-        // Shut down server after summary is fetched
         setTimeout(() => {
-          console.log(
-            `[server] Summary: ${claimCount} claims, ${(Number(latestCumulative) / 1_000_000).toFixed(1)} XRP total`,
+          log.separator()
+          log.info(
+            `Summary: ${claimCount} claims, ${(Number(latestCumulative) / 1_000_000).toFixed(1)} XRP total`,
           )
-          server.close()
+          httpServer.close()
           process.exit(0)
         }, 500)
         return
@@ -152,18 +144,30 @@ async function main() {
       res.writeHead(404)
       res.end('Not found')
     } catch (err: any) {
-      console.error(`[server] Error: ${err.message}`)
+      log.error(err.message)
       res.writeHead(500)
       res.end(err.message)
     }
   })
 
-  server.listen(3000, () => {
-    console.log('[server] Ready on http://localhost:3000 -- waiting for channel setup')
+  httpServer.listen(3000, () => {
+    log.separator()
+    log.box([
+      'Endpoints:',
+      '',
+      'GET  /info      ->  server wallet address',
+      'POST /setup     ->  configure channel (channelId + publicKey)',
+      'GET  /resource  ->  charge 0.1 XRP per claim',
+      'GET  /summary   ->  final state + shutdown',
+      '',
+      'Waiting for client to open channel...',
+    ])
+    log.separator()
+    log.server('Listening on http://localhost:3000')
   })
 }
 
 main().catch((err) => {
-  console.error('[server] Fatal error:', err)
+  log.error(`Fatal: ${err.message}`)
   process.exit(1)
 })
