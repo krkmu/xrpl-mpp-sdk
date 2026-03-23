@@ -425,6 +425,10 @@ xrpl-mpp-sdk/
     channel-client.ts        # PayChannel client (two-terminal)
     error-showcase.ts        # 11 error cases, fail-fix-validate
   examples/
+    server.ts                # Minimal charge server (env var config)
+    client.ts                # Minimal charge client (env var config)
+    channel-server.ts        # Minimal channel server (env var config)
+    channel-client.ts        # Minimal channel client (env var config)
     stream-llm.ts            # Pay-per-token streaming simulation (offline)
 ```
 
