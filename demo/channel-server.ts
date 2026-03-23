@@ -119,6 +119,7 @@ async function main() {
           result.withReceipt(
             Response.json({
               message: `Access granted -- claim #${claimCount}`,
+              content: 'Hello XRPL!',
               cumulative: latestCumulative,
             }),
           ) as Response,

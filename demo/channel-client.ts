@@ -68,9 +68,7 @@ async function main() {
     if (response.ok) {
       const body = (await response.json()) as any
       lastCumulative = body.cumulative ?? lastCumulative
-      log.success(
-        `[${i}/5] cumulative: ${lastCumulative} drops (${(Number(lastCumulative) / 1_000_000).toFixed(1)} XRP)`,
-      )
+      log.success(`[${i}/5] "${body.content}" -- cumulative: ${lastCumulative} drops`)
     } else {
       log.error(`[${i}/5] ${response.status}`)
     }

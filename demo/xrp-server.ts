@@ -83,10 +83,7 @@ async function main() {
       log.response(200, 'access granted')
       await sendWebResponse(
         result.withReceipt(
-          Response.json({
-            message: 'Access granted -- paid 1 XRP',
-            timestamp: new Date().toISOString(),
-          }),
+          Response.json({ message: 'Access granted -- paid 1 XRP', content: 'Hello XRPL!' }),
         ) as Response,
         res,
       )

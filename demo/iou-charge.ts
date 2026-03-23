@@ -126,7 +126,9 @@ async function main() {
       }
       log.response(200, 'access granted')
       await sendWebResponse(
-        result.withReceipt(Response.json({ message: 'Access granted -- paid 10 USD' })) as Response,
+        result.withReceipt(
+          Response.json({ message: 'Access granted -- paid 10 USD', content: 'Hello XRPL!' }),
+        ) as Response,
         res,
       )
       return
@@ -145,8 +147,9 @@ async function main() {
   const response = await fetch(`http://localhost:${PORT}/resource`)
 
   if (response.ok) {
-    const body = await response.json()
-    log.success((body as any).message)
+    const body = (await response.json()) as any
+    log.success(body.message)
+    log.info(`Content: ${body.content}`)
     const receiptHeader = response.headers.get('Payment-Receipt')
     if (receiptHeader) {
       const receipt = Receipt.deserialize(receiptHeader)

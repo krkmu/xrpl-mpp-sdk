@@ -39,8 +39,9 @@ async function main() {
   log.info(`Response status: ${response.status}`)
 
   if (response.ok) {
-    const body = await response.json()
-    log.success(`${(body as any).message}`)
+    const body = (await response.json()) as any
+    log.success(body.message)
+    log.info(`Content: ${body.content}`)
 
     const receiptHeader = response.headers.get('Payment-Receipt')
     if (receiptHeader) {
