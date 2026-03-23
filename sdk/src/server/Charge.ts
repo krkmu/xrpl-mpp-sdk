@@ -29,7 +29,21 @@ import { serializeCurrency } from '../utils/currency.js'
  * ```
  */
 export function charge(parameters: charge.Parameters) {
-  const { recipient, currency, network = 'testnet', rpcUrl: customRpcUrl, store } = parameters
+  const {
+    recipient,
+    currency,
+    network = 'testnet',
+    rpcUrl: customRpcUrl,
+    store,
+    requireStore = true,
+  } = parameters
+
+  if (!store && requireStore) {
+    throw new Error(
+      '[xrpl-mpp-sdk] store is required for replay protection. ' +
+        'Pass requireStore: false to explicitly disable replay protection.',
+    )
+  }
 
   const rpcUrl = customRpcUrl ?? XRPL_RPC_URLS[network]
   const currencyStr = currency ? serializeCurrency(currency) : 'XRP'
@@ -288,5 +302,7 @@ export declare namespace charge {
   export type Parameters = ChargeServerConfig & {
     /** Store for replay protection. */
     store?: Store.Store
+    /** Require a store for replay protection. @default true */
+    requireStore?: boolean
   }
 }

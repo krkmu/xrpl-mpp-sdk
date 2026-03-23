@@ -27,7 +27,20 @@ import { channel as ChannelMethod } from '../Methods.js'
  * ```
  */
 export function channel(parameters: channel.Parameters) {
-  const { publicKey, network = 'testnet', rpcUrl: customRpcUrl, store } = parameters
+  const {
+    publicKey,
+    network = 'testnet',
+    rpcUrl: customRpcUrl,
+    store,
+    requireStore = true,
+  } = parameters
+
+  if (!store && requireStore) {
+    throw new Error(
+      '[xrpl-mpp-sdk] store is required for replay protection and cumulative tracking. ' +
+        'Pass requireStore: false to explicitly disable.',
+    )
+  }
 
   const _rpcUrl = customRpcUrl ?? XRPL_RPC_URLS[network]
 
@@ -163,6 +176,8 @@ export function channel(parameters: channel.Parameters) {
 export declare namespace channel {
   export type Parameters = ChannelServerConfig & {
     store?: Store.Store
+    /** Require a store for replay protection. @default true */
+    requireStore?: boolean
   }
 }
 
