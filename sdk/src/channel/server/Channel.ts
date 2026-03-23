@@ -1,7 +1,13 @@
 import { Method, Receipt, type Store } from 'mppx'
 import { Client, dropsToXrp, verifyPaymentChannelClaim, Wallet } from 'xrpl'
 import { type NetworkId, XRPL_RPC_URLS } from '../../constants.js'
-import { invalidSignature, replayDetected, verificationFailed } from '../../errors.js'
+import {
+  channelClosed,
+  channelNotFound,
+  invalidSignature,
+  replayDetected,
+  verificationFailed,
+} from '../../errors.js'
 import type { ChannelServerConfig } from '../../types.js'
 import { channel as ChannelMethod } from '../Methods.js'
 
@@ -27,9 +33,15 @@ import { channel as ChannelMethod } from '../Methods.js'
  * ```
  */
 export function channel(parameters: channel.Parameters) {
-  const { publicKey, network = 'testnet', rpcUrl: customRpcUrl, store } = parameters
+  const {
+    publicKey,
+    network = 'testnet',
+    rpcUrl: customRpcUrl,
+    store,
+    verifyChannelOnChain = false,
+  } = parameters
 
-  const _rpcUrl = customRpcUrl ?? XRPL_RPC_URLS[network]
+  const rpcUrl = customRpcUrl ?? XRPL_RPC_URLS[network]
 
   // Serialize verify operations to prevent concurrent race conditions
   let verifyLock: Promise<unknown> = Promise.resolve()
@@ -100,6 +112,37 @@ export function channel(parameters: channel.Parameters) {
       throw invalidSignature('Claim signature verification failed')
     }
 
+    // Optional on-chain channel state verification
+    if (verifyChannelOnChain) {
+      const client = new Client(rpcUrl)
+      await client.connect()
+      try {
+        const channelObj = await lookupChannel(client, channelId)
+        if (!channelObj) {
+          throw channelNotFound(channelId)
+        }
+        // Check if channel is expired
+        if (channelObj.Expiration) {
+          // XRPL Expiration is seconds since Ripple epoch (2000-01-01)
+          const rippleEpoch = 946684800
+          const expirationUnix = (channelObj.Expiration + rippleEpoch) * 1000
+          if (Date.now() > expirationUnix) {
+            throw channelClosed(channelId)
+          }
+        }
+        // Check cumulative does not exceed channel balance
+        const channelBalance = BigInt(channelObj.Amount)
+        if (newCumulative > channelBalance) {
+          throw verificationFailed(
+            'AMOUNT_MISMATCH',
+            `Cumulative ${newCumulative} exceeds channel balance ${channelBalance}`,
+          )
+        }
+      } finally {
+        await client.disconnect()
+      }
+    }
+
     // Check cumulative amount is strictly monotonic via store
     if (store) {
       const cumulativeKey = `xrpl:channel:${channelId}`
@@ -163,6 +206,8 @@ export function channel(parameters: channel.Parameters) {
 export declare namespace channel {
   export type Parameters = ChannelServerConfig & {
     store?: Store.Store
+    /** Verify channel existence, balance, and expiration on-chain. @default false */
+    verifyChannelOnChain?: boolean
   }
 }
 
