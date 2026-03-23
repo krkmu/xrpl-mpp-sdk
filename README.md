@@ -1,18 +1,82 @@
 # xrpl-mpp-sdk
 
-XRPL payment method for the [Machine Payments Protocol (MPP)](https://mpp.dev). Extends [mppx](https://github.com/wevm/mppx) with XRP Ledger payment methods.
+XRP Ledger payment method for the [Machine Payments Protocol (MPP)](https://mpp.dev). Extends [mppx](https://github.com/wevm/mppx) with on-chain payments (XRP, IOUs, MPTs) and off-chain micropayments via PayChannels.
 
-## Features
+## Payment modes
 
-- **Charge (on-chain)**: Payment transactions for XRP, IOU (issued currencies), and MPT (multi-purpose tokens)
-- **Channel (off-chain)**: PayChannel micropayments with cumulative claim signing
-- **Streaming**: Pay-per-token via ChannelStream, session billing via ChannelSession
-- **Dual-curve support**: ed25519 and secp256k1 wallets handled transparently
-- **Pull and push modes**: Server-submit (pull, default) or client-submit (push)
-- **Auto-trustline**: Opt-in automatic TrustSet for IOU payments
-- **Auto-MPT authorize**: Opt-in automatic MPTokenAuthorize for MPT payments
-- **Replay protection**: Store-backed dedup for both charge (tx hash) and channel (cumulative monotonicity)
-- **MPP-compliant errors**: RFC 9457 Problem Details, interoperable with any mppx client/server
+### Charge (on-chain transfers)
+
+Each payment settles as an XRP Ledger Payment transaction.
+
+```
+Client                          Server
+  |                               |
+  |  GET /resource                |
+  |------------------------------>|
+  |                               |
+  |  402 Payment Required         |
+  |  (challenge: pay 1 XRP)       |
+  |<------------------------------|
+  |                               |
+  |  Sign Payment tx              |
+  |  Send credential              |
+  |------------------------------>|
+  |                               |
+  |  Submit to ledger, return     |
+  |  data + Payment-Receipt       |
+  |<------------------------------|
+```
+
+Two credential modes:
+
+- **Pull** (default) -- client signs the transaction blob, server submits it to the ledger
+- **Push** -- client submits the transaction itself, sends the tx hash for server verification
+
+Supports three currency types:
+- **XRP** -- native drops (e.g., "1000000" = 1 XRP)
+- **IOU** -- issued currencies ({currency, issuer, value}) with optional auto-trustline
+- **MPT** -- multi-purpose tokens ({mpt_issuance_id, value}) with optional auto-authorize
+
+### Channel (off-chain PayChannel claims)
+
+Uses XRP Ledger [PayChannels](https://xrpl.org/payment-channels.html). The funder deposits XRP into a channel once, then makes many off-chain payments by signing cumulative claims -- no per-payment on-chain transactions.
+
+```
+Client (Funder)                 Server (Recipient)
+  |                               |
+  |  [PaymentChannelCreate        |
+  |   10 XRP on-chain]            |
+  |                               |
+  |  GET /resource                |
+  |------------------------------>|
+  |                               |
+  |  402 (pay 0.1 XRP via         |
+  |   channel, cumulative: 0)     |
+  |<------------------------------|
+  |                               |
+  |  Sign claim (cum: 100000)     |
+  |------------------------------>|
+  |                               |
+  |  Verify signature, 200 OK     |
+  |<------------------------------|
+  |                               |
+  |  GET /resource (again)        |
+  |------------------------------>|
+  |                               |
+  |  402 (cumulative: 100000)     |
+  |<------------------------------|
+  |                               |
+  |  Sign claim (cum: 200000)     |
+  |------------------------------>|
+  |                               |
+  |  Verify, 200 OK               |
+  |<------------------------------|
+  |                               |
+  |  [PaymentChannelClaim         |
+  |   tfClose on-chain]           |
+```
+
+PayChannels are XRP-only (denominated in drops). Both ed25519 and secp256k1 wallets are supported -- xrpl.js handles curve detection transparently.
 
 ## Install
 
@@ -20,29 +84,9 @@ XRPL payment method for the [Machine Payments Protocol (MPP)](https://mpp.dev). 
 pnpm add xrpl-mpp-sdk xrpl mppx
 ```
 
-## Quick Start
+## Quick start
 
-### Client (pay for resources)
-
-```ts
-import { Mppx } from 'mppx/client'
-import { charge } from 'xrpl-mpp-sdk/client'
-
-Mppx.create({
-  methods: [
-    charge({
-      seed: 'sEdV...',
-      mode: 'pull',
-      network: 'testnet',
-    }),
-  ],
-})
-
-// Automatically handles 402 challenges
-const response = await fetch('https://api.example.com/resource')
-```
-
-### Server (charge for resources)
+### Server (charge)
 
 ```ts
 import { Mppx, Store } from 'mppx/server'
@@ -52,145 +96,229 @@ const mppx = Mppx.create({
   secretKey: process.env.MPP_SECRET_KEY,
   methods: [
     charge({
-      recipient: 'rN7bRFgBrNZKoY2uu015bdjah11UbRZY',
+      recipient: 'rYourAddress...',
       network: 'testnet',
       store: Store.memory(),
     }),
   ],
 })
-```
 
-### Channel (off-chain micropayments)
+// Works with any HTTP framework
+export async function handler(request: Request) {
+  const result = await (mppx as any)['xrpl/charge']({
+    amount: '1000000',
+    currency: 'XRP',
+  })(request)
 
-```ts
-// Client
-import { channel } from 'xrpl-mpp-sdk/channel/client'
-
-const method = channel({ seed: 'sEdV...', network: 'testnet' })
-
-// Server
-import { channel as serverChannel, Store } from 'xrpl-mpp-sdk/channel/server'
-
-const method = serverChannel({
-  publicKey: 'ED...',
-  network: 'testnet',
-  store: Store.memory(),
-})
-```
-
-### Streaming (pay-per-token)
-
-```ts
-import { ChannelStream } from 'xrpl-mpp-sdk/channel'
-
-const stream = new ChannelStream({
-  channelId: '...',
-  privateKey: wallet.privateKey,
-  dropsPerUnit: '100',
-  granularity: 10,
-})
-
-// As tokens arrive:
-const claim = stream.tick(1)
-if (claim) {
-  // Send claim to server
+  if (result.status === 402) return result.challenge
+  return result.withReceipt(Response.json({ data: 'paid content' }))
 }
 ```
 
-## Demos
+### Client (charge)
 
-All demos run on XRPL testnet. Zero env vars -- every script generates wallets and funds them via faucet automatically. See [demo/README.md](demo/README.md) for full details.
+```ts
+import { Mppx } from 'mppx/client'
+import { charge } from 'xrpl-mpp-sdk/client'
 
-### XRP Charge (two terminals)
+// Patches globalThis.fetch -- 402 responses handled automatically
+Mppx.create({
+  methods: [
+    charge({ seed: 'sEdV...', mode: 'pull', network: 'testnet' }),
+  ],
+})
 
-```bash
-# Terminal 1
-npx tsx demo/xrp-server.ts
-
-# Terminal 2
-npx tsx demo/xrp-client.ts
+const response = await fetch('https://api.example.com/resource')
+const data = await response.json()
 ```
 
-### IOU Charge (all-in-one)
+### Server (channel)
 
-```bash
-npx tsx demo/iou-charge.ts
+```ts
+import { Mppx, Store } from 'mppx/server'
+import { channel } from 'xrpl-mpp-sdk/channel/server'
+
+const mppx = Mppx.create({
+  secretKey: process.env.MPP_SECRET_KEY,
+  methods: [
+    channel({
+      publicKey: 'ED...',      // channel funder's public key
+      network: 'testnet',
+      store: Store.memory(),   // tracks cumulative amounts
+    }),
+  ],
+})
 ```
 
-Creates issuer, enables DefaultRipple, sets up trustlines, issues tokens, runs the full 402 charge flow.
+### Client (channel)
 
-### MPT Charge (all-in-one)
+```ts
+import { Mppx } from 'mppx/client'
+import { channel } from 'xrpl-mpp-sdk/channel/client'
 
-```bash
-npx tsx demo/mpt-charge.ts
+Mppx.create({
+  methods: [
+    channel({ seed: 'sEdV...', network: 'testnet' }),
+  ],
+})
+
+const response = await fetch('https://api.example.com/resource')
 ```
 
-Creates MPT issuance, authorizes holders, issues tokens, runs the full 402 charge flow.
+## API
 
-### PayChannel (two terminals)
-
-```bash
-# Terminal 1
-npx tsx demo/channel-server.ts
-
-# Terminal 2
-npx tsx demo/channel-client.ts
-```
-
-Opens channel (10 XRP), makes 5 off-chain claims (0.1 XRP each), closes channel. 2 on-chain txs, 5 off-chain claims.
-
-### Error Showcase
-
-```bash
-npx tsx demo/error-showcase.ts
-```
-
-11 error cases with fail-fix-validate pattern: insufficient balance, missing trustline, wrong signer, replay detection, and more.
-
-### Streaming (offline)
-
-```bash
-npx tsx examples/stream-llm.ts
-```
-
-## Export Map
+### Exports
 
 | Path | Exports |
 |---|---|
-| `xrpl-mpp-sdk` | Methods, ChannelMethods, constants, toDrops, fromDrops, error helpers |
+| `xrpl-mpp-sdk` | Methods, ChannelMethods, constants, toDrops, fromDrops, error helpers, types |
 | `xrpl-mpp-sdk/client` | charge, xrpl, Mppx |
 | `xrpl-mpp-sdk/server` | charge, xrpl, Mppx, Store, Expires |
 | `xrpl-mpp-sdk/channel` | channel (schema), ChannelStream, ChannelSession |
 | `xrpl-mpp-sdk/channel/client` | channel, openChannel, fundChannel, xrpl, Mppx |
 | `xrpl-mpp-sdk/channel/server` | channel, close, xrpl, Mppx, Store, Expires |
 
-## Payment Methods
+### Server options (charge)
 
-### charge (on-chain)
+```ts
+charge({
+  recipient: string,                // XRPL classic address (r...)
+  currency?: XrplCurrency,          // default: 'XRP'. Also: {currency, issuer} or {mpt_issuance_id}
+  network?: 'mainnet' | 'testnet' | 'devnet',  // default: 'testnet'
+  rpcUrl?: string,                  // custom WebSocket RPC URL
+  store?: Store.Store,              // replay protection (recommended)
+})
+```
 
-Registered as `{ name: 'xrpl', intent: 'charge' }`.
+### Client options (charge)
 
-| Mode | How it works |
-|---|---|
-| **pull** (default) | Client signs Payment tx, sends blob. Server submits to ledger. |
-| **push** | Client submits Payment tx, sends hash. Server verifies on-chain. |
+```ts
+charge({
+  seed: string,                     // wallet seed (sEdV... or s...)
+  mode?: 'pull' | 'push',          // default: 'pull'
+  network?: 'mainnet' | 'testnet' | 'devnet',
+  rpcUrl?: string,
+  autoTrustline?: boolean,          // auto-create TrustSet for IOUs (default: false)
+  autoMPTAuthorize?: boolean,       // auto MPTokenAuthorize for MPTs (default: false)
+  preflight?: boolean,              // run pre-flight validation (default: false)
+})
+```
 
-Supports:
-- **XRP**: Native currency, amount in drops
-- **IOU**: Issued currencies (USD, RLUSD, etc.) with optional auto-trustline
-- **MPT**: Multi-purpose tokens with optional auto-authorize
+### Server options (channel)
 
-### channel (off-chain)
+```ts
+channel({
+  publicKey: string,                // channel funder's public key (ED... or 02.../03...)
+  network?: 'mainnet' | 'testnet' | 'devnet',
+  rpcUrl?: string,
+  store?: Store.Store,              // required for cumulative tracking + replay protection
+})
+```
 
-Registered as `{ name: 'xrpl', intent: 'channel' }`.
+### Client options (channel)
 
-PayChannels are XRP-only (denominated in drops). Off-chain cumulative claims
-are signed using `signPaymentChannelClaim` from xrpl.js, which handles both
-ed25519 and secp256k1 wallets transparently.
+```ts
+channel({
+  seed: string,                     // channel funder's wallet seed
+  network?: 'mainnet' | 'testnet' | 'devnet',
+  rpcUrl?: string,
+})
+```
 
-## Error Mapping
+### Currency formats
 
-XRPL tecResult codes are mapped to MPP error types:
+```ts
+// XRP native (amount in drops)
+{ amount: '1000000', currency: 'XRP' }
+
+// IOU -- issued currency
+{ amount: '10', currency: '{"currency":"USD","issuer":"rIssuer..."}' }
+
+// MPT -- multi-purpose token
+{ amount: '100', currency: '{"mpt_issuance_id":"00ABC..."}' }
+```
+
+### Opening and closing channels
+
+```ts
+import { openChannel, fundChannel } from 'xrpl-mpp-sdk/channel/client'
+import { close } from 'xrpl-mpp-sdk/channel/server'
+
+// Open a channel (on-chain)
+const { channelId, txHash } = await openChannel({
+  seed: 'sEdV...',
+  destination: 'rRecipient...',
+  amount: '10000000',       // 10 XRP in drops
+  settleDelay: 3600,        // 1 hour
+})
+
+// Fund an existing channel (on-chain)
+await fundChannel({ seed: 'sEdV...', channelId, amount: '5000000' })
+
+// Close a channel (on-chain)
+await close({
+  seed: 'sEdV...',
+  channelId,
+  amount: '500000',         // cumulative drops to settle
+  signature: '...',         // claim signature
+  channelPublicKey: 'ED...', // channel source public key
+})
+```
+
+### Streaming and sessions
+
+```ts
+import { ChannelStream, ChannelSession } from 'xrpl-mpp-sdk/channel'
+
+// Pay-per-token streaming
+const stream = new ChannelStream({
+  channelId: '...',
+  privateKey: wallet.privateKey,
+  dropsPerUnit: '100',      // 100 drops per token
+  granularity: 10,          // sign every 10 tokens
+})
+
+const claim = stream.tick(1) // returns ChannelClaim | null
+const final = stream.sign()  // force-sign current state
+
+// Session billing (N requests)
+const session = new ChannelSession({
+  channelId: '...',
+  privateKey: wallet.privateKey,
+  dropsPerRequest: '10000',
+})
+
+session.pay()                // returns ChannelClaim | null
+session.settle()             // force-sign for settlement
+```
+
+### Replay protection
+
+Provide an mppx `Store` to prevent credential reuse:
+
+```ts
+import { Store } from 'xrpl-mpp-sdk/server'
+
+charge({
+  recipient: 'r...',
+  store: Store.memory(),     // or Store.upstash(), Store.cloudflare()
+})
+```
+
+For charge: deduplicates challenge IDs and transaction hashes.
+For channels: enforces strict cumulative monotonicity (new > previous).
+
+### Key types
+
+Both ed25519 and secp256k1 wallets work for all operations. xrpl.js detects the key type from the public key prefix:
+- `ED` prefix -- ed25519
+- `02`/`03` prefix -- secp256k1
+
+No configuration needed -- the SDK passes keys through to xrpl.js which handles both curves transparently.
+
+## Error mapping
+
+XRPL transaction engine results are mapped to MPP error types (RFC 9457 Problem Details):
 
 | tecResult | SDK Code | MPP Error Type |
 |---|---|---|
@@ -201,14 +329,108 @@ XRPL tecResult codes are mapped to MPP error types:
 | `tecNO_LINE` | `MISSING_TRUSTLINE` | VerificationFailedError |
 | `temBAD_AMOUNT` | `INVALID_AMOUNT` | VerificationFailedError |
 
+Additional channel errors:
+- `INVALID_SIGNATURE` -- InvalidSignatureError (claim signer mismatch)
+- `REPLAY_DETECTED` -- VerificationFailedError (same cumulative resubmitted)
+- `CHANNEL_NOT_FOUND` -- ChannelNotFoundError (410)
+- `CHANNEL_EXPIRED` -- ChannelClosedError (410)
+
+All errors extend mppx's `PaymentError` base class and serialize to RFC 9457 Problem Details format.
+
+## Constants
+
+| Constant | Value |
+|---|---|
+| `XRPL_RPC_URLS.testnet` | `wss://s.altnet.rippletest.net:51233` |
+| `XRPL_RPC_URLS.mainnet` | `wss://xrplcluster.com` |
+| `RLUSD_MAINNET` | `{ currency: 'RLUSD', issuer: 'rMxWzrBMyeKR9oJfYBrhAEGsxwsdLFSfim' }` |
+| `RLUSD_TESTNET` | `{ currency: 'RLUSD', issuer: 'rQhWct2fTR9z7bBQaflfqMEr2u8avFFpKH' }` |
+| `XRP_DECIMALS` | `6` |
+| `BASE_RESERVE_DROPS` | `'10000000'` (10 XRP) |
+| `OWNER_RESERVE_DROPS` | `'2000000'` (2 XRP) |
+
+## Demos
+
+All demos run on XRPL testnet. Zero env vars -- every script generates wallets and funds them automatically. See [demo/README.md](demo/README.md) for details.
+
+```bash
+# XRP charge (two terminals)
+npx tsx demo/xrp-server.ts          # Terminal 1
+npx tsx demo/xrp-client.ts          # Terminal 2
+
+# IOU charge (all-in-one: issuer + trustlines + issuance + charge)
+npx tsx demo/iou-charge.ts
+
+# MPT charge (all-in-one: MPT issuance + authorize + charge)
+npx tsx demo/mpt-charge.ts
+
+# PayChannel (two terminals: open, 5 off-chain claims, close)
+npx tsx demo/channel-server.ts      # Terminal 1
+npx tsx demo/channel-client.ts      # Terminal 2
+
+# Error showcase (11 cases, fail-fix-validate)
+npx tsx demo/error-showcase.ts
+
+# Streaming simulation (offline)
+npx tsx examples/stream-llm.ts
+```
+
+## Project structure
+
+```
+xrpl-mpp-sdk/
+  sdk/src/
+    index.ts                 # Root exports, constants, types, error helpers
+    Methods.ts               # Method schema (name: 'xrpl', intent: 'charge')
+    constants.ts             # RPC URLs, well-known currencies, reserves
+    types.ts                 # XrplCurrency, config types
+    errors.ts                # tecResult mapping, error constructors
+    utils/
+      currency.ts            # parseCurrency, buildAmount, isXrp/isIOU/isMPT
+      trustline.ts           # ensureTrustline, checkRippling
+      mpt.ts                 # ensureMPTHolding
+      validation.ts          # runPreflight (destination + trustline + MPT checks)
+    client/
+      Charge.ts              # Client charge: sign Payment tx, create credential
+      Methods.ts             # xrpl.charge() convenience wrapper
+      index.ts
+    server/
+      Charge.ts              # Server charge: verify + submit Payment tx
+      Methods.ts             # xrpl.charge() convenience wrapper
+      index.ts
+    channel/
+      Methods.ts             # Method schema (name: 'xrpl', intent: 'channel')
+      stream.ts              # ChannelStream, ChannelSession
+      index.ts
+      client/
+        Channel.ts           # Sign PayChannel claims, openChannel, fundChannel
+        Methods.ts
+        index.ts
+      server/
+        Channel.ts           # Verify claims, track cumulative, close()
+        Methods.ts
+        index.ts
+  test/
+    compliance/              # MPP protocol, intents, interop (38 tests)
+    security/                # Replay, tamper, input validation, channel auth (25 tests)
+    xrpl/                    # Charge, channel, trustline, MPT, dual-curve (39 tests)
+    utils/test-helpers.ts
+  demo/                      # Self-contained testnet demos (see above)
+  examples/                  # Code examples (stream-llm, server/client patterns)
+```
+
 ## Development
 
 ```bash
 pnpm install
-pnpm check:types    # Type-check
-pnpm lint           # Biome lint + format
-pnpm test           # Run all tests
+pnpm check:types             # TypeScript strict mode
+pnpm lint                    # Biome lint + format
+pnpm test                    # Vitest (105 tests)
 ```
+
+## Protocol
+
+This SDK implements the [Machine Payments Protocol (MPP)](https://mpp.dev) HTTP 402 flow as specified in [draft-httpauth-payment-00](https://github.com/tempoxyz/mpp-specs). It extends the [mppx](https://github.com/wevm/mppx) framework with XRPL-specific payment methods.
 
 ## License
 

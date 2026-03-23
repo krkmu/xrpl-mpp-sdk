@@ -37,7 +37,7 @@
   "scripts": {
     "build": "tsup",
     "check:types": "tsc --noEmit",
-    "lint": "biome check --write .",
+    "lint": "biome check --write sdk/ test/ demo/ examples/",
     "test": "vitest run",
     "test:watch": "vitest"
   },
