@@ -31,13 +31,17 @@ export type ChargeClientConfig = {
   seed?: string
   /** Payment mode -- pull (default) or push. */
   mode?: PaymentMode
-  /** Auto-create trustline for IOUs if missing. */
-  autoTrustline?: boolean
-  /** Maximum balance willing to hold from issuer when auto-creating trustlines. @default '10000' */
-  autoTrustlineLimit?: string
-  /** Auto-authorize MPT holding if missing. */
-  autoMPTAuthorize?: boolean
-  /** Run pre-flight validation checks. */
+  /**
+   * Run pre-flight validation before signing the transaction.
+   *
+   * When enabled, checks:
+   * - Destination account exists on the ledger
+   * - Sufficient XRP balance for reserves, fees, and payment amount
+   *   (reserves are queried dynamically from the network via server_state)
+   * - Rippling is enabled on the issuer for IOU payments
+   *
+   * @default true
+   */
   preflight?: boolean
   /** XRPL network. */
   network?: NetworkId
@@ -50,6 +54,22 @@ export type ChargeServerConfig = {
   recipient: string
   /** Expected currency. */
   currency?: XrplCurrency
+  /**
+   * Auto-create trustline on the recipient account for IOUs if missing.
+   * Requires a seed/wallet to sign the TrustSet transaction.
+   * @default false
+   */
+  autoTrustline?: boolean
+  /** Maximum balance willing to hold from issuer when auto-creating trustlines. @default '10000' */
+  autoTrustlineLimit?: string
+  /**
+   * Auto-authorize MPT holding on the recipient account if missing.
+   * Requires a seed/wallet to sign the MPTokenAuthorize transaction.
+   * @default false
+   */
+  autoMPTAuthorize?: boolean
+  /** Wallet seed for the recipient -- required if autoTrustline or autoMPTAuthorize is set. */
+  seed?: string
   /** XRPL network. */
   network?: NetworkId
   /** Custom WebSocket RPC URL. */

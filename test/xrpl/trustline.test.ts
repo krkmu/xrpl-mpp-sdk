@@ -1,22 +1,48 @@
 import { describe, expect, it } from 'vitest'
+import { buildAmount, isIOU, parseCurrency } from '../../sdk/src/utils/currency.js'
+import { checkRippling } from '../../sdk/src/utils/trustline.js'
 
 describe('XRPL Trustline', () => {
-  // These tests will be expanded in Phase 1 when trustline utils are implemented.
-  // For now, they test the constants and type shapes.
-
   it('lsfDefaultRipple flag is 0x00800000', () => {
     const LSF_DEFAULT_RIPPLE = 0x00800000
     expect(LSF_DEFAULT_RIPPLE).toBe(8388608)
   })
 
-  it('IOU amount object has currency and issuer', () => {
-    const amount = {
+  it('IOU amount object has currency, issuer, and value', () => {
+    const amount = buildAmount('100', {
+      currency: 'USD',
+      issuer: 'rN7bRFgBrNZKoY2uu015bdjah11UbRZY',
+    })
+    expect(amount).toEqual({
       currency: 'USD',
       issuer: 'rN7bRFgBrNZKoY2uu015bdjah11UbRZY',
       value: '100',
+    })
+  })
+
+  it('parseCurrency recognizes JSON IOU format', () => {
+    const currency = parseCurrency('{"currency":"USD","issuer":"rIssuer123"}')
+    expect(isIOU(currency)).toBe(true)
+    if (isIOU(currency)) {
+      expect(currency.currency).toBe('USD')
+      expect(currency.issuer).toBe('rIssuer123')
     }
-    expect(amount.currency).toBe('USD')
-    expect(amount.issuer).toBeDefined()
-    expect(amount.value).toBe('100')
+  })
+
+  it('parseCurrency recognizes CURRENCY:ISSUER format', () => {
+    const currency = parseCurrency('USD:rIssuer123')
+    expect(isIOU(currency)).toBe(true)
+    if (isIOU(currency)) {
+      expect(currency.currency).toBe('USD')
+      expect(currency.issuer).toBe('rIssuer123')
+    }
+  })
+
+  it('throws on unparseable currency string', () => {
+    expect(() => parseCurrency('')).toThrow()
+  })
+
+  it('checkRippling is exported and callable', () => {
+    expect(typeof checkRippling).toBe('function')
   })
 })

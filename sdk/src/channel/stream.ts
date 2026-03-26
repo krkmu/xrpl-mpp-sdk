@@ -1,11 +1,6 @@
 import { dropsToXrp, signPaymentChannelClaim } from 'xrpl'
 
-/**
- * ChannelStream -- pay-per-token streaming via PayChannel claims.
- *
- * Signs cumulative claims as data chunks arrive. Configurable granularity:
- * sign per token, per N tokens, or per chunk.
- */
+/** Pay-per-token streaming via PayChannel claims. */
 export class ChannelStream {
   readonly channelId: string
   readonly #privateKey: string
@@ -91,19 +86,13 @@ export class ChannelStream {
   }
 }
 
-/**
- * ChannelSession -- session billing over a single PayChannel.
- *
- * Tracks N paid requests over one channel, signing claims as
- * the session progresses. The server can settle at any time
- * using the latest claim.
- */
+/** Session billing over a single PayChannel. */
 export class ChannelSession {
   readonly channelId: string
   readonly dropsPerRequest: bigint
 
-  private requestCount = 0n
-  private stream: ChannelStream
+  #requestCount = 0n
+  #stream: ChannelStream
 
   constructor(params: {
     channelId: string
@@ -115,7 +104,7 @@ export class ChannelSession {
   }) {
     this.channelId = params.channelId
     this.dropsPerRequest = BigInt(params.dropsPerRequest)
-    this.stream = new ChannelStream({
+    this.#stream = new ChannelStream({
       channelId: params.channelId,
       privateKey: params.privateKey,
       dropsPerUnit: params.dropsPerRequest,
@@ -127,32 +116,32 @@ export class ChannelSession {
    * Record a paid request. Returns a signed claim if threshold crossed.
    */
   pay(): ChannelClaim | null {
-    this.requestCount++
-    return this.stream.tick(1)
+    this.#requestCount++
+    return this.#stream.tick(1)
   }
 
   /**
    * Force-sign the current state for settlement.
    */
   settle(): ChannelClaim {
-    return this.stream.sign()
+    return this.#stream.sign()
   }
 
   /**
    * Get the latest signed claim.
    */
   latest(): ChannelClaim | null {
-    return this.stream.latest()
+    return this.#stream.latest()
   }
 
   /** Number of paid requests so far. */
   get requests(): number {
-    return Number(this.requestCount)
+    return Number(this.#requestCount)
   }
 
   /** Current cumulative drops committed. */
   get currentAmount(): string {
-    return this.stream.currentAmount
+    return this.#stream.currentAmount
   }
 }
 

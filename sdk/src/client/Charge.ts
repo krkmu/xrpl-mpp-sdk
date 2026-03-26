@@ -3,17 +3,14 @@ import type { Payment } from 'xrpl'
 import { Client, Wallet } from 'xrpl'
 import { z } from 'zod/mini'
 import { type NetworkId, XRPL_RPC_URLS } from '../constants.js'
+import { fromTecResult } from '../errors.js'
 import * as Methods from '../Methods.js'
 import type { ChargeClientConfig, PaymentMode } from '../types.js'
 import { buildAmount, parseCurrency } from '../utils/currency.js'
 import { runPreflight } from '../utils/validation.js'
 
 /**
- * Creates an XRPL charge method for use on the **client**.
- *
- * Builds a Payment transaction, signs it, and either:
- * - **pull** (default): sends the signed blob to the server to submit
- * - **push**: submits itself and sends the tx hash
+ * XRPL charge method for the client.
  *
  * @example
  * ```ts
@@ -31,10 +28,7 @@ export function charge(parameters: charge.Parameters) {
   const {
     seed,
     mode: defaultMode = 'pull',
-    autoTrustline = false,
-    autoTrustlineLimit,
-    autoMPTAuthorize = false,
-    preflight: runPreflightCheck = false,
+    preflight: runPreflightCheck = true,
     network: defaultNetwork = 'testnet',
     rpcUrl: defaultRpcUrl,
   } = parameters
@@ -62,20 +56,16 @@ export function charge(parameters: charge.Parameters) {
       await client.connect()
 
       try {
-        // Pre-flight validation
         if (runPreflightCheck) {
           await runPreflight({
             client,
             wallet,
             currency,
             destination: recipient,
-            autoTrustline,
-            autoTrustlineLimit,
-            autoMPTAuthorize,
+            amount,
           })
         }
 
-        // Build Payment transaction
         const payment = {
           TransactionType: 'Payment' as const,
           Account: wallet.classicAddress,
@@ -86,19 +76,19 @@ export function charge(parameters: charge.Parameters) {
             : {}),
         }
 
-        // Autofill Sequence, Fee, LastLedgerSequence
         const prepared = await client.autofill(payment as Payment)
 
-        // Sign the transaction
         const signed = wallet.sign(prepared)
         const effectiveMode: PaymentMode = context?.mode ?? defaultMode
 
         if (effectiveMode === 'push') {
-          // Client broadcasts
           const result = await client.submitAndWait(signed.tx_blob)
           const meta = result.result.meta as any
           if (meta?.TransactionResult !== 'tesSUCCESS') {
-            throw new Error(`Transaction failed: ${meta?.TransactionResult ?? 'unknown'}`)
+            throw fromTecResult(
+              meta?.TransactionResult ?? 'unknown',
+              `Transaction failed: ${meta?.TransactionResult ?? 'unknown'}`,
+            )
           }
 
           return Credential.serialize({
@@ -108,7 +98,6 @@ export function charge(parameters: charge.Parameters) {
           })
         }
 
-        // Pull mode: send signed blob for server to submit
         return Credential.serialize({
           challenge,
           payload: { type: 'transaction' as const, blob: signed.tx_blob },

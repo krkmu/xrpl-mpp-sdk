@@ -187,6 +187,9 @@ charge({
   network?: 'mainnet' | 'testnet' | 'devnet',  // default: 'testnet'
   rpcUrl?: string,                  // custom WebSocket RPC URL
   store?: Store.Store,              // replay protection (recommended)
+  autoTrustline?: boolean,          // auto-create TrustSet on recipient for IOUs (default: false)
+  autoMPTAuthorize?: boolean,       // auto MPTokenAuthorize on recipient for MPTs (default: false)
+  seed?: string,                    // recipient wallet seed -- required if autoTrustline or autoMPTAuthorize
 })
 ```
 
@@ -198,9 +201,7 @@ charge({
   mode?: 'pull' | 'push',          // default: 'pull'
   network?: 'mainnet' | 'testnet' | 'devnet',
   rpcUrl?: string,
-  autoTrustline?: boolean,          // auto-create TrustSet for IOUs (default: false)
-  autoMPTAuthorize?: boolean,       // auto MPTokenAuthorize for MPTs (default: false)
-  preflight?: boolean,              // run pre-flight validation (default: false)
+  preflight?: boolean,              // pre-flight: balance, reserves, destination, rippling (default: true)
 })
 ```
 
@@ -255,7 +256,7 @@ const { channelId, txHash } = await openChannel({
 // Fund an existing channel (on-chain)
 await fundChannel({ seed: 'sEdV...', channelId, amount: '5000000' })
 
-// Close a channel (on-chain)
+// Close a channel (on-chain) -- typically called by the client (funder)
 await close({
   seed: 'sEdV...',
   channelId,
@@ -264,6 +265,8 @@ await close({
   channelPublicKey: 'ED...', // channel source public key
 })
 ```
+
+**Server-side redeem:** The server stores the latest claim signature alongside the cumulative amount. If the client disappears without closing the channel, the server can call `close()` with its own seed to redeem accumulated funds on-chain. The server's `close()` call submits a `PaymentChannelClaim` without `tfClose` (only the channel source can close). To enable this, the server operator needs access to the recipient wallet seed.
 
 ### Streaming and sessions
 
@@ -328,6 +331,8 @@ XRPL transaction engine results are mapped to MPP error types (RFC 9457 Problem 
 | `tecNO_AUTH` | `TRUSTLINE_NOT_AUTHORIZED` | VerificationFailedError |
 | `tecNO_LINE` | `MISSING_TRUSTLINE` | VerificationFailedError |
 | `temBAD_AMOUNT` | `INVALID_AMOUNT` | VerificationFailedError |
+| `terINSUF_FEE_B` | `INSUFFICIENT_FEE` | VerificationFailedError |
+| `tecINSUFFICIENT_RESERVE` | `INSUFFICIENT_RESERVE` | VerificationFailedError |
 
 Additional channel errors:
 - `INVALID_SIGNATURE` -- InvalidSignatureError (claim signer mismatch)
@@ -389,7 +394,7 @@ xrpl-mpp-sdk/
       currency.ts            # parseCurrency, buildAmount, isXrp/isIOU/isMPT
       trustline.ts           # ensureTrustline, checkRippling
       mpt.ts                 # ensureMPTHolding
-      validation.ts          # runPreflight (destination + trustline + MPT checks)
+      validation.ts          # runPreflight (balance + reserves + destination + trustline + MPT)
     client/
       Charge.ts              # Client charge: sign Payment tx, create credential
       Methods.ts             # xrpl.charge() convenience wrapper

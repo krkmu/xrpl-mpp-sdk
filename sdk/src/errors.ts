@@ -1,7 +1,5 @@
 import { Errors } from 'mppx'
 
-// -- XRPL tecResult to SDK error code mapping --
-
 export const TEC_RESULT_MAP: Record<string, string> = {
   tecPATH_DRY: 'PAYMENT_PATH_FAILED',
   tecUNFUNDED_PAYMENT: 'INSUFFICIENT_BALANCE',
@@ -9,13 +7,16 @@ export const TEC_RESULT_MAP: Record<string, string> = {
   tecNO_AUTH: 'TRUSTLINE_NOT_AUTHORIZED',
   tecNO_LINE: 'MISSING_TRUSTLINE',
   temBAD_AMOUNT: 'INVALID_AMOUNT',
+  terINSUF_FEE_B: 'INSUFFICIENT_FEE',
+  tecINSUFFICIENT_RESERVE: 'INSUFFICIENT_RESERVE',
+  tefPAST_SEQ: 'SUBMISSION_FAILED',
 }
-
-// -- XRPL-specific error detail codes --
 
 export type XrplErrorCode =
   | 'PAYMENT_PATH_FAILED'
   | 'INSUFFICIENT_BALANCE'
+  | 'INSUFFICIENT_FEE'
+  | 'INSUFFICIENT_RESERVE'
   | 'RECIPIENT_NOT_FOUND'
   | 'TRUSTLINE_NOT_AUTHORIZED'
   | 'MISSING_TRUSTLINE'
@@ -29,14 +30,9 @@ export type XrplErrorCode =
   | 'SUBMISSION_FAILED'
   | 'MPT_NOT_AUTHORIZED'
 
-// -- Map tecResult strings to XRPL error codes --
-
 export function mapTecResult(tecResult: string): XrplErrorCode | undefined {
   return TEC_RESULT_MAP[tecResult] as XrplErrorCode | undefined
 }
-
-// -- Convenience error constructors wrapping mppx error types --
-// These add XRPL-specific context inside the standard MPP error structure.
 
 export function verificationFailed(
   code: XrplErrorCode,

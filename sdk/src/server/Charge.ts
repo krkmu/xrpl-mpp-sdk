@@ -1,10 +1,12 @@
 import { Method, Receipt, type Store } from 'mppx'
-import { Client, decode, hashes } from 'xrpl'
+import { Client, decode, hashes, Wallet } from 'xrpl'
 import { XRPL_RPC_URLS } from '../constants.js'
 import { fromTecResult, replayDetected, verificationFailed } from '../errors.js'
 import * as Methods from '../Methods.js'
 import type { ChargeServerConfig, XrplCurrency } from '../types.js'
-import { parseCurrency, serializeCurrency } from '../utils/currency.js'
+import { isIOU, isMPT, parseCurrency, serializeCurrency } from '../utils/currency.js'
+import { ensureMPTHolding } from '../utils/mpt.js'
+import { ensureTrustline } from '../utils/trustline.js'
 
 /** Default max challenge age: 5 minutes. */
 const DEFAULT_MAX_CHALLENGE_AGE_MS = 5 * 60 * 1000
@@ -41,6 +43,10 @@ export function charge(parameters: charge.Parameters) {
   const {
     recipient,
     currency,
+    autoTrustline = false,
+    autoTrustlineLimit,
+    autoMPTAuthorize = false,
+    seed,
     network = 'testnet',
     rpcUrl: customRpcUrl,
     store,
@@ -51,6 +57,23 @@ export function charge(parameters: charge.Parameters) {
     pollInterval = 1_000,
   } = parameters
 
+  if ((autoTrustline || autoMPTAuthorize) && !seed) {
+    throw new Error(
+      '[xrpl-mpp-sdk] seed is required when autoTrustline or autoMPTAuthorize is enabled. ' +
+        'The server needs to sign TrustSet/MPTokenAuthorize transactions for the recipient account.',
+    )
+  }
+
+  if (seed) {
+    const recipientWallet = Wallet.fromSeed(seed)
+    if (recipientWallet.classicAddress !== recipient) {
+      throw new Error(
+        `[xrpl-mpp-sdk] seed does not match recipient. ` +
+          `Seed derives ${recipientWallet.classicAddress}, but recipient is ${recipient}.`,
+      )
+    }
+  }
+
   if (!store && requireStore) {
     throw new Error(
       '[xrpl-mpp-sdk] store is required for replay protection. ' +
@@ -60,6 +83,35 @@ export function charge(parameters: charge.Parameters) {
 
   const rpcUrl = customRpcUrl ?? XRPL_RPC_URLS[network]
   const currencyStr = currency ? serializeCurrency(currency) : 'XRP'
+
+  // Run auto-setup for recipient account (trustline/MPT) on first verify
+  let recipientSetupDone = false
+  async function ensureRecipientSetup(client: Client): Promise<void> {
+    if (recipientSetupDone || !currency) return
+    const wallet = seed ? Wallet.fromSeed(seed) : undefined
+    if (!wallet) return
+
+    if (isIOU(currency) && autoTrustline) {
+      await ensureTrustline({
+        client,
+        wallet,
+        currency,
+        autoTrustline: true,
+        trustlineLimit: autoTrustlineLimit,
+      })
+    }
+
+    if (isMPT(currency) && autoMPTAuthorize) {
+      await ensureMPTHolding({
+        client,
+        wallet,
+        mpt: currency,
+        autoMPTAuthorize: true,
+      })
+    }
+
+    recipientSetupDone = true
+  }
 
   // Serialize verify operations to prevent concurrent race conditions
   let verifyLock: Promise<unknown> = Promise.resolve()
@@ -136,6 +188,9 @@ export function charge(parameters: charge.Parameters) {
     await client.connect()
 
     try {
+      // Ensure recipient has trustline/MPT holding before verifying payment
+      await ensureRecipientSetup(client)
+
       switch (payload.type) {
         case 'hash': {
           return await verifyPush(
@@ -358,16 +413,7 @@ function rejectPartialPayment(tx: any): void {
   }
 }
 
-/**
- * Validate that a Payment transaction's Destination, Amount, Currency,
- * and InvoiceID match expectations.
- *
- * For on-chain verified transactions (push mode), uses delivered_amount from meta
- * which reflects the actual amount received, not the specified maximum.
- *
- * Handles both legacy format (Amount at top level) and xrpl.js v4 format
- * (fields in tx_json, Amount renamed to DeliverMax).
- */
+/** Validate Payment tx fields (Destination, Amount, Currency, InvoiceID) against challenge. */
 function validatePaymentFields(
   tx: any,
   expectedAmount: string,
@@ -376,10 +422,8 @@ function validatePaymentFields(
   expectedInvoiceId?: string,
   meta?: any,
 ): void {
-  // Reject partial payments
   rejectPartialPayment(tx)
 
-  // Validate InvoiceID if specified in the challenge
   if (expectedInvoiceId && tx.InvoiceID !== expectedInvoiceId) {
     throw verificationFailed(
       'SUBMISSION_FAILED',
@@ -387,7 +431,6 @@ function validatePaymentFields(
     )
   }
 
-  // Validate destination
   const destination = tx.Destination
   if (destination !== expectedRecipient) {
     throw verificationFailed(

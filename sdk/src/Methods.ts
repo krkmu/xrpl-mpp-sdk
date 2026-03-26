@@ -1,28 +1,14 @@
 import { Method } from 'mppx'
 import { z } from 'zod/mini'
 
-/**
- * XRPL charge intent for on-chain Payment transactions.
- *
- * Supports two credential flows:
- * - `type: "transaction"` -- pull mode (default):
- *   Client signs a Payment tx and sends the serialized blob.
- *   The server submits it to the ledger.
- * - `type: "hash"` -- push mode:
- *   Client submits the Payment tx itself and sends the tx hash.
- *   The server verifies it on-chain.
- *
- * Supports XRP native, IOU (issued currencies), and MPT (multi-purpose tokens).
- */
+/** XRPL charge intent -- on-chain Payment transactions (XRP / IOU / MPT). */
 export const charge = Method.from({
   name: 'xrpl',
   intent: 'charge',
   schema: {
     credential: {
       payload: z.discriminatedUnion('type', [
-        /** Pull mode: client signs Payment tx, server broadcasts. */
         z.object({ blob: z.string(), type: z.literal('transaction') }),
-        /** Push mode: client broadcasts and sends the tx hash. */
         z.object({ hash: z.string(), type: z.literal('hash') }),
       ]),
     },

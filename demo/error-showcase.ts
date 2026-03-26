@@ -19,7 +19,7 @@ const NETWORK = 'testnet'
 const RPC = XRPL_RPC_URLS[NETWORK]
 
 let caseNum = 0
-const total = 11
+const total = 12
 
 function header(name: string) {
   caseNum++
@@ -795,9 +795,90 @@ async function main() {
     }
   }
 
+  // ---- CASE 12 ----
+  header('SERVER_REDEEM (channel -- client disappears)')
+  {
+    log.loading('Opening PayChannel (5 XRP)...')
+    const { channelId, txHash: createHash } = await openChannel({
+      seed: channelFunder.seed!,
+      destination: channelReceiver.classicAddress,
+      amount: '5000000',
+      settleDelay: 60,
+      network: NETWORK,
+    })
+    log.tx(createHash, log.explorerLink(createHash))
+
+    const store = Store.memory()
+    const srvMethod = serverChannel({ publicKey: channelFunder.publicKey, network: NETWORK, store })
+
+    // Client makes 3 claims then disappears
+    let lastSig = ''
+    let lastAmount = '0'
+    for (const cumDrops of ['100000', '200000', '300000']) {
+      const sig = signPaymentChannelClaim(
+        channelId,
+        dropsToXrp(cumDrops).toString(),
+        channelFunder.privateKey,
+      )
+      const ch = {
+        id: `redeem-${cumDrops}-${Date.now()}`,
+        realm: 'error-showcase',
+        method: 'xrpl' as const,
+        intent: 'channel' as const,
+        request: {
+          amount: '100000',
+          channelId,
+          recipient: channelReceiver.classicAddress,
+          methodDetails: {
+            network: NETWORK,
+            reference: crypto.randomUUID(),
+            cumulativeAmount: lastAmount,
+          },
+        },
+      }
+      const cred = Credential.from({
+        challenge: ch as any,
+        payload: { action: 'voucher', channelId, amount: cumDrops, signature: sig },
+      })
+      await srvMethod.verify({ credential: cred as any, request: ch.request })
+      lastSig = sig
+      lastAmount = cumDrops
+    }
+    log.success(`Client made 3 claims (cumulative: ${lastAmount} drops), then disappeared`)
+
+    // Verify the store has the latest signature
+    const storeState = (await store.get(`xrpl:channel:${channelId}`)) as any
+    log.info(
+      `Store has cumulative=${storeState.cumulative}, signature=${storeState.signature.slice(0, 16)}...`,
+    )
+
+    // Server redeems using stored signature + its own seed
+    log.loading('Server redeems funds on-chain using stored claim...')
+    const { close } = await import('../sdk/src/channel/server/Channel.js')
+    const { txHash: redeemHash } = await close({
+      seed: channelReceiver.seed!,
+      channelId,
+      amount: storeState.cumulative,
+      signature: storeState.signature,
+      channelPublicKey: channelFunder.publicKey,
+      network: NETWORK,
+    })
+    log.success('Server redeemed funds on-chain')
+    log.tx(redeemHash, log.explorerLink(redeemHash))
+
+    // Verify receiver balance increased
+    const receiverInfo = await xrpl.request({
+      command: 'account_info',
+      account: channelReceiver.classicAddress,
+    })
+    log.info(
+      `Receiver balance: ${dropsToXrp(receiverInfo.result.account_data.Balance as string)} XRP`,
+    )
+  }
+
   await xrpl.disconnect()
   log.separator()
-  log.box(['All 11 error cases completed'])
+  log.box(['All 12 error cases completed'])
   process.exit(0)
 }
 

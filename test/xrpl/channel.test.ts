@@ -46,26 +46,32 @@ describe('XRPL Channel', () => {
   })
 
   describe('Cumulative amount tracking', () => {
-    it('tracks cumulative amounts in store', async () => {
+    it('tracks cumulative amounts and signature in store', async () => {
       const store = Store.memory()
       const channelId = '0'.repeat(64)
       const key = `xrpl:channel:${channelId}`
 
-      // Initial state -- no previous claims
       const initial = await store.get(key)
       expect(initial).toBeNull()
 
-      // First claim: cumulative 100000
-      await store.put(key, { cumulative: '100000', timestamp: Date.now() })
+      await store.put(key, {
+        cumulative: '100000',
+        signature: 'AA'.repeat(64),
+        timestamp: Date.now(),
+      })
 
-      // Second claim: must be > 100000
       const state = (await store.get(key)) as any
       expect(BigInt(state.cumulative)).toBe(100000n)
+      expect(state.signature).toBe('AA'.repeat(64))
 
-      // Update to 200000
-      await store.put(key, { cumulative: '200000', timestamp: Date.now() })
+      await store.put(key, {
+        cumulative: '200000',
+        signature: 'BB'.repeat(64),
+        timestamp: Date.now(),
+      })
       const updated = (await store.get(key)) as any
       expect(BigInt(updated.cumulative)).toBe(200000n)
+      expect(updated.signature).toBe('BB'.repeat(64))
     })
 
     it('rejects equal cumulative (replay)', async () => {
@@ -73,12 +79,16 @@ describe('XRPL Channel', () => {
       const channelId = '0'.repeat(64)
       const key = `xrpl:channel:${channelId}`
 
-      await store.put(key, { cumulative: '100000', timestamp: Date.now() })
+      await store.put(key, {
+        cumulative: '100000',
+        signature: 'AA'.repeat(64),
+        timestamp: Date.now(),
+      })
       const state = (await store.get(key)) as any
       const prev = BigInt(state.cumulative)
-      const next = 100000n // Same amount
+      const next = 100000n
 
-      expect(next > prev).toBe(false) // Must reject
+      expect(next > prev).toBe(false)
     })
 
     it('rejects lower cumulative (attack)', async () => {
@@ -86,12 +96,42 @@ describe('XRPL Channel', () => {
       const channelId = '0'.repeat(64)
       const key = `xrpl:channel:${channelId}`
 
-      await store.put(key, { cumulative: '100000', timestamp: Date.now() })
+      await store.put(key, {
+        cumulative: '100000',
+        signature: 'AA'.repeat(64),
+        timestamp: Date.now(),
+      })
       const state = (await store.get(key)) as any
       const prev = BigInt(state.cumulative)
-      const next = 50000n // Lower
+      const next = 50000n
 
-      expect(next > prev).toBe(false) // Must reject
+      expect(next > prev).toBe(false)
+    })
+
+    it('latest signature is always available for server-side redeem', async () => {
+      const store = Store.memory()
+      const channelId = '0'.repeat(64)
+      const key = `xrpl:channel:${channelId}`
+
+      await store.put(key, {
+        cumulative: '100000',
+        signature: 'SIG1'.padEnd(128, '0'),
+        timestamp: Date.now(),
+      })
+      await store.put(key, {
+        cumulative: '200000',
+        signature: 'SIG2'.padEnd(128, '0'),
+        timestamp: Date.now(),
+      })
+      await store.put(key, {
+        cumulative: '300000',
+        signature: 'SIG3'.padEnd(128, '0'),
+        timestamp: Date.now(),
+      })
+
+      const state = (await store.get(key)) as any
+      expect(state.cumulative).toBe('300000')
+      expect(state.signature).toBe('SIG3'.padEnd(128, '0'))
     })
   })
 })

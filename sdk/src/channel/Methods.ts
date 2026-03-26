@@ -1,16 +1,7 @@
 import { Method } from 'mppx'
 import { z } from 'zod/mini'
 
-/**
- * XRPL channel intent for off-chain PayChannel claims.
- *
- * PayChannels are XRP-only (denominated in drops). The funder signs
- * cumulative claim commitments off-chain. The recipient can close
- * the channel on-chain at any time using the latest claim.
- *
- * Supports both ed25519 and secp256k1 wallets -- xrpl.js handles
- * curve detection transparently via the key prefix.
- */
+/** XRPL channel intent -- off-chain PayChannel claims (XRP-only, both ed25519 and secp256k1). */
 export const channel = Method.from({
   name: 'xrpl',
   intent: 'channel',

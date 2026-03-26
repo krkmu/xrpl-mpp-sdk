@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { Wallet } from 'xrpl'
 import { fromTecResult, mapTecResult } from '../../sdk/src/errors.js'
 import { charge, fromDrops, toDrops } from '../../sdk/src/Methods.js'
 
@@ -68,6 +69,18 @@ describe('XRPL Charge', () => {
       expect(mapTecResult('temBAD_AMOUNT')).toBe('INVALID_AMOUNT')
     })
 
+    it('maps terINSUF_FEE_B to INSUFFICIENT_FEE', () => {
+      expect(mapTecResult('terINSUF_FEE_B')).toBe('INSUFFICIENT_FEE')
+    })
+
+    it('maps tecINSUFFICIENT_RESERVE to INSUFFICIENT_RESERVE', () => {
+      expect(mapTecResult('tecINSUFFICIENT_RESERVE')).toBe('INSUFFICIENT_RESERVE')
+    })
+
+    it('maps tefPAST_SEQ to SUBMISSION_FAILED', () => {
+      expect(mapTecResult('tefPAST_SEQ')).toBe('SUBMISSION_FAILED')
+    })
+
     it('returns undefined for unknown tecResult', () => {
       expect(mapTecResult('tecUNKNOWN_CODE')).toBeUndefined()
     })
@@ -85,6 +98,11 @@ describe('XRPL Charge', () => {
       expect(err.message).toContain('PAYMENT_PATH_FAILED')
     })
 
+    it('creates VerificationFailedError for terINSUF_FEE_B', () => {
+      const err = fromTecResult('terINSUF_FEE_B')
+      expect(err.message).toContain('INSUFFICIENT_FEE')
+    })
+
     it('creates VerificationFailedError with SUBMISSION_FAILED for unknown tec', () => {
       const err = fromTecResult('tecSOMETHING_ELSE')
       expect(err.message).toContain('SUBMISSION_FAILED')
@@ -92,32 +110,14 @@ describe('XRPL Charge', () => {
   })
 
   describe('Partial payment defense', () => {
-    // Import the server module to get access to the internal validatePaymentFields
-    // We test the behavior indirectly through transaction validation
-    it('rejects transactions with tfPartialPayment flag (0x00020000)', () => {
-      // A tx with tfPartialPayment flag set should be rejected
-      const tx = {
-        TransactionType: 'Payment',
-        Destination: 'rRecipient123',
-        Amount: '1000000',
-        Flags: 0x00020000, // tfPartialPayment
-      }
-      // The flag check is in validatePaymentFields which is internal.
-      // We verify the flag constant is correct.
+    it('tfPartialPayment flag is 0x00020000', () => {
+      const tx = { Flags: 0x00020000 }
       expect(tx.Flags & 0x00020000).not.toBe(0)
     })
 
-    it('delivered_amount should be used over Amount when available', () => {
-      // When meta.delivered_amount exists, it represents the actual amount received.
-      // tx.Amount is just the maximum -- delivered_amount is what matters.
-      const meta = {
-        TransactionResult: 'tesSUCCESS',
-        delivered_amount: '500000', // actual delivery
-      }
-      const tx = {
-        Amount: '1000000', // specified maximum
-      }
-      // delivered_amount should take precedence
+    it('delivered_amount takes precedence over Amount', () => {
+      const meta = { TransactionResult: 'tesSUCCESS', delivered_amount: '500000' }
+      const tx = { Amount: '1000000' }
       const effectiveAmount = meta.delivered_amount ?? tx.Amount
       expect(effectiveAmount).toBe('500000')
     })
@@ -138,6 +138,52 @@ describe('XRPL Charge', () => {
         type: 'hash',
       })
       expect(parsed).toEqual({ hash: 'A'.repeat(64), type: 'hash' })
+    })
+  })
+
+  describe('Server seed/recipient validation', () => {
+    it('throws when seed does not match recipient', async () => {
+      const { charge: serverCharge } = await import('../../sdk/src/server/Charge.js')
+      const wallet = Wallet.generate()
+
+      expect(() =>
+        serverCharge({
+          recipient: 'rDifferentAddress999999999999999',
+          seed: wallet.seed!,
+          autoTrustline: true,
+          network: 'testnet',
+          store: { get: async () => null, put: async () => {}, delete: async () => {} } as any,
+        }),
+      ).toThrow('seed does not match recipient')
+    })
+
+    it('throws when autoTrustline is set without seed', async () => {
+      const { charge: serverCharge } = await import('../../sdk/src/server/Charge.js')
+
+      expect(() =>
+        serverCharge({
+          recipient: 'rSomeAddress123',
+          autoTrustline: true,
+          network: 'testnet',
+          store: { get: async () => null, put: async () => {}, delete: async () => {} } as any,
+        }),
+      ).toThrow('seed is required')
+    })
+
+    it('accepts matching seed and recipient', async () => {
+      const { charge: serverCharge } = await import('../../sdk/src/server/Charge.js')
+      const wallet = Wallet.generate()
+
+      expect(() =>
+        serverCharge({
+          recipient: wallet.classicAddress,
+          seed: wallet.seed!,
+          autoTrustline: true,
+          currency: { currency: 'USD', issuer: 'rIssuer123' },
+          network: 'testnet',
+          store: { get: async () => null, put: async () => {}, delete: async () => {} } as any,
+        }),
+      ).not.toThrow()
     })
   })
 })

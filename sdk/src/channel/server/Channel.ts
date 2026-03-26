@@ -190,38 +190,14 @@ export function channel(parameters: channel.Parameters) {
       // Update cumulative amount
       await store.put(cumulativeKey, {
         cumulative: payload.amount,
+        signature,
         timestamp: Date.now(),
       })
     }
 
-    // Handle close action
-    if (action === 'close') {
-      return await closeChannel(channelId, payload.amount, signature)
-    }
-
-    // Voucher action -- just return receipt
     return Receipt.from({
       method: 'xrpl',
       reference: `${channelId}:${payload.amount}`,
-      status: 'success',
-      timestamp: new Date().toISOString(),
-    })
-  }
-
-  async function closeChannel(
-    channelId: string,
-    amount: string,
-    _signature: string,
-  ): Promise<Receipt.Receipt> {
-    // Only the channel destination (server) should close
-    // We need a wallet seed to submit the close tx -- this requires
-    // the server to have its own wallet configured
-    // For now, we verify the claim and return a receipt indicating close was requested
-    // The actual close submission is handled by the standalone close() function
-
-    return Receipt.from({
-      method: 'xrpl',
-      reference: `close:${channelId}:${amount}`,
       status: 'success',
       timestamp: new Date().toISOString(),
     })
