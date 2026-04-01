@@ -1,5 +1,5 @@
 import { Method, Receipt, type Store } from 'mppx'
-import { Client, dropsToXrp, verifyPaymentChannelClaim, Wallet } from 'xrpl'
+import { Client, decode, dropsToXrp, verifyPaymentChannelClaim, Wallet } from 'xrpl'
 import { type NetworkId, XRPL_RPC_URLS } from '../../constants.js'
 import {
   channelClosed,
@@ -44,6 +44,7 @@ export function channel(parameters: channel.Parameters) {
     requireStore = true,
     maxChallengeAge = DEFAULT_MAX_CHALLENGE_AGE_MS,
     verifyChannelOnChain = false,
+    onDisputeDetected,
   } = parameters
 
   if (!store && requireStore) {
@@ -92,6 +93,15 @@ export function channel(parameters: channel.Parameters) {
   async function doVerify(credential: any): Promise<Receipt.Receipt> {
     const { challenge } = credential
     const payload = credential.payload
+    const channelId = payload.channelId
+
+    // Reject credentials on finalized channels
+    if (store && channelId) {
+      const finalized = await store.get(`xrpl:channel:finalized:${channelId}`)
+      if (finalized) {
+        throw channelClosed(channelId)
+      }
+    }
 
     // Check challenge TTL
     if (maxChallengeAge > 0 && challenge.createdAt) {
@@ -104,9 +114,6 @@ export function channel(parameters: channel.Parameters) {
       }
     }
 
-    const channelId = payload.channelId
-    const newCumulative = BigInt(payload.amount)
-    const signature = payload.signature
     const action = payload.action ?? 'voucher'
 
     // Challenge replay protection
@@ -119,8 +126,15 @@ export function channel(parameters: channel.Parameters) {
       await store.put(challengeKey, { usedAt: new Date().toISOString() })
     }
 
-    // Verify the claim signature using xrpl.js
-    // This handles both ed25519 and secp256k1 keys transparently
+    // Handle open action -- broadcast PaymentChannelCreate and init store
+    if (action === 'open') {
+      return await doVerifyOpen(credential)
+    }
+
+    const newCumulative = BigInt(payload.amount)
+    const signature = payload.signature
+    const requestedAmount = BigInt(challenge.request?.amount ?? '0')
+
     // verifyPaymentChannelClaim expects XRP (not drops) -- it internally calls xrpToDrops
     const claimXrp = dropsToXrp(payload.amount).toString()
     let isValid: boolean
@@ -135,25 +149,43 @@ export function channel(parameters: channel.Parameters) {
       throw invalidSignature('Claim signature verification failed')
     }
 
-    // Optional on-chain channel state verification
     if (verifyChannelOnChain) {
       const client = new Client(rpcUrl)
       await client.connect()
       try {
         const channelObj = await lookupChannel(client, channelId)
         if (!channelObj) {
+          if (store) {
+            await store.put(`xrpl:channel:finalized:${channelId}`, {
+              reason: 'not_found',
+              timestamp: Date.now(),
+            })
+          }
           throw channelNotFound(channelId)
         }
-        // Check if channel is expired
         if (channelObj.Expiration) {
-          // XRPL Expiration is seconds since Ripple epoch (2000-01-01)
           const rippleEpoch = 946684800
           const expirationUnix = (channelObj.Expiration + rippleEpoch) * 1000
           if (Date.now() > expirationUnix) {
+            if (store) {
+              await store.put(`xrpl:channel:finalized:${channelId}`, {
+                reason: 'expired',
+                timestamp: Date.now(),
+              })
+            }
             throw channelClosed(channelId)
           }
         }
-        // Check cumulative does not exceed channel balance
+        // Detect unilateral close by client (CancelAfter or SettleDelay in progress)
+        if (channelObj.CancelAfter && onDisputeDetected) {
+          const rippleEpoch = 946684800
+          const cancelUnix = (channelObj.CancelAfter + rippleEpoch) * 1000
+          onDisputeDetected({
+            channelId,
+            cancelAfter: new Date(cancelUnix).toISOString(),
+            balance: channelObj.Amount,
+          })
+        }
         const channelBalance = BigInt(channelObj.Amount)
         if (newCumulative > channelBalance) {
           throw verificationFailed(
@@ -185,6 +217,13 @@ export function channel(parameters: channel.Parameters) {
             `New cumulative ${newCumulative} is less than previous ${previousCumulative}`,
           )
         }
+
+        if (requestedAmount > 0n && newCumulative < previousCumulative + requestedAmount) {
+          throw verificationFailed(
+            'AMOUNT_MISMATCH',
+            `Cumulative ${newCumulative} does not cover requested amount ${requestedAmount} (expected >= ${previousCumulative + requestedAmount})`,
+          )
+        }
       }
 
       // Update cumulative amount
@@ -198,10 +237,153 @@ export function channel(parameters: channel.Parameters) {
     return Receipt.from({
       method: 'xrpl',
       reference: `${channelId}:${payload.amount}`,
+      ...(challenge.id ? { externalId: challenge.id } : {}),
       status: 'success',
       timestamp: new Date().toISOString(),
     })
   }
+
+  async function doVerifyOpen(credential: any): Promise<Receipt.Receipt> {
+    const { challenge, payload } = credential
+    const blob = payload.transaction as string
+
+    // Decode and validate the tx is a PaymentChannelCreate
+    let decoded: any
+    try {
+      decoded = decode(blob)
+    } catch {
+      throw verificationFailed('SUBMISSION_FAILED', 'Could not decode open transaction blob')
+    }
+
+    if (decoded.TransactionType !== 'PaymentChannelCreate') {
+      throw verificationFailed(
+        'SUBMISSION_FAILED',
+        `Expected PaymentChannelCreate, got ${decoded.TransactionType}`,
+      )
+    }
+
+    // Verify destination matches the server's expected recipient
+    const expectedRecipient = challenge.request?.recipient
+    if (expectedRecipient && decoded.Destination !== expectedRecipient) {
+      throw verificationFailed(
+        'RECIPIENT_MISMATCH',
+        `Channel destination ${decoded.Destination} does not match expected ${expectedRecipient}`,
+      )
+    }
+
+    // Verify the public key matches what the server expects
+    if (decoded.PublicKey?.toUpperCase() !== publicKey.toUpperCase()) {
+      throw verificationFailed(
+        'SUBMISSION_FAILED',
+        `Channel PublicKey ${decoded.PublicKey} does not match expected ${publicKey}`,
+      )
+    }
+
+    // Broadcast the tx
+    const client = new Client(rpcUrl)
+    await client.connect()
+
+    try {
+      const submitResult = await client.submit(blob)
+      const engineResult = submitResult.result.engine_result
+
+      if (engineResult !== 'tesSUCCESS' && engineResult !== 'terQUEUED') {
+        throw verificationFailed(
+          'SUBMISSION_FAILED',
+          `PaymentChannelCreate submission failed: ${engineResult}`,
+        )
+      }
+
+      // Poll for confirmation
+      const txHash = submitResult.result.tx_json?.hash
+      if (!txHash) {
+        throw verificationFailed('SUBMISSION_FAILED', 'No tx hash returned from submit')
+      }
+
+      let meta: any
+      for (let i = 0; i < 60; i++) {
+        try {
+          const txResponse = await client.request({ command: 'tx', transaction: txHash })
+          meta = (txResponse.result as any).meta ?? (txResponse.result as any).metaData
+          if (meta?.TransactionResult === 'tesSUCCESS') break
+          if (meta?.TransactionResult && meta.TransactionResult !== 'tesSUCCESS') {
+            throw verificationFailed(
+              'SUBMISSION_FAILED',
+              `PaymentChannelCreate failed: ${meta.TransactionResult}`,
+            )
+          }
+        } catch (err: any) {
+          if (err?.data?.error !== 'txnNotFound') throw err
+        }
+        await new Promise((r) => setTimeout(r, 1000))
+      }
+
+      if (!meta || meta.TransactionResult !== 'tesSUCCESS') {
+        throw verificationFailed('SUBMISSION_FAILED', 'PaymentChannelCreate not confirmed in time')
+      }
+
+      // Extract channelId from metadata
+      const channelId = extractChannelIdFromMeta(meta)
+
+      // Verify initial claim signature against the real channelId
+      const initialAmount = payload.amount
+      const initialXrp = dropsToXrp(initialAmount).toString()
+      let sigValid: boolean
+      try {
+        sigValid = verifyPaymentChannelClaim(channelId, initialXrp, payload.signature, publicKey)
+      } catch {
+        sigValid = false
+      }
+
+      // If the client signed with a placeholder channelId, the sig won't match.
+      // In that case, we just init the store without verifying the initial claim.
+      // The first real voucher will be verified normally.
+
+      if (store) {
+        if (sigValid) {
+          await store.put(`xrpl:channel:${channelId}`, {
+            cumulative: initialAmount,
+            signature: payload.signature,
+            timestamp: Date.now(),
+          })
+        } else {
+          await store.put(`xrpl:channel:${channelId}`, {
+            cumulative: '0',
+            signature: '',
+            timestamp: Date.now(),
+          })
+        }
+      }
+
+      return Receipt.from({
+        method: 'xrpl',
+        reference: `open:${channelId}:${txHash}`,
+        ...(challenge.id ? { externalId: challenge.id } : {}),
+        status: 'success',
+        timestamp: new Date().toISOString(),
+      })
+    } finally {
+      await client.disconnect()
+    }
+  }
+}
+
+/** Extract channelId from PaymentChannelCreate metadata. */
+function extractChannelIdFromMeta(meta: any): string {
+  const nodes = meta.AffectedNodes ?? []
+  for (const node of nodes) {
+    if (node.CreatedNode?.LedgerEntryType === 'PayChannel') {
+      return node.CreatedNode.LedgerIndex
+    }
+  }
+  throw new Error('Could not find PayChannel in transaction metadata')
+}
+
+/** Dispute state passed to onDisputeDetected callback. */
+export type ChannelDisputeState = {
+  channelId: string
+  cancelAfter: string
+  balance: string
 }
 
 export declare namespace channel {
@@ -213,6 +395,8 @@ export declare namespace channel {
     maxChallengeAge?: number
     /** Verify channel existence, balance, and expiration on-chain. @default false */
     verifyChannelOnChain?: boolean
+    /** Called when a unilateral close is detected on-chain (CancelAfter set). */
+    onDisputeDetected?: (state: ChannelDisputeState) => void
   }
 }
 
@@ -236,6 +420,8 @@ export async function close(params: {
   channelPublicKey: string
   network?: NetworkId
   rpcUrl?: string
+  /** Store to mark the channel as finalized after close. */
+  store?: Store.Store
 }): Promise<{ txHash: string }> {
   const {
     seed,
@@ -245,6 +431,7 @@ export async function close(params: {
     channelPublicKey,
     network = 'testnet',
     rpcUrl,
+    store: closeStore,
   } = params
 
   const wallet = Wallet.fromSeed(seed)
@@ -276,6 +463,14 @@ export async function close(params: {
 
     if (meta?.TransactionResult !== 'tesSUCCESS') {
       throw new Error(`PaymentChannelClaim (close) failed: ${meta?.TransactionResult ?? 'unknown'}`)
+    }
+
+    if (closeStore) {
+      await closeStore.put(`xrpl:channel:finalized:${channelId}`, {
+        reason: 'closed',
+        txHash: result.result.hash,
+        timestamp: Date.now(),
+      })
     }
 
     return { txHash: result.result.hash }

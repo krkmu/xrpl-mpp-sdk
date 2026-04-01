@@ -78,6 +78,11 @@ Client (Funder)                 Server (Recipient)
 
 PayChannels are XRP-only (denominated in drops). Both ed25519 and secp256k1 wallets are supported -- xrpl.js handles curve detection transparently.
 
+Three credential actions:
+- **open** -- client sends a signed PaymentChannelCreate tx blob; server broadcasts it, extracts the channelId, and initializes cumulative tracking
+- **voucher** -- off-chain cumulative claim (default)
+- **close** -- treated as a final voucher; actual channel close is done via the standalone `close()` function or by the client directly on-chain
+
 ## Install
 
 ```bash
@@ -213,6 +218,8 @@ channel({
   network?: 'mainnet' | 'testnet' | 'devnet',
   rpcUrl?: string,
   store?: Store.Store,              // required for cumulative tracking + replay protection
+  verifyChannelOnChain?: boolean,   // verify channel state on-chain per claim (default: false)
+  onDisputeDetected?: (state) => void, // called when unilateral close detected on-chain
 })
 ```
 
@@ -327,6 +334,7 @@ XRPL transaction engine results are mapped to MPP error types (RFC 9457 Problem 
 |---|---|---|
 | `tecPATH_DRY` | `PAYMENT_PATH_FAILED` | VerificationFailedError |
 | `tecUNFUNDED_PAYMENT` | `INSUFFICIENT_BALANCE` | InsufficientBalanceError |
+| `tecPATH_PARTIAL` | `INSUFFICIENT_BALANCE` | InsufficientBalanceError |
 | `tecNO_DST` | `RECIPIENT_NOT_FOUND` | VerificationFailedError |
 | `tecNO_AUTH` | `TRUSTLINE_NOT_AUTHORIZED` | VerificationFailedError |
 | `tecNO_LINE` | `MISSING_TRUSTLINE` | VerificationFailedError |
@@ -373,7 +381,7 @@ npx tsx demo/mpt-charge.ts
 npx tsx demo/channel-server.ts      # Terminal 1
 npx tsx demo/channel-client.ts      # Terminal 2
 
-# Error showcase (11 cases, fail-fix-validate)
+# Error showcase (13 cases, fail-fix-validate)
 npx tsx demo/error-showcase.ts
 
 # Streaming simulation (offline)
@@ -428,7 +436,7 @@ xrpl-mpp-sdk/
     mpt-charge.ts            # MPT charge all-in-one
     channel-server.ts        # PayChannel server (two-terminal)
     channel-client.ts        # PayChannel client (two-terminal)
-    error-showcase.ts        # 11 error cases, fail-fix-validate
+    error-showcase.ts        # 13 error cases, fail-fix-validate
   examples/
     server.ts                # Minimal charge server (env var config)
     client.ts                # Minimal charge client (env var config)
@@ -443,7 +451,7 @@ xrpl-mpp-sdk/
 pnpm install
 pnpm check:types             # TypeScript strict mode
 pnpm lint                    # Biome lint + format
-pnpm test                    # Vitest (105 tests)
+pnpm test                    # Vitest (141 tests)
 ```
 
 ## Protocol

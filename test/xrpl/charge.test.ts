@@ -81,6 +81,10 @@ describe('XRPL Charge', () => {
       expect(mapTecResult('tefPAST_SEQ')).toBe('SUBMISSION_FAILED')
     })
 
+    it('maps tecPATH_PARTIAL to INSUFFICIENT_BALANCE', () => {
+      expect(mapTecResult('tecPATH_PARTIAL')).toBe('INSUFFICIENT_BALANCE')
+    })
+
     it('returns undefined for unknown tecResult', () => {
       expect(mapTecResult('tecUNKNOWN_CODE')).toBeUndefined()
     })
@@ -101,6 +105,11 @@ describe('XRPL Charge', () => {
     it('creates VerificationFailedError for terINSUF_FEE_B', () => {
       const err = fromTecResult('terINSUF_FEE_B')
       expect(err.message).toContain('INSUFFICIENT_FEE')
+    })
+
+    it('creates InsufficientBalanceError for tecPATH_PARTIAL', () => {
+      const err = fromTecResult('tecPATH_PARTIAL')
+      expect(err.message).toContain('INSUFFICIENT_BALANCE')
     })
 
     it('creates VerificationFailedError with SUBMISSION_FAILED for unknown tec', () => {

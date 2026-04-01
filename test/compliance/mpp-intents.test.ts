@@ -53,6 +53,18 @@ describe('MPP Intent Schemas', () => {
       expect(channel.intent).toBe('channel')
     })
 
+    it('open credential contains transaction blob, amount, signature', () => {
+      const payload = {
+        action: 'open' as const,
+        transaction: '1200002200000000DEADBEEF',
+        amount: '100000',
+        signature: 'abcdef1234567890'.repeat(8),
+      }
+      const parsed = channel.schema.credential.payload.parse(payload)
+      expect((parsed as any).action).toBe('open')
+      expect((parsed as any).transaction).toBe('1200002200000000DEADBEEF')
+    })
+
     it('voucher credential contains channelId, cumulative amount, signature', () => {
       const payload = {
         action: 'voucher' as const,

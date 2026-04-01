@@ -178,6 +178,7 @@ export function charge(parameters: charge.Parameters) {
       await store.put(challengeKey, { usedAt: new Date().toISOString() })
     }
 
+    const challengeId = challenge.id as string | undefined
     const expectedAmount = challengeRequest.amount
     const expectedRecipient = challengeRequest.recipient
     const expectedCurrency = parseCurrency(challengeRequest.currency)
@@ -201,6 +202,7 @@ export function charge(parameters: charge.Parameters) {
             expectedCurrency,
             store,
             expectedInvoiceId,
+            challengeId,
           )
         }
         case 'transaction': {
@@ -214,6 +216,7 @@ export function charge(parameters: charge.Parameters) {
             expectedInvoiceId,
             pollTimeout,
             pollInterval,
+            challengeId,
           )
         }
         default:
@@ -239,6 +242,7 @@ async function verifyPush(
   expectedCurrency: XrplCurrency,
   store: Store.Store | undefined,
   expectedInvoiceId?: string,
+  challengeId?: string,
 ): Promise<Receipt.Receipt> {
   // Mark tx hash as pending BEFORE verification to close the TOCTOU window.
   // In distributed deployments, this prevents two instances from both passing
@@ -286,6 +290,7 @@ async function verifyPush(
   return Receipt.from({
     method: 'xrpl',
     reference: txHash,
+    ...(challengeId ? { externalId: challengeId } : {}),
     status: 'success',
     timestamp: new Date().toISOString(),
   })
@@ -304,6 +309,7 @@ async function verifyPull(
   expectedInvoiceId: string | undefined,
   pollTimeout: number,
   pollInterval: number,
+  challengeId?: string,
 ): Promise<Receipt.Receipt> {
   // Decode and validate the transaction before submitting
   const decoded = decode(blob) as any
@@ -390,6 +396,7 @@ async function verifyPull(
     return Receipt.from({
       method: 'xrpl',
       reference: txHash,
+      ...(challengeId ? { externalId: challengeId } : {}),
       status: 'success',
       timestamp: new Date().toISOString(),
     })

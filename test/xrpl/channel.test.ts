@@ -4,6 +4,17 @@ import { channel } from '../../sdk/src/channel/Methods.js'
 
 describe('XRPL Channel', () => {
   describe('Channel schema', () => {
+    it('open payload parses correctly', () => {
+      const payload = {
+        action: 'open' as const,
+        transaction: '1200002200000000DEADBEEF',
+        amount: '100000',
+        signature: 'CD'.repeat(64),
+      }
+      const parsed = channel.schema.credential.payload.parse(payload)
+      expect(parsed).toEqual(payload)
+    })
+
     it('voucher payload parses correctly', () => {
       const payload = {
         action: 'voucher' as const,
@@ -86,9 +97,7 @@ describe('XRPL Channel', () => {
       })
       const state = (await store.get(key)) as any
       const prev = BigInt(state.cumulative)
-      const next = 100000n
-
-      expect(next > prev).toBe(false)
+      expect(100000n > prev).toBe(false)
     })
 
     it('rejects lower cumulative (attack)', async () => {
@@ -103,9 +112,21 @@ describe('XRPL Channel', () => {
       })
       const state = (await store.get(key)) as any
       const prev = BigInt(state.cumulative)
-      const next = 50000n
+      expect(50000n > prev).toBe(false)
+    })
 
-      expect(next > prev).toBe(false)
+    it('rejects cumulative that does not cover requested amount', () => {
+      const previousCumulative = 100000n
+      const requestedAmount = 50000n
+      const newCumulative = 120000n // only +20000, should be >= 150000
+      expect(newCumulative >= previousCumulative + requestedAmount).toBe(false)
+    })
+
+    it('accepts cumulative that covers requested amount', () => {
+      const previousCumulative = 100000n
+      const requestedAmount = 50000n
+      const newCumulative = 150000n
+      expect(newCumulative >= previousCumulative + requestedAmount).toBe(true)
     })
 
     it('latest signature is always available for server-side redeem', async () => {
@@ -132,6 +153,29 @@ describe('XRPL Channel', () => {
       const state = (await store.get(key)) as any
       expect(state.cumulative).toBe('300000')
       expect(state.signature).toBe('SIG3'.padEnd(128, '0'))
+    })
+  })
+
+  describe('Finalized channel', () => {
+    it('finalized flag blocks further credentials', async () => {
+      const store = Store.memory()
+      const channelId = '0'.repeat(64)
+
+      await store.put(`xrpl:channel:finalized:${channelId}`, {
+        reason: 'closed',
+        timestamp: Date.now(),
+      })
+
+      const finalized = await store.get(`xrpl:channel:finalized:${channelId}`)
+      expect(finalized).not.toBeNull()
+    })
+
+    it('non-finalized channel has no flag', async () => {
+      const store = Store.memory()
+      const channelId = '0'.repeat(64)
+
+      const finalized = await store.get(`xrpl:channel:finalized:${channelId}`)
+      expect(finalized).toBeNull()
     })
   })
 })

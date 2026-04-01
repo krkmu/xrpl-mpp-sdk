@@ -9,23 +9,24 @@ export const channel = Method.from({
     credential: {
       payload: z.union([
         z.object({
-          /** Action discriminator -- off-chain payment voucher. */
-          action: z.literal('voucher'),
-          /** Channel ID (64 hex chars). */
-          channelId: z.string(),
-          /** Cumulative amount authorized by this claim (drops). */
+          action: z.literal('open'),
+          /** Signed PaymentChannelCreate tx blob. */
+          transaction: z.string(),
+          /** Initial cumulative claim amount (drops). */
           amount: z.string().check(z.regex(/^\d+$/)),
-          /** Hex-encoded claim signature. */
+          /** Hex-encoded claim signature for the initial amount. */
           signature: z.string().check(z.regex(/^[0-9a-fA-F]+$/)),
         }),
         z.object({
-          /** Action discriminator -- close the channel. */
-          action: z.literal('close'),
-          /** Channel ID (64 hex chars). */
+          action: z.literal('voucher'),
           channelId: z.string(),
-          /** Cumulative amount authorized by this claim (drops). */
           amount: z.string().check(z.regex(/^\d+$/)),
-          /** Hex-encoded claim signature. */
+          signature: z.string().check(z.regex(/^[0-9a-fA-F]+$/)),
+        }),
+        z.object({
+          action: z.literal('close'),
+          channelId: z.string(),
+          amount: z.string().check(z.regex(/^\d+$/)),
           signature: z.string().check(z.regex(/^[0-9a-fA-F]+$/)),
         }),
       ]),

@@ -31,6 +31,7 @@ export function charge(parameters: charge.Parameters) {
     preflight: runPreflightCheck = true,
     network: defaultNetwork = 'testnet',
     rpcUrl: defaultRpcUrl,
+    onProgress,
   } = parameters
 
   if (!seed) {
@@ -52,11 +53,14 @@ export function charge(parameters: charge.Parameters) {
       const currency = parseCurrency(currencyStr)
       const xrplAmount = buildAmount(amount, currency)
 
+      onProgress?.({ type: 'challenge', recipient, amount, currency: currencyStr })
+
       const client = new Client(rpcUrl)
       await client.connect()
 
       try {
         if (runPreflightCheck) {
+          onProgress?.({ type: 'preflight' })
           await runPreflight({
             client,
             wallet,
@@ -78,10 +82,13 @@ export function charge(parameters: charge.Parameters) {
 
         const prepared = await client.autofill(payment as Payment)
 
+        onProgress?.({ type: 'signing' })
         const signed = wallet.sign(prepared)
         const effectiveMode: PaymentMode = context?.mode ?? defaultMode
+        onProgress?.({ type: 'signed', mode: effectiveMode })
 
         if (effectiveMode === 'push') {
+          onProgress?.({ type: 'submitting' })
           const result = await client.submitAndWait(signed.tx_blob)
           const meta = result.result.meta as any
           if (meta?.TransactionResult !== 'tesSUCCESS') {
@@ -90,6 +97,8 @@ export function charge(parameters: charge.Parameters) {
               `Transaction failed: ${meta?.TransactionResult ?? 'unknown'}`,
             )
           }
+
+          onProgress?.({ type: 'confirmed', hash: signed.hash })
 
           return Credential.serialize({
             challenge,

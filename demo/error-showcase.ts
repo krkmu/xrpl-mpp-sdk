@@ -9,7 +9,7 @@
 import { Credential, Store } from 'mppx'
 import { Client, dropsToXrp, signPaymentChannelClaim, Wallet } from 'xrpl'
 import { openChannel } from '../sdk/src/channel/client/Channel.js'
-import { channel as serverChannel } from '../sdk/src/channel/server/Channel.js'
+import { close, channel as serverChannel } from '../sdk/src/channel/server/Channel.js'
 import { charge as clientCharge } from '../sdk/src/client/Charge.js'
 import { XRPL_RPC_URLS } from '../sdk/src/constants.js'
 import { charge as serverCharge } from '../sdk/src/server/Charge.js'
@@ -19,7 +19,7 @@ const NETWORK = 'testnet'
 const RPC = XRPL_RPC_URLS[NETWORK]
 
 let caseNum = 0
-const total = 12
+const total = 13
 
 function header(name: string) {
   caseNum++
@@ -315,17 +315,46 @@ async function main() {
       log.error(err.message.slice(0, 120))
     }
 
-    log.fix('Enabling DefaultRipple on issuer...')
+    log.fix('Enabling DefaultRipple on issuer + recreating trustlines...')
     await xrpl.submitAndWait(
       { TransactionType: 'AccountSet', Account: badIssuer.classicAddress, SetFlag: 8 },
       { wallet: badIssuer },
     )
+    // Trustlines created before DefaultRipple don't inherit the flag.
+    // Use fresh wallets so the new trustlines pick up rippling.
+    const { wallet: pathClient2 } = await xrpl.fundWallet()
+    const { wallet: pathRecipient2 } = await xrpl.fundWallet()
+    await xrpl.submitAndWait(
+      {
+        TransactionType: 'TrustSet',
+        Account: pathClient2.classicAddress,
+        LimitAmount: { currency: 'TST', issuer: badIssuer.classicAddress, value: '1000000' },
+      },
+      { wallet: pathClient2 },
+    )
+    await xrpl.submitAndWait(
+      {
+        TransactionType: 'TrustSet',
+        Account: pathRecipient2.classicAddress,
+        LimitAmount: { currency: 'TST', issuer: badIssuer.classicAddress, value: '1000000' },
+      },
+      { wallet: pathRecipient2 },
+    )
+    await xrpl.submitAndWait(
+      {
+        TransactionType: 'Payment',
+        Account: badIssuer.classicAddress,
+        Destination: pathClient2.classicAddress,
+        Amount: { currency: 'TST', issuer: badIssuer.classicAddress, value: '1000' },
+      },
+      { wallet: badIssuer },
+    )
 
-    log.loading('Retrying...')
+    log.loading('Retrying with fresh trustlines...')
     try {
       const { hash } = await runChargeFlow({
-        clientSeed: pathClient.seed!,
-        recipient: pathRecipient.classicAddress,
+        clientSeed: pathClient2.seed!,
+        recipient: pathRecipient2.classicAddress,
         amount: '10',
         currency: currencyJson,
         serverCurrency: { currency: 'TST', issuer: badIssuer.classicAddress },
@@ -876,9 +905,105 @@ async function main() {
     )
   }
 
+  // ---- CASE 13 ----
+  header('FINALIZED_CHANNEL (credential after close)')
+  {
+    log.loading('Opening PayChannel (5 XRP)...')
+    const { channelId, txHash: createHash } = await openChannel({
+      seed: channelFunder.seed!,
+      destination: channelReceiver.classicAddress,
+      amount: '5000000',
+      settleDelay: 60,
+      network: NETWORK,
+    })
+    log.tx(createHash, log.explorerLink(createHash))
+
+    const store = Store.memory()
+    const srvMethod = serverChannel({ publicKey: channelFunder.publicKey, network: NETWORK, store })
+
+    // Make 1 successful voucher claim
+    const cumDrops = '100000'
+    const sig = signPaymentChannelClaim(
+      channelId,
+      dropsToXrp(cumDrops).toString(),
+      channelFunder.privateKey,
+    )
+    const ch = {
+      id: `finalized-1-${Date.now()}`,
+      realm: 'error-showcase',
+      method: 'xrpl' as const,
+      intent: 'channel' as const,
+      request: {
+        amount: cumDrops,
+        channelId,
+        recipient: channelReceiver.classicAddress,
+        methodDetails: { network: NETWORK, reference: crypto.randomUUID(), cumulativeAmount: '0' },
+      },
+    }
+    const cred = Credential.from({
+      challenge: ch as any,
+      payload: { action: 'voucher', channelId, amount: cumDrops, signature: sig },
+    })
+    await srvMethod.verify({ credential: cred as any, request: ch.request })
+    log.success(`First claim accepted (${cumDrops} drops)`)
+
+    // Retrieve stored state for the close
+    const storeState = (await store.get(`xrpl:channel:${channelId}`)) as any
+
+    // Server redeems and closes the channel, passing the SAME store
+    log.loading('Server closes channel on-chain (with store)...')
+    const { txHash: closeHash } = await close({
+      seed: channelReceiver.seed!,
+      channelId,
+      amount: storeState.cumulative,
+      signature: storeState.signature,
+      channelPublicKey: channelFunder.publicKey,
+      network: NETWORK,
+      store,
+    })
+    log.success('Channel closed on-chain')
+    log.tx(closeHash, log.explorerLink(closeHash))
+
+    // Attempt another voucher on the finalized channel
+    log.loading('Attempting another voucher on finalized channel...')
+    const newCum = '200000'
+    const newSig = signPaymentChannelClaim(
+      channelId,
+      dropsToXrp(newCum).toString(),
+      channelFunder.privateKey,
+    )
+    const ch2 = {
+      id: `finalized-2-${Date.now()}`,
+      realm: 'error-showcase',
+      method: 'xrpl' as const,
+      intent: 'channel' as const,
+      request: {
+        amount: '100000',
+        channelId,
+        recipient: channelReceiver.classicAddress,
+        methodDetails: {
+          network: NETWORK,
+          reference: crypto.randomUUID(),
+          cumulativeAmount: cumDrops,
+        },
+      },
+    }
+    const cred2 = Credential.from({
+      challenge: ch2 as any,
+      payload: { action: 'voucher', channelId, amount: newCum, signature: newSig },
+    })
+
+    try {
+      await srvMethod.verify({ credential: cred2 as any, request: ch2.request })
+      log.error('Expected error but succeeded')
+    } catch (err: any) {
+      log.error(err.message.slice(0, 120))
+    }
+  }
+
   await xrpl.disconnect()
   log.separator()
-  log.box(['All 12 error cases completed'])
+  log.box(['All 13 error cases completed'])
   process.exit(0)
 }
 

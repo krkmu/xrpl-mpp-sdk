@@ -19,7 +19,7 @@ All demos run on XRPL testnet. Zero environment variables -- every script genera
 | `mpt-charge.ts` | All-in-one | Creates MPT issuance, authorizes holders, issues tokens, runs charge |
 | `channel-server.ts` | Two-terminal | Server: verifies off-chain PayChannel claims (0.1 XRP each) |
 | `channel-client.ts` | Two-terminal | Client: opens channel, 5 paid requests, closes channel |
-| `error-showcase.ts` | All-in-one | 11 error cases with fail-fix-validate pattern |
+| `error-showcase.ts` | All-in-one | 13 error cases with fail-fix-validate pattern |
 
 ## XRP Charge
 
@@ -67,7 +67,7 @@ Server funds a wallet, exposes /info, /setup, /resource, /summary. Client funds 
 npx tsx demo/error-showcase.ts
 ```
 
-Funds 10+ wallets and runs 11 cases sequentially:
+Funds 10+ wallets and runs 13 cases sequentially:
 
 | # | Case | Error triggered | Fix applied |
 |---|---|---|---|
@@ -82,6 +82,8 @@ Funds 10+ wallets and runs 11 cases sequentially:
 | 9 | WRONG_SIGNER | Claim with wrong key | Sign with correct key |
 | 10 | REPLAY_DETECTED | Same cumulative twice | Increment cumulative |
 | 11 | OVERPAY | Claim > channel deposit | Correct amount |
+| 12 | SERVER_REDEEM | Client disappears, server redeems stored claim on-chain | Server calls close() with stored signature |
+| 13 | FINALIZED_CHANNEL | Credential on closed channel | Rejected with CHANNEL_CLOSED |
 
 ## Streaming (offline)
 

@@ -24,6 +24,16 @@ export type XrplCurrency = XrpCurrency | IssuedCurrency | MPToken
 /** Pull: client signs tx blob, server submits. Push: client submits, sends hash. */
 export type PaymentMode = 'pull' | 'push'
 
+// -- Charge Progress --
+
+export type ChargeProgressEvent =
+  | { type: 'challenge'; recipient: string; amount: string; currency: string }
+  | { type: 'preflight' }
+  | { type: 'signing' }
+  | { type: 'signed'; mode: PaymentMode }
+  | { type: 'submitting' }
+  | { type: 'confirmed'; hash: string }
+
 // -- Charge Configuration --
 
 export type ChargeClientConfig = {
@@ -47,6 +57,8 @@ export type ChargeClientConfig = {
   network?: NetworkId
   /** Custom WebSocket RPC URL. */
   rpcUrl?: string
+  /** Callback invoked at each lifecycle stage. */
+  onProgress?: (event: ChargeProgressEvent) => void
 }
 
 export type ChargeServerConfig = {

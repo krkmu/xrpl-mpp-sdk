@@ -36,15 +36,43 @@ export function channel(parameters: channel.Parameters) {
   return Method.toClient(ChannelMethod, {
     context: z.object({
       cumulativeAmount: z.optional(z.string()),
-      action: z.optional(z.enum(['voucher', 'close'])),
+      action: z.optional(z.enum(['voucher', 'close', 'open'])),
+      /** Signed PaymentChannelCreate tx blob -- required for action: 'open'. */
+      openTransaction: z.optional(z.string()),
     }),
     async createCredential({ challenge, context }) {
       const { request } = challenge
       const { amount, channelId } = request
+      const network = (request.methodDetails?.network as string) ?? defaultNetwork
 
       const action = context?.action ?? 'voucher'
 
-      // Calculate cumulative amount
+      if (action === 'open') {
+        if (!context?.openTransaction) {
+          throw new Error('openTransaction is required for action: open')
+        }
+        const initialAmount = amount
+        const initialXrp = dropsToXrp(initialAmount).toString()
+        // channelId is not known yet for open -- use a placeholder that the server will replace
+        // The signature covers the amount only; the server will verify after extracting the real channelId
+        const signature = signPaymentChannelClaim(
+          channelId || '0'.repeat(64),
+          initialXrp,
+          wallet.privateKey,
+        )
+
+        return Credential.serialize({
+          challenge,
+          payload: {
+            action: 'open' as const,
+            transaction: context.openTransaction,
+            amount: initialAmount,
+            signature,
+          },
+          source: `did:pkh:xrpl:${network}:${wallet.classicAddress}`,
+        })
+      }
+
       const previousCumulative = BigInt(request.methodDetails?.cumulativeAmount ?? '0')
       const cumulativeAmount =
         context?.cumulativeAmount !== undefined
@@ -53,8 +81,7 @@ export function channel(parameters: channel.Parameters) {
 
       const cumulativeStr = cumulativeAmount.toString()
 
-      // Sign the claim using xrpl.js -- handles both ed25519 and secp256k1
-      // Note: signPaymentChannelClaim expects XRP (not drops) -- it internally calls xrpToDrops
+      // signPaymentChannelClaim expects XRP (not drops) -- it internally calls xrpToDrops
       const cumulativeXrp = dropsToXrp(cumulativeStr).toString()
       const signature = signPaymentChannelClaim(channelId, cumulativeXrp, wallet.privateKey)
 
@@ -66,7 +93,7 @@ export function channel(parameters: channel.Parameters) {
           amount: cumulativeStr,
           signature,
         },
-        source: `did:pkh:xrpl:${(request.methodDetails?.network as string) ?? defaultNetwork}:${wallet.classicAddress}`,
+        source: `did:pkh:xrpl:${network}:${wallet.classicAddress}`,
       })
     },
   })
