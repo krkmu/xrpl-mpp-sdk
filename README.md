@@ -34,8 +34,8 @@ Two credential modes:
 
 Supports three currency types:
 - **XRP** -- native drops (e.g., "1000000" = 1 XRP)
-- **IOU** -- issued currencies ({currency, issuer, value}) with optional auto-trustline
-- **MPT** -- multi-purpose tokens ({mpt_issuance_id, value}) with optional auto-authorize
+- **IOU** -- issued currencies ({currency, issuer, value})
+- **MPT** -- multi-purpose tokens ({mpt_issuance_id, value})
 
 ### Channel (off-chain PayChannel claims)
 
@@ -86,7 +86,10 @@ Three credential actions:
 ## Install
 
 ```bash
-pnpm add xrpl-mpp-sdk xrpl mppx
+git clone <repo-url>
+cd xrpl-mpp-sdk
+pnpm install
+pnpm build
 ```
 
 ## Quick start
@@ -181,7 +184,7 @@ const response = await fetch('https://api.example.com/resource')
 | `xrpl-mpp-sdk/server` | charge, xrpl, Mppx, Store, Expires |
 | `xrpl-mpp-sdk/channel` | channel (schema), ChannelStream, ChannelSession |
 | `xrpl-mpp-sdk/channel/client` | channel, openChannel, fundChannel, xrpl, Mppx |
-| `xrpl-mpp-sdk/channel/server` | channel, close, xrpl, Mppx, Store, Expires |
+| `xrpl-mpp-sdk/channel/server` | channel, close, ChannelDisputeState, xrpl, Mppx, Store, Expires |
 
 ### Server options (charge)
 
@@ -206,7 +209,8 @@ charge({
   mode?: 'pull' | 'push',          // default: 'pull'
   network?: 'mainnet' | 'testnet' | 'devnet',
   rpcUrl?: string,
-  preflight?: boolean,              // pre-flight: balance, reserves, destination, rippling (default: true)
+  preflight?: boolean,              // balance, reserves, destination, rippling (default: true)
+  onProgress?: (event) => void,     // lifecycle callback (challenge, preflight, signing, signed, submitting, confirmed)
 })
 ```
 
@@ -402,7 +406,7 @@ xrpl-mpp-sdk/
       currency.ts            # parseCurrency, buildAmount, isXrp/isIOU/isMPT
       trustline.ts           # ensureTrustline, checkRippling
       mpt.ts                 # ensureMPTHolding
-      validation.ts          # runPreflight (balance + reserves + destination + trustline + MPT)
+      validation.ts          # runPreflight (balance + reserves + destination + rippling)
     client/
       Charge.ts              # Client charge: sign Payment tx, create credential
       Methods.ts             # xrpl.charge() convenience wrapper
@@ -424,9 +428,9 @@ xrpl-mpp-sdk/
         Methods.ts
         index.ts
   test/
-    compliance/              # MPP protocol, intents, interop (38 tests)
-    security/                # Replay, tamper, input validation, channel auth (25 tests)
-    xrpl/                    # Charge, channel, trustline, MPT, dual-curve (39 tests)
+    compliance/              # MPP protocol, intents, interop (42 tests)
+    security/                # Replay, tamper, input validation, channel auth (38 tests)
+    xrpl/                    # Charge, channel, trustline, MPT, dual-curve (61 tests)
     utils/test-helpers.ts
   demo/
     log.ts                   # Shared styled terminal output utility
@@ -443,6 +447,7 @@ xrpl-mpp-sdk/
     channel-server.ts        # Minimal channel server (env var config)
     channel-client.ts        # Minimal channel client (env var config)
     stream-llm.ts            # Pay-per-token streaming simulation (offline)
+    channel-open-mpp.ts      # Channel open via MPP 402 flow (concept example)
 ```
 
 ## Development
