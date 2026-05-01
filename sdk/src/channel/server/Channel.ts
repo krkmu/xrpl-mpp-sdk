@@ -9,6 +9,7 @@ import {
   verificationFailed,
 } from '../../errors.js'
 import type { ChannelServerConfig } from '../../types.js'
+import { classicAddressFromDID, classicAddressFromPublicKey } from '../../utils/did.js'
 import { channel as ChannelMethod } from '../Methods.js'
 
 /** Default max challenge age: 5 minutes. */
@@ -94,6 +95,18 @@ export function channel(parameters: channel.Parameters) {
     const { challenge } = credential
     const payload = credential.payload
     const channelId = payload.channelId
+
+    // Bind the credential to its DID-encoded sender. The address derived from
+    // the configured channel publicKey must match the credential source --
+    // otherwise an attacker can replay claims under their own DID.
+    const expectedSenderAddress = classicAddressFromPublicKey(publicKey)
+    const credentialSenderAddress = classicAddressFromDID(credential.source)
+    if (credentialSenderAddress !== expectedSenderAddress) {
+      throw verificationFailed(
+        'SOURCE_MISMATCH',
+        `Credential source ${credentialSenderAddress} does not match channel funder ${expectedSenderAddress}`,
+      )
+    }
 
     // Reject credentials on finalized channels
     if (store && channelId) {
@@ -276,6 +289,18 @@ export function channel(parameters: channel.Parameters) {
       throw verificationFailed(
         'SUBMISSION_FAILED',
         `Channel PublicKey ${decoded.PublicKey} does not match expected ${publicKey}`,
+      )
+    }
+
+    // Bind the on-chain Account (funder) to the credential's DID source. doVerify()
+    // already verified that the credential source matches the address derived from
+    // publicKey, but this re-asserts the binding inside the open path so any
+    // refactor that splits these flows keeps the invariant.
+    const credentialSenderAddress = classicAddressFromDID(credential.source)
+    if (decoded.Account !== credentialSenderAddress) {
+      throw verificationFailed(
+        'SOURCE_MISMATCH',
+        `Channel Account ${decoded.Account} does not match credential source ${credentialSenderAddress}`,
       )
     }
 

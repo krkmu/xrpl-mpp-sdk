@@ -5,6 +5,7 @@ import { fromTecResult, replayDetected, verificationFailed } from '../errors.js'
 import * as Methods from '../Methods.js'
 import type { ChargeServerConfig, XrplCurrency } from '../types.js'
 import { isIOU, isMPT, parseCurrency, serializeCurrency } from '../utils/currency.js'
+import { classicAddressFromDID } from '../utils/did.js'
 import { ensureMPTHolding } from '../utils/mpt.js'
 import { ensureTrustline } from '../utils/trustline.js'
 
@@ -183,7 +184,43 @@ export function charge(parameters: charge.Parameters) {
     const expectedRecipient = challengeRequest.recipient
     const expectedCurrency = parseCurrency(challengeRequest.currency)
     const expectedInvoiceId = challengeRequest.methodDetails?.invoiceId as string | undefined
+    // Bind the credential to its DID-encoded sender. Without this, an attacker can
+    // submit a third party's hash (push) or third party's signed blob (pull) as
+    // their own credential.
+    const expectedSender = classicAddressFromDID(credential.source)
     const payload = credential.payload
+
+    // Pull mode: decode and validate the blob *before* connecting to the
+    // network so a tampered or third-party-signed credential is rejected
+    // without holding an open WebSocket.
+    let preDecodedTx: any | undefined
+    let preDerivedTxHash: string | undefined
+    if (payload.type === 'transaction') {
+      preDecodedTx = decode(payload.blob) as any
+      if (preDecodedTx.TransactionType !== 'Payment') {
+        throw verificationFailed(
+          'SUBMISSION_FAILED',
+          `Expected Payment transaction, got ${preDecodedTx.TransactionType}`,
+        )
+      }
+      validatePaymentFields(
+        preDecodedTx,
+        expectedAmount,
+        expectedRecipient,
+        expectedCurrency,
+        expectedSender,
+        expectedInvoiceId,
+      )
+      preDerivedTxHash = hashes.hashSignedTx(payload.blob)
+      if (store && preDerivedTxHash) {
+        const hashKey = `xrpl:tx:${preDerivedTxHash}`
+        const hashUsed = await store.get(hashKey)
+        if (hashUsed) {
+          throw replayDetected(preDerivedTxHash)
+        }
+        await store.put(hashKey, { status: 'pending', startedAt: Date.now() })
+      }
+    }
 
     const client = new Client(rpcUrl)
     await client.connect()
@@ -200,6 +237,7 @@ export function charge(parameters: charge.Parameters) {
             expectedAmount,
             expectedRecipient,
             expectedCurrency,
+            expectedSender,
             store,
             expectedInvoiceId,
             challengeId,
@@ -209,11 +247,8 @@ export function charge(parameters: charge.Parameters) {
           return await verifyPull(
             client,
             payload.blob,
-            expectedAmount,
-            expectedRecipient,
-            expectedCurrency,
+            preDerivedTxHash,
             store,
-            expectedInvoiceId,
             pollTimeout,
             pollInterval,
             challengeId,
@@ -240,6 +275,7 @@ async function verifyPush(
   expectedAmount: string,
   expectedRecipient: string,
   expectedCurrency: XrplCurrency,
+  expectedSender: string,
   store: Store.Store | undefined,
   expectedInvoiceId?: string,
   challengeId?: string,
@@ -278,6 +314,7 @@ async function verifyPush(
     expectedAmount,
     expectedRecipient,
     expectedCurrency,
+    expectedSender,
     expectedInvoiceId,
     meta,
   )
@@ -302,47 +339,14 @@ async function verifyPush(
 async function verifyPull(
   client: Client,
   blob: string,
-  expectedAmount: string,
-  expectedRecipient: string,
-  expectedCurrency: XrplCurrency,
+  txHash: string | undefined,
   store: Store.Store | undefined,
-  expectedInvoiceId: string | undefined,
   pollTimeout: number,
   pollInterval: number,
   challengeId?: string,
 ): Promise<Receipt.Receipt> {
-  // Decode and validate the transaction before submitting
-  const decoded = decode(blob) as any
-
-  if (decoded.TransactionType !== 'Payment') {
-    throw verificationFailed(
-      'SUBMISSION_FAILED',
-      `Expected Payment transaction, got ${decoded.TransactionType}`,
-    )
-  }
-
-  // Validate fields match challenge BEFORE submitting
-  validatePaymentFields(
-    decoded,
-    expectedAmount,
-    expectedRecipient,
-    expectedCurrency,
-    expectedInvoiceId,
-  )
-
-  // Derive tx hash from blob BEFORE submit so we can dedup before hitting the network
-  const txHash = hashes.hashSignedTx(blob)
-
-  // Mark tx hash as pending BEFORE submitting to close the TOCTOU window
-  if (store && txHash) {
-    const hashKey = `xrpl:tx:${txHash}`
-    const hashUsed = await store.get(hashKey)
-    if (hashUsed) {
-      throw replayDetected(txHash)
-    }
-    await store.put(hashKey, { status: 'pending', startedAt: Date.now() })
-  }
-
+  // Field validation, hash derivation, and replay claim already happened in
+  // doVerify() before we connected.
   const submitResult = await client.submit(blob)
   const engineResult = submitResult.result.engine_result
 
@@ -420,16 +424,26 @@ function rejectPartialPayment(tx: any): void {
   }
 }
 
-/** Validate Payment tx fields (Destination, Amount, Currency, InvoiceID) against challenge. */
+/** Validate Payment tx fields (Account, Destination, Amount, Currency, InvoiceID) against challenge. */
 function validatePaymentFields(
   tx: any,
   expectedAmount: string,
   expectedRecipient: string,
   expectedCurrency: XrplCurrency,
+  expectedSender: string,
   expectedInvoiceId?: string,
   meta?: any,
 ): void {
   rejectPartialPayment(tx)
+
+  // Bind the on-chain payer to the credential's DID source. This blocks
+  // hash-theft (push) and third-party-blob replay (pull).
+  if (tx.Account !== expectedSender) {
+    throw verificationFailed(
+      'SOURCE_MISMATCH',
+      `Expected payer ${expectedSender} (from credential source), got ${tx.Account}`,
+    )
+  }
 
   if (expectedInvoiceId && tx.InvoiceID !== expectedInvoiceId) {
     throw verificationFailed(

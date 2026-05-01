@@ -28,8 +28,10 @@ export type XrplErrorCode =
   | 'REPLAY_DETECTED'
   | 'AMOUNT_MISMATCH'
   | 'RECIPIENT_MISMATCH'
+  | 'SOURCE_MISMATCH'
   | 'SUBMISSION_FAILED'
   | 'MPT_NOT_AUTHORIZED'
+  | 'CHANNEL_EXHAUSTED'
 
 export function mapTecResult(tecResult: string): XrplErrorCode | undefined {
   return TEC_RESULT_MAP[tecResult] as XrplErrorCode | undefined
