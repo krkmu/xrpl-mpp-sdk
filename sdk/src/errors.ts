@@ -71,6 +71,16 @@ export function channelClosed(channelId: string): Errors.ChannelClosedError {
   })
 }
 
+export function channelExhausted(
+  channelId: string,
+  cumulative: bigint,
+  available: bigint,
+): Errors.AmountExceedsDepositError {
+  return new Errors.AmountExceedsDepositError({
+    reason: `[CHANNEL_EXHAUSTED] Cumulative ${cumulative} drops on channel ${channelId} exceeds available balance ${available} drops -- top up via PaymentChannelFund or reset cumulative.`,
+  })
+}
+
 export function malformedCredential(detail: string): Errors.MalformedCredentialError {
   return new Errors.MalformedCredentialError({ reason: detail })
 }

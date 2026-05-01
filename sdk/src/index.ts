@@ -15,6 +15,7 @@ export {
 } from './constants.js'
 export {
   channelClosed,
+  channelExhausted,
   channelNotFound,
   fromTecResult,
   insufficientBalance,

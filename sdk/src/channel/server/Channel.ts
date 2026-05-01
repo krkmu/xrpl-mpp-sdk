@@ -3,6 +3,7 @@ import { Client, decode, dropsToXrp, verifyPaymentChannelClaim, Wallet } from 'x
 import { type NetworkId, XRPL_RPC_URLS } from '../../constants.js'
 import {
   channelClosed,
+  channelExhausted,
   channelNotFound,
   invalidSignature,
   replayDetected,
@@ -44,7 +45,9 @@ export function channel(parameters: channel.Parameters) {
     store,
     requireStore = true,
     maxChallengeAge = DEFAULT_MAX_CHALLENGE_AGE_MS,
-    verifyChannelOnChain = false,
+    verifyChannelOnChain = true,
+    channelMetadataTtlMs = 60_000,
+    channelLookup,
     onDisputeDetected,
   } = parameters
 
@@ -163,51 +166,31 @@ export function channel(parameters: channel.Parameters) {
     }
 
     if (verifyChannelOnChain) {
-      const client = new Client(rpcUrl)
-      await client.connect()
-      try {
-        const channelObj = await lookupChannel(client, channelId)
-        if (!channelObj) {
-          if (store) {
-            await store.put(`xrpl:channel:finalized:${channelId}`, {
-              reason: 'not_found',
-              timestamp: Date.now(),
-            })
-          }
-          throw channelNotFound(channelId)
-        }
-        if (channelObj.Expiration) {
-          const rippleEpoch = 946684800
-          const expirationUnix = (channelObj.Expiration + rippleEpoch) * 1000
-          if (Date.now() > expirationUnix) {
-            if (store) {
-              await store.put(`xrpl:channel:finalized:${channelId}`, {
-                reason: 'expired',
-                timestamp: Date.now(),
-              })
-            }
-            throw channelClosed(channelId)
-          }
-        }
-        // Detect unilateral close by client (CancelAfter or SettleDelay in progress)
-        if (channelObj.CancelAfter && onDisputeDetected) {
-          const rippleEpoch = 946684800
-          const cancelUnix = (channelObj.CancelAfter + rippleEpoch) * 1000
-          onDisputeDetected({
-            channelId,
-            cancelAfter: new Date(cancelUnix).toISOString(),
-            balance: channelObj.Amount,
-          })
-        }
-        const channelBalance = BigInt(channelObj.Amount)
+      const lookup = channelLookup ?? defaultChannelLookup(rpcUrl)
+      const channelMeta = await loadChannelMetadata({
+        channelId,
+        store,
+        ttlMs: channelMetadataTtlMs,
+        lookup,
+        forceRefresh: false,
+      })
+      assertChannelHealthy({ channelId, meta: channelMeta, store, onDisputeDetected })
+      let channelBalance = BigInt(channelMeta.amount)
+      // Cumulative exceeds the cached balance: re-fetch once -- the funder may
+      // have topped up via PaymentChannelFund since we last looked.
+      if (newCumulative > channelBalance) {
+        const refreshed = await loadChannelMetadata({
+          channelId,
+          store,
+          ttlMs: channelMetadataTtlMs,
+          lookup,
+          forceRefresh: true,
+        })
+        assertChannelHealthy({ channelId, meta: refreshed, store, onDisputeDetected })
+        channelBalance = BigInt(refreshed.amount)
         if (newCumulative > channelBalance) {
-          throw verificationFailed(
-            'AMOUNT_MISMATCH',
-            `Cumulative ${newCumulative} exceeds channel balance ${channelBalance}`,
-          )
+          throw channelExhausted(channelId, newCumulative, channelBalance)
         }
-      } finally {
-        await client.disconnect()
       }
     }
 
@@ -393,6 +376,117 @@ export function channel(parameters: channel.Parameters) {
   }
 }
 
+/** Cached PayChannel metadata. */
+type CachedChannelMeta = {
+  amount: string
+  expiration: number | null
+  cancelAfter: number | null
+  cachedAt: number
+}
+
+/** Looks up a PayChannel object on-chain by channel ID. Returns null if missing. */
+export type ChannelLookup = (channelId: string) => Promise<PayChannelLedgerEntry | null>
+
+/** Subset of PayChannel ledger entry fields the SDK consumes. */
+export type PayChannelLedgerEntry = {
+  Account: string
+  Destination: string
+  Amount: string
+  Balance?: string
+  Expiration?: number | null
+  CancelAfter?: number | null
+}
+
+/** Default channel lookup uses xrpl.js Client + ledger_entry. */
+function defaultChannelLookup(rpcUrl: string): ChannelLookup {
+  return async (channelId) => {
+    const client = new Client(rpcUrl)
+    await client.connect()
+    try {
+      return (await lookupChannel(client, channelId)) as PayChannelLedgerEntry | null
+    } finally {
+      await client.disconnect()
+    }
+  }
+}
+
+/**
+ * Fetch channel metadata, using the store as a TTL cache. The cache is keyed
+ * by channelId and refreshes when stale or when `forceRefresh` is set.
+ *
+ * Without a store, every call hits the ledger.
+ */
+async function loadChannelMetadata(params: {
+  channelId: string
+  store: Store.Store | undefined
+  ttlMs: number
+  lookup: ChannelLookup
+  forceRefresh: boolean
+}): Promise<CachedChannelMeta> {
+  const { channelId, store, ttlMs, lookup, forceRefresh } = params
+  const cacheKey = `xrpl:channel:meta:${channelId}`
+
+  if (!forceRefresh && store && ttlMs > 0) {
+    const cached = (await store.get(cacheKey)) as CachedChannelMeta | null
+    if (cached && Date.now() - cached.cachedAt < ttlMs) {
+      return cached
+    }
+  }
+
+  const channelObj = await lookup(channelId)
+  if (!channelObj) {
+    if (store) {
+      await store.put(`xrpl:channel:finalized:${channelId}`, {
+        reason: 'not_found',
+        timestamp: Date.now(),
+      })
+    }
+    throw channelNotFound(channelId)
+  }
+  const meta: CachedChannelMeta = {
+    amount: channelObj.Amount,
+    expiration: channelObj.Expiration ?? null,
+    cancelAfter: channelObj.CancelAfter ?? null,
+    cachedAt: Date.now(),
+  }
+  if (store) {
+    await store.put(cacheKey, meta)
+  }
+  return meta
+}
+
+/** Reject claims on expired channels and emit a dispute callback for pending close. */
+function assertChannelHealthy(params: {
+  channelId: string
+  meta: CachedChannelMeta
+  store: Store.Store | undefined
+  onDisputeDetected: ((state: ChannelDisputeState) => void) | undefined
+}): void {
+  const { channelId, meta, store, onDisputeDetected } = params
+  const rippleEpoch = 946684800
+  if (meta.expiration !== null) {
+    const expirationUnix = (meta.expiration + rippleEpoch) * 1000
+    if (Date.now() > expirationUnix) {
+      if (store) {
+        // Mark finalized fire-and-forget; we re-check on next call anyway.
+        void store.put(`xrpl:channel:finalized:${channelId}`, {
+          reason: 'expired',
+          timestamp: Date.now(),
+        })
+      }
+      throw channelClosed(channelId)
+    }
+  }
+  if (meta.cancelAfter !== null && onDisputeDetected) {
+    const cancelUnix = (meta.cancelAfter + rippleEpoch) * 1000
+    onDisputeDetected({
+      channelId,
+      cancelAfter: new Date(cancelUnix).toISOString(),
+      balance: meta.amount,
+    })
+  }
+}
+
 /** Extract channelId from PaymentChannelCreate metadata. */
 function extractChannelIdFromMeta(meta: any): string {
   const nodes = meta.AffectedNodes ?? []
@@ -418,8 +512,26 @@ export declare namespace channel {
     requireStore?: boolean
     /** Max challenge age in milliseconds. 0 disables. @default 300000 (5 min) */
     maxChallengeAge?: number
-    /** Verify channel existence, balance, and expiration on-chain. @default false */
+    /**
+     * Verify channel existence, balance, and expiration on-chain. The first
+     * voucher per channel hits the ledger; subsequent vouchers reuse cached
+     * metadata until {@link channelMetadataTtlMs} elapses or the cumulative
+     * exceeds the cached balance (re-fetch to detect a PaymentChannelFund top-up).
+     * @default true
+     */
     verifyChannelOnChain?: boolean
+    /**
+     * Time in ms to cache channel metadata (Amount, Expiration, CancelAfter)
+     * after a successful on-chain lookup. Set to 0 to disable caching.
+     * @default 60000 (1 minute)
+     */
+    channelMetadataTtlMs?: number
+    /**
+     * Override the on-chain channel lookup. The default implementation uses
+     * xrpl.js + `ledger_entry`. Set to inject a custom resolver (e.g. for
+     * testing or to share a long-lived Client across verifies).
+     */
+    channelLookup?: ChannelLookup
     /** Called when a unilateral close is detected on-chain (CancelAfter set). */
     onDisputeDetected?: (state: ChannelDisputeState) => void
   }
