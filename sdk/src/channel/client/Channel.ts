@@ -3,6 +3,7 @@ import { Client, dropsToXrp, signPaymentChannelClaim, Wallet } from 'xrpl'
 import { z } from 'zod/mini'
 import { type NetworkId, XRPL_RPC_URLS } from '../../constants.js'
 import type { ChannelClientConfig } from '../../types.js'
+import { assertReserveCovers, getReserveState } from '../../utils/reserves.js'
 import { channel as ChannelMethod } from '../Methods.js'
 
 /**
@@ -135,6 +136,20 @@ export async function openChannel(params: {
   await client.connect()
 
   try {
+    // PaymentChannelCreate adds an owner object on the source. Pre-flight the
+    // reserve so the caller gets a typed error rather than tecINSUFFICIENT_RESERVE.
+    const state = await getReserveState(client, wallet.classicAddress)
+    if (!state) {
+      throw new Error(`[INSUFFICIENT_BALANCE] Account ${wallet.classicAddress} is not yet funded.`)
+    }
+    assertReserveCovers({
+      account: wallet.classicAddress,
+      state,
+      addedOwnerObjects: 1,
+      paymentDrops: BigInt(amount),
+      kind: 'PaymentChannelCreate',
+    })
+
     const channelCreate: any = {
       TransactionType: 'PaymentChannelCreate',
       Account: wallet.classicAddress,
