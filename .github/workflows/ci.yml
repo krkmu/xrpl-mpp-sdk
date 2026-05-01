@@ -1,7 +1,13 @@
 name: CI
-on: [push, pull_request]
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
 jobs:
-  ci:
+  unit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -13,4 +19,36 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm check:types
       - run: pnpm lint
-      - run: pnpm test
+      - run: pnpm test:coverage
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ github.run_id }}
+          path: coverage/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  integration:
+    # Gated -- runs on push to main, on PRs labelled `run-integration`, and
+    # on manual dispatch. Failures here do NOT block PRs because the public
+    # devnet faucet can be flaky; rely on this job for end-to-end signal,
+    # not as a merge gate.
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'run-integration'))
+    runs-on: ubuntu-latest
+    needs: unit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:integration
+        env:
+          NODE_OPTIONS: '--no-warnings'
+        continue-on-error: false
