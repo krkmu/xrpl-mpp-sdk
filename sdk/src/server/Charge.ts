@@ -184,6 +184,10 @@ export function charge(parameters: charge.Parameters) {
     const expectedRecipient = challengeRequest.recipient
     const expectedCurrency = parseCurrency(challengeRequest.currency)
     const expectedInvoiceId = challengeRequest.methodDetails?.invoiceId as string | undefined
+    const expectedDestinationTag = challengeRequest.methodDetails?.destinationTag as
+      | number
+      | undefined
+    const expectedSourceTag = challengeRequest.methodDetails?.sourceTag as number | undefined
     // Bind the credential to its DID-encoded sender. Without this, an attacker can
     // submit a third party's hash (push) or third party's signed blob (pull) as
     // their own credential.
@@ -210,6 +214,8 @@ export function charge(parameters: charge.Parameters) {
         expectedCurrency,
         expectedSender,
         expectedInvoiceId,
+        expectedDestinationTag,
+        expectedSourceTag,
       )
       preDerivedTxHash = hashes.hashSignedTx(payload.blob)
       if (store && preDerivedTxHash) {
@@ -240,6 +246,8 @@ export function charge(parameters: charge.Parameters) {
             expectedSender,
             store,
             expectedInvoiceId,
+            expectedDestinationTag,
+            expectedSourceTag,
             challengeId,
           )
         }
@@ -278,6 +286,8 @@ async function verifyPush(
   expectedSender: string,
   store: Store.Store | undefined,
   expectedInvoiceId?: string,
+  expectedDestinationTag?: number,
+  expectedSourceTag?: number,
   challengeId?: string,
 ): Promise<Receipt.Receipt> {
   // Mark tx hash as pending BEFORE verification to close the TOCTOU window.
@@ -316,6 +326,8 @@ async function verifyPush(
     expectedCurrency,
     expectedSender,
     expectedInvoiceId,
+    expectedDestinationTag,
+    expectedSourceTag,
     meta,
   )
 
@@ -424,7 +436,7 @@ function rejectPartialPayment(tx: any): void {
   }
 }
 
-/** Validate Payment tx fields (Account, Destination, Amount, Currency, InvoiceID) against challenge. */
+/** Validate Payment tx fields (Account, Destination, Amount, Currency, InvoiceID, tags) against challenge. */
 function validatePaymentFields(
   tx: any,
   expectedAmount: string,
@@ -432,6 +444,8 @@ function validatePaymentFields(
   expectedCurrency: XrplCurrency,
   expectedSender: string,
   expectedInvoiceId?: string,
+  expectedDestinationTag?: number,
+  expectedSourceTag?: number,
   meta?: any,
 ): void {
   rejectPartialPayment(tx)
@@ -449,6 +463,20 @@ function validatePaymentFields(
     throw verificationFailed(
       'SUBMISSION_FAILED',
       `InvoiceID mismatch: expected ${expectedInvoiceId}, got ${tx.InvoiceID ?? 'none'}`,
+    )
+  }
+
+  if (expectedDestinationTag !== undefined && tx.DestinationTag !== expectedDestinationTag) {
+    throw verificationFailed(
+      'SUBMISSION_FAILED',
+      `DestinationTag mismatch: expected ${expectedDestinationTag}, got ${tx.DestinationTag ?? 'none'}`,
+    )
+  }
+
+  if (expectedSourceTag !== undefined && tx.SourceTag !== expectedSourceTag) {
+    throw verificationFailed(
+      'SUBMISSION_FAILED',
+      `SourceTag mismatch: expected ${expectedSourceTag}, got ${tx.SourceTag ?? 'none'}`,
     )
   }
 

@@ -78,6 +78,15 @@ export function charge(parameters: charge.Parameters) {
           ...(request.methodDetails?.invoiceId
             ? { InvoiceID: request.methodDetails.invoiceId }
             : {}),
+          ...(request.methodDetails?.destinationTag !== undefined
+            ? { DestinationTag: request.methodDetails.destinationTag }
+            : {}),
+          ...(request.methodDetails?.sourceTag !== undefined
+            ? { SourceTag: request.methodDetails.sourceTag }
+            : {}),
+          ...(request.methodDetails?.memos && request.methodDetails.memos.length > 0
+            ? { Memos: encodeMemos(request.methodDetails.memos) }
+            : {}),
         }
 
         const prepared = await client.autofill(payment as Payment)
@@ -121,4 +130,26 @@ export function charge(parameters: charge.Parameters) {
 
 export declare namespace charge {
   export type Parameters = ChargeClientConfig
+}
+
+type ChallengeMemo = { type?: string; format?: string; data?: string }
+
+/**
+ * Encode UTF-8 memo fields as hex per XRPL Memos[].Memo encoding. Each field
+ * is optional; absent fields are dropped from the encoded entry.
+ */
+function encodeMemos(
+  memos: ChallengeMemo[],
+): Array<{ Memo: { MemoType?: string; MemoFormat?: string; MemoData?: string } }> {
+  return memos.map((m) => {
+    const memo: { MemoType?: string; MemoFormat?: string; MemoData?: string } = {}
+    if (m.type) memo.MemoType = utf8ToHex(m.type)
+    if (m.format) memo.MemoFormat = utf8ToHex(m.format)
+    if (m.data) memo.MemoData = utf8ToHex(m.data)
+    return { Memo: memo }
+  })
+}
+
+function utf8ToHex(s: string): string {
+  return Buffer.from(s, 'utf8').toString('hex').toUpperCase()
 }

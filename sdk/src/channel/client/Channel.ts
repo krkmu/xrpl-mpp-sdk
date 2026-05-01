@@ -131,6 +131,23 @@ export async function openChannel(params: {
   } = params
 
   const wallet = Wallet.fromSeed(seed)
+
+  // Channel dust check: an Amount of 0 drops produces a dead channel that
+  // burns the source's reserve increment without delivering value. Enforce a
+  // sane minimum at the client so the operator gets a clear error rather
+  // than a silent wasted reserve. Choose 1 drop as the floor -- below that
+  // the channel cannot deliver anything.
+  if (BigInt(amount) <= 0n) {
+    throw new Error(
+      `[INVALID_AMOUNT] PaymentChannelCreate amount must be > 0 drops, got ${amount}.`,
+    )
+  }
+  if (settleDelay < 0 || !Number.isFinite(settleDelay)) {
+    throw new Error(
+      `[INVALID_AMOUNT] PaymentChannelCreate settleDelay must be a non-negative integer, got ${settleDelay}.`,
+    )
+  }
+
   const resolvedRpcUrl = rpcUrl ?? XRPL_RPC_URLS[network]
   const client = new Client(resolvedRpcUrl)
   await client.connect()
