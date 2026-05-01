@@ -841,7 +841,6 @@ async function main() {
     const srvMethod = serverChannel({ publicKey: channelFunder.publicKey, network: NETWORK, store })
 
     // Client makes 3 claims then disappears
-    let lastSig = ''
     let lastAmount = '0'
     for (const cumDrops of ['100000', '200000', '300000']) {
       const sig = signPaymentChannelClaim(
@@ -870,7 +869,6 @@ async function main() {
         payload: { action: 'voucher', channelId, amount: cumDrops, signature: sig },
       })
       await srvMethod.verify({ credential: cred as any, request: ch.request })
-      lastSig = sig
       lastAmount = cumDrops
     }
     log.success(`Client made 3 claims (cumulative: ${lastAmount} drops), then disappeared`)
