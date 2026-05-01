@@ -1,16 +1,33 @@
 import { Errors } from 'mppx'
 
 export const TEC_RESULT_MAP: Record<string, string> = {
+  // -- Payment failures
   tecPATH_DRY: 'PAYMENT_PATH_FAILED',
+  // tecPATH_PARTIAL means a path exists but liquidity is insufficient -- this
+  // is a path/liquidity issue, not a sender-balance issue.
+  tecPATH_PARTIAL: 'PAYMENT_PATH_FAILED',
   tecUNFUNDED_PAYMENT: 'INSUFFICIENT_BALANCE',
   tecNO_DST: 'RECIPIENT_NOT_FOUND',
+  // -- Trustline / authorisation
   tecNO_AUTH: 'TRUSTLINE_NOT_AUTHORIZED',
   tecNO_LINE: 'MISSING_TRUSTLINE',
-  temBAD_AMOUNT: 'INVALID_AMOUNT',
-  terINSUF_FEE_B: 'INSUFFICIENT_FEE',
+  tecNO_LINE_INSUF_RESERVE: 'INSUFFICIENT_RESERVE',
+  tecNO_LINE_REDUNDANT: 'MISSING_TRUSTLINE',
+  tecFROZEN: 'TRUSTLINE_FROZEN',
+  // -- Reserve / fee
   tecINSUFFICIENT_RESERVE: 'INSUFFICIENT_RESERVE',
-  tecPATH_PARTIAL: 'INSUFFICIENT_BALANCE',
+  tecINSUFF_FEE: 'INSUFFICIENT_FEE',
+  terINSUF_FEE_B: 'INSUFFICIENT_FEE',
+  // -- Sequence / submission
   tefPAST_SEQ: 'SUBMISSION_FAILED',
+  tefALREADY: 'SUBMISSION_FAILED',
+  tefBAD_AUTH: 'INVALID_SIGNATURE',
+  tefMASTER_DISABLED: 'INVALID_SIGNATURE',
+  // -- Validation
+  temBAD_AMOUNT: 'INVALID_AMOUNT',
+  // tecNO_PERMISSION is the MPT-era rejection: holder not authorised by issuer
+  // when the issuance has lsfMPTRequireAuth.
+  tecNO_PERMISSION: 'MPT_NOT_AUTHORIZED',
 }
 
 export type XrplErrorCode =
@@ -20,10 +37,14 @@ export type XrplErrorCode =
   | 'INSUFFICIENT_RESERVE'
   | 'RECIPIENT_NOT_FOUND'
   | 'TRUSTLINE_NOT_AUTHORIZED'
+  | 'TRUSTLINE_REQUIRES_AUTH'
+  | 'TRUSTLINE_FROZEN'
   | 'MISSING_TRUSTLINE'
+  | 'ISSUER_GLOBAL_FROZEN'
   | 'INVALID_AMOUNT'
   | 'CHANNEL_EXPIRED'
   | 'CHANNEL_NOT_FOUND'
+  | 'CHANNEL_EXHAUSTED'
   | 'INVALID_SIGNATURE'
   | 'REPLAY_DETECTED'
   | 'AMOUNT_MISMATCH'
@@ -31,7 +52,6 @@ export type XrplErrorCode =
   | 'SOURCE_MISMATCH'
   | 'SUBMISSION_FAILED'
   | 'MPT_NOT_AUTHORIZED'
-  | 'CHANNEL_EXHAUSTED'
 
 export function mapTecResult(tecResult: string): XrplErrorCode | undefined {
   return TEC_RESULT_MAP[tecResult] as XrplErrorCode | undefined
