@@ -174,3 +174,151 @@ and typecheck clean.
 
 Commit: `feat(channel): reject open with placeholder sig + nonzero
 initial amount` on the existing branch.
+
+## Follow-up: IOU path autofill (X5)
+
+Single-task pass on the cross-issuer path autofill called out in the
+audit as X5.
+
+### What changed per file
+
+- `sdk/src/utils/paths.ts` (new, ~280 lines): the resolver. Three
+  branches -- self-issued, direct-trustline, cross-issuer (with
+  ripple_path_find + retries). Computes SendMax with TransferRate and
+  configurable slippage. Picks the cheapest of multiple alternatives.
+  Throws `PAYMENT_PATH_FAILED` with an actionable message on no path.
+- `sdk/src/client/Charge.ts`: calls the resolver before signing for
+  IOU payments, attaches `Paths` + `SendMax`. Constructs the xrpl.js
+  Client with `{ timeout: 60_000 }` -- the default 20s is too short
+  for cross-issuer path-find on a busy ledger. Validates `slippageBps`
+  at construction.
+- `sdk/src/types.ts`: adds `slippageBps` and `pathFindRetryDelaysMs`
+  to `ChargeClientConfig`; adds `pathfinding` and `paths_resolved`
+  variants to `ChargeProgressEvent`.
+- `test/xrpl/iou-paths.test.ts` (new, 18 cases): unit-level coverage
+  of every branch + slippage validation + retry behavior + charge()
+  factory rejection of out-of-range slippage.
+- `test/integration/iou-cross-issuer.devnet.test.ts` (new): real
+  end-to-end on devnet with two issuers, a market maker, and an
+  asymmetric trustline topology.
+- `demo/iou-cross-issuer.ts` (new, 350 lines): self-contained
+  one-command demo that runs on devnet (rationale below). Prints a
+  summary block with path strategy, source debited, destination
+  delivered, pre-slippage source amount, and realised slippage.
+- `README.md`: new "Cross-issuer IOU payments" section + updated
+  charge client options reference.
+- `docs/audit.md`: X5 marked done with commit refs.
+
+### Slippage default rationale (50 bps)
+
+50 bps (0.5%) is the smallest buffer that comfortably absorbs:
+- The standard XRPL issuer TransferRate (typically 0.0% - 0.5%).
+- One-block price drift on a thinly-traded book.
+- Off-by-one rounding in `multiplyDecimal` over IOU values with
+  ~16 significant digits.
+
+It's also the default Stellar Soroban routers use for similar
+swap operations, which makes cross-chain integrations less surprising.
+Tighter (e.g. 10 bps) would routinely fail when an issuer charges any
+TransferRate at all; looser (e.g. 200 bps) would silently overpay on
+liquid markets. 50 bps is the conservative-but-not-wasteful pick.
+
+### Test counts before/after
+
+| Suite | Before | After |
+|---|---|---|
+| Unit | 212 | 230 |
+| Devnet integration | 2 | 3 |
+
+Coverage on core modules: still above the 80% threshold (the new
+`paths.ts` is fully covered by the 18 unit tests).
+
+### Demo run output
+
+`npx tsx demo/iou-cross-issuer.ts` (real devnet, run during this
+session):
+
+```
+Path strategy:        cross-issuer
+Source debited:       10.000000 USD.A
+Destination delivered: 10.000000 USD.B
+Pre-slippage source:  10 USD
+Realised slippage:    0 bps (default cap 50 bps)
+```
+
+Settlement tx on devnet:
+`AF5826789266322B262144534D40174EE232395C08EFEDA50D8302326C823063`
+(<https://devnet.xrpl.org/transactions/AF5826789266322B262144534D40174EE232395C08EFEDA50D8302326C823063>)
+
+All previously working demos still work end-to-end on testnet:
+- `demo/xrp-server.ts` + `demo/xrp-client.ts`: tx
+  `ED4308AD222DDDCA6B8D09FF81EEF149592A80478E667EA6D44E6265530B3926`
+- `demo/iou-charge.ts`: tx
+  `E9103D0A5C466D2D58B1BA894E12E5A19572AA90FFE6EEFB39EEB4E5C7F4E1EA`
+- `demo/mpt-charge.ts`: tx
+  `25427DFB8295D2BF898ED53BB03D6BDCE92A95D0C3EF1DFE37905F219877CF8C`
+- `demo/channel-server.ts` + `demo/channel-client.ts`: open + 5
+  vouchers + close, two on-chain txs validated
+- `demo/error-showcase.ts`: all 13 cases run; one cosmetic shift in
+  case 4 (was MISSING_TRUSTLINE → tecPATH_DRY surfacing; now is the
+  client-side `PAYMENT_PATH_FAILED No path from X to Y...` from the
+  resolver's own check, which fires before submit)
+- `examples/stream-llm.ts`: 21 tokens, 2100 drops cumulative
+
+### Judgement calls
+
+- **Reused `PAYMENT_PATH_FAILED` rather than introducing
+  `PATH_NOT_FOUND`.** The new error code would have been one extra
+  symbol callers must learn for no semantic gain -- the message
+  distinguishes "no path" from a generic path failure, and consumers
+  that pattern-match on the code alone are already covered.
+- **Two production knobs surfaced from devnet flakiness.**
+  `pathFindRetryDelaysMs` (default `[1000, 2000, 4000]`) handles the
+  case where the path indexer is cold; the xrpl.js Client request
+  timeout was bumped from 20s to 60s to give path-find room. Both
+  are necessary on real networks; both are tunable via the charge()
+  parameters.
+- **Demo runs on devnet, not testnet.** Testnet's path indexer is
+  materially slower than devnet's at surfacing newly-created
+  orderbooks; in this session a freshly-placed offer was still not
+  visible to `ripple_path_find` after 30s of retries on testnet, but
+  was within ~10s on devnet. For a one-command self-contained demo
+  that must finish quickly, devnet is the right pick. The integration
+  test is also on devnet, so CI is not affected.
+- **Direct-trustline shortcut now requires both parties.** Originally
+  I shortcut whenever the recipient held the issuer's trustline; the
+  devnet integration surfaced that this breaks when the sender holds
+  a *different* issuer (the SendMax is set in a currency the sender
+  cannot pay → tecPATH_DRY). Both parties holding the same issuer is
+  the correct precondition; the asymmetric case falls through to
+  cross-issuer path-find.
+- **`accountHoldsTrustline` strengthened.** The original check matched
+  on currency code only and trusted the `peer` filter on the ledger.
+  Now it also requires `line.account === currency.issuer`. Defends
+  against unfiltered ledger responses and composes cleanly with mocks.
+
+### Open follow-ups
+
+- **Multi-hop / XRP-bridge paths.** The resolver picks the cheapest
+  alternative regardless of hop count, so XRP-bridged paths are
+  honored when they're cheaper. There is no explicit handling of
+  routing through XRP as a deliberate bridge currency though. If an
+  integrator wants to *force* XRP bridging (e.g. to escape an issuer
+  freeze), they need to construct Paths manually for now.
+- **Persistent path cache.** Each createCredential call runs path-find
+  fresh. For high-frequency cross-issuer flows, a short-lived cache
+  on (sender, recipient, currency, issuer) keyed to ledger-close
+  events would help. Not in scope this session.
+- **Streaming path updates (path_find subscribe).** ripple_path_find
+  is non-blocking; the supported path_find subscription gives
+  continuous updates and would be more responsive for long-running
+  clients. The current retry loop is a pragmatic substitute.
+
+Commits on the existing branch:
+
+```
+efff268 docs(readme): document cross-issuer IOU support and slippageBps
+5bf0268 feat(demo): cross-issuer IOU charge demo on devnet
+cc7bad0 test: cross-issuer IOU paths (unit + devnet integration)
+244d804 feat(client): autofill Paths + SendMax for IOU payments
+```
