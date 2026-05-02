@@ -29,6 +29,13 @@ export type PaymentMode = 'pull' | 'push'
 export type ChargeProgressEvent =
   | { type: 'challenge'; recipient: string; amount: string; currency: string }
   | { type: 'preflight' }
+  | { type: 'pathfinding' }
+  | {
+      type: 'paths_resolved'
+      strategy: 'self-issued' | 'direct-trustline' | 'cross-issuer'
+      sourceAmountValue: string
+      sourceAmountCurrency: string
+    }
   | { type: 'signing' }
   | { type: 'signed'; mode: PaymentMode }
   | { type: 'submitting' }
@@ -53,6 +60,18 @@ export type ChargeClientConfig = {
    * @default true
    */
   preflight?: boolean
+  /**
+   * Slippage buffer applied to SendMax for IOU payments, in basis points
+   * (1 bp = 0.01%). The SendMax sent to the ledger is
+   * `source_amount * (1 + slippageBps / 10000)`. Range 0-1000 (max 10%).
+   *
+   * The default 50 bps (0.5%) covers small intra-block price moves on
+   * cross-issuer paths and the standard issuer TransferRate range without
+   * overpaying for typical liquidity.
+   *
+   * @default 50
+   */
+  slippageBps?: number
   /** XRPL network. */
   network?: NetworkId
   /** Custom WebSocket RPC URL. */

@@ -6,7 +6,8 @@ import { type NetworkId, XRPL_RPC_URLS } from '../constants.js'
 import { fromTecResult } from '../errors.js'
 import * as Methods from '../Methods.js'
 import type { ChargeClientConfig, PaymentMode } from '../types.js'
-import { buildAmount, parseCurrency } from '../utils/currency.js'
+import { buildAmount, isIOU, parseCurrency } from '../utils/currency.js'
+import { resolveIouPaymentExtras, validateSlippageBps } from '../utils/paths.js'
 import { runPreflight } from '../utils/validation.js'
 
 /**
@@ -29,6 +30,7 @@ export function charge(parameters: charge.Parameters) {
     seed,
     mode: defaultMode = 'pull',
     preflight: runPreflightCheck = true,
+    slippageBps = 50,
     network: defaultNetwork = 'testnet',
     rpcUrl: defaultRpcUrl,
     onProgress,
@@ -37,6 +39,8 @@ export function charge(parameters: charge.Parameters) {
   if (!seed) {
     throw new Error('seed is required for client charge method.')
   }
+
+  validateSlippageBps(slippageBps)
 
   const wallet = Wallet.fromSeed(seed)
 
@@ -70,11 +74,37 @@ export function charge(parameters: charge.Parameters) {
           })
         }
 
+        // For IOU payments, resolve Paths + SendMax before signing. This covers
+        // cross-issuer payments (path-find + chosen alternative) and same-issuer
+        // payments where the issuer charges a TransferRate.
+        let pathsField: { Paths?: unknown; SendMax?: unknown } = {}
+        if (isIOU(currency) && typeof xrplAmount === 'object' && 'currency' in xrplAmount) {
+          onProgress?.({ type: 'pathfinding' })
+          const extras = await resolveIouPaymentExtras({
+            client,
+            sender: wallet.classicAddress,
+            recipient,
+            destinationAmount: xrplAmount,
+            slippageBps,
+          })
+          pathsField = {
+            ...(extras.Paths ? { Paths: extras.Paths } : {}),
+            ...(extras.SendMax ? { SendMax: extras.SendMax } : {}),
+          }
+          onProgress?.({
+            type: 'paths_resolved',
+            strategy: extras.strategy,
+            sourceAmountValue: extras.sourceAmountValue,
+            sourceAmountCurrency: extras.sourceAmountCurrency,
+          })
+        }
+
         const payment = {
           TransactionType: 'Payment' as const,
           Account: wallet.classicAddress,
           Destination: recipient,
           Amount: xrplAmount,
+          ...pathsField,
           ...(request.methodDetails?.invoiceId
             ? { InvoiceID: request.methodDetails.invoiceId }
             : {}),
