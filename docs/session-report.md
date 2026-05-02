@@ -322,3 +322,94 @@ efff268 docs(readme): document cross-issuer IOU support and slippageBps
 cc7bad0 test: cross-issuer IOU paths (unit + devnet integration)
 244d804 feat(client): autofill Paths + SendMax for IOU payments
 ```
+
+## Follow-up: README cleanup
+
+Three corrections requested. One was a real fix, one was a no-op
+(verified live), one was a textual clarification.
+
+### 1. `as any` on Mppx method invocation -- fixed
+
+The README quick-start showed
+`(mppx as any)['xrpl/charge'](...)`. The cast was gratuitous: the
+upstream `Mppx<methods>` type already exposes typed handlers under
+three equivalent shapes -- `mppx['xrpl/charge'](...)` (slash-keyed
+index), `mppx.charge(...)` (shorthand when the intent is unique),
+and `mppx.xrpl.charge(...)` (nested). All three typecheck clean
+without the cast; verified by running `tsc` against each shape with
+the project's mppx peer dep.
+
+Cleaned the README example, added a one-line comment naming the
+three call shapes, and dropped the same cast from the demos and
+examples that shared the pattern: `demo/xrp-server.ts`,
+`demo/iou-charge.ts`, `demo/iou-cross-issuer.ts`,
+`demo/mpt-charge.ts`, `demo/channel-server.ts`,
+`examples/server.ts`, `examples/channel-server.ts`. Runtime
+behavior is identical (the cast is TypeScript-only); xrp-server +
+xrp-client demo re-run end-to-end on testnet to confirm. Tx:
+`C9C49841640129AFEC5A08778C7C87076E5FAADF12EBA5D33D3819DB5A61962C`.
+
+Note: the project's tsconfig excludes demos from typecheck, and an
+ad-hoc typecheck of the demos surfaced pre-existing private-field
+accesses (`result.receipt`) and other type issues that the broad
+cast was masking. Those are out of scope for this README pass and
+were left untouched -- they're a separate piece of work.
+
+Commit: `4b8173a fix(types): clean Mppx method invocation typing
+(remove README \`as any\`)`.
+
+### 2. Reserve constants -- no-op, verified correct
+
+`BASE_RESERVE_DROPS = '1000000'` (1 XRP) and `OWNER_RESERVE_DROPS
+= '200000'` (0.2 XRP) match current XRPL mainnet exactly. Probed a
+live `wss://xrplcluster.com` `server_state` at ledger 103960986 and
+got `reserve_base: 1000000`, `reserve_inc: 200000` -- a direct match.
+The XRPL ReducedReserve amendment that landed these values is the
+current state.
+
+Audited usage of the constants across `sdk/`, `test/`, `demo/`,
+`examples/` -- they're defined in `sdk/src/constants.ts:55,58` and
+re-exported from `sdk/src/index.ts:3,6` for public-API convenience,
+and **not used anywhere in the SDK's hot path**. The hot path
+(`sdk/src/utils/reserves.ts:31-32`) reads `validated.reserve_base`
+and `validated.reserve_inc` from a live `server_state` request, so
+the README's "static fallbacks ... preflight reads live values via
+server_state so wallets stay correct after any future ledger-wide
+reserve change" line is accurate. No changes made.
+
+### 3. Per-method vs per-request charge configuration -- clarified
+
+Reading `sdk/src/server/Charge.ts.charge()` and tracing the call
+into `Method.toServer({ defaults: { currency, recipient } })` plus
+mppx's `WithDefaults<request, defaults>` confirmed the semantics:
+
+- The `charge({ recipient, currency, ... })` call site is the
+  **method instance**: `recipient` and `currency` are registered as
+  `defaults` on the schema; everything else (network, store,
+  autoTrustline, etc.) is captured in closure. These are not
+  changeable per request.
+- The `mppx['xrpl/charge']({ amount, currency?, methodDetails? })`
+  call site is **per-request**: `amount` has no default and must be
+  supplied; `currency` and `methodDetails` follow mppx's standard
+  defaults precedence -- per-call wins, falls back to method-instance
+  default if omitted.
+
+Three changes to the README:
+- Quick-start example gains inline section comments marking the
+  method-instance block and the per-request block, and notes that
+  `amount` has no default.
+- "Server options (charge)" gains a 3-line preamble explaining the
+  split, and the `currency` row gets an inline reminder of the
+  override behavior.
+- "Tags, InvoiceID, and memos" leads with "methodDetails is a
+  per-request field" and wraps the example call as
+  `await mppx['xrpl/charge']({...})(request)` so it's concrete.
+
+Commit: `a1dca37 docs(readme): clarify per-method vs per-request
+charge configuration`.
+
+### Verification
+
+After each change: `pnpm tsc --noEmit`, `pnpm biome check`,
+`pnpm test` -- all green (230 unit tests pass).
+No commit on point 2 (no-op).
