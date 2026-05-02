@@ -1,32 +1,36 @@
 import { Errors } from 'mppx'
 
+/**
+ * Mapping from XRPL transaction engine results (tec/tem/ter/tef) to the SDK's
+ * typed error codes. Sub-headings group related codes; the comments next to a
+ * specific code call out a non-obvious mapping.
+ */
 export const TEC_RESULT_MAP: Record<string, string> = {
-  // -- Payment failures
+  // Payment failures
   tecPATH_DRY: 'PAYMENT_PATH_FAILED',
-  // tecPATH_PARTIAL means a path exists but liquidity is insufficient -- this
-  // is a path/liquidity issue, not a sender-balance issue.
+  // tecPATH_PARTIAL is a path/liquidity issue, not a sender-balance shortfall.
   tecPATH_PARTIAL: 'PAYMENT_PATH_FAILED',
   tecUNFUNDED_PAYMENT: 'INSUFFICIENT_BALANCE',
   tecNO_DST: 'RECIPIENT_NOT_FOUND',
-  // -- Trustline / authorisation
+  // Trustline / authorisation
   tecNO_AUTH: 'TRUSTLINE_NOT_AUTHORIZED',
   tecNO_LINE: 'MISSING_TRUSTLINE',
   tecNO_LINE_INSUF_RESERVE: 'INSUFFICIENT_RESERVE',
   tecNO_LINE_REDUNDANT: 'MISSING_TRUSTLINE',
   tecFROZEN: 'TRUSTLINE_FROZEN',
-  // -- Reserve / fee
+  // Reserve / fee
   tecINSUFFICIENT_RESERVE: 'INSUFFICIENT_RESERVE',
   tecINSUFF_FEE: 'INSUFFICIENT_FEE',
   terINSUF_FEE_B: 'INSUFFICIENT_FEE',
-  // -- Sequence / submission
+  // Sequence / submission
   tefPAST_SEQ: 'SUBMISSION_FAILED',
   tefALREADY: 'SUBMISSION_FAILED',
   tefBAD_AUTH: 'INVALID_SIGNATURE',
   tefMASTER_DISABLED: 'INVALID_SIGNATURE',
-  // -- Validation
+  // Validation
   temBAD_AMOUNT: 'INVALID_AMOUNT',
-  // tecNO_PERMISSION is the MPT-era rejection: holder not authorised by issuer
-  // when the issuance has lsfMPTRequireAuth.
+  // tecNO_PERMISSION on the MPT path: holder not authorised when the issuance
+  // has lsfMPTRequireAuth set.
   tecNO_PERMISSION: 'MPT_NOT_AUTHORIZED',
 }
 

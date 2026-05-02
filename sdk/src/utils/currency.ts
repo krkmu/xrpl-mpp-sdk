@@ -15,10 +15,9 @@ export function parseCurrency(currency: string): XrplCurrency {
     if (parsed.mpt_issuance_id) return parsed as MPToken
     if (parsed.currency && parsed.issuer) return parsed as IssuedCurrency
   } catch {
-    // Not JSON -- could be a 3-letter currency code with issuer
+    // Falls through to "CURRENCY:ISSUER" parsing below.
   }
 
-  // Try "CURRENCY:ISSUER" format
   if (currency.includes(':')) {
     const [curr, issuer] = currency.split(':')
     if (curr && issuer) return { currency: curr, issuer }
@@ -50,7 +49,7 @@ export function buildAmount(
   | { currency: string; issuer: string; value: string }
   | { mpt_issuance_id: string; value: string } {
   if (currency === 'XRP') {
-    return amount // drops
+    return amount
   }
 
   if ('mpt_issuance_id' in currency) {
@@ -67,23 +66,17 @@ export function buildAmount(
   }
 }
 
-/**
- * Check if a currency is XRP native.
- */
+/** Type guard: XRP native currency. */
 export function isXrp(currency: XrplCurrency): currency is 'XRP' {
   return currency === 'XRP'
 }
 
-/**
- * Check if a currency is an IOU.
- */
+/** Type guard: issued currency (IOU). */
 export function isIOU(currency: XrplCurrency): currency is IssuedCurrency {
   return typeof currency === 'object' && 'currency' in currency && 'issuer' in currency
 }
 
-/**
- * Check if a currency is an MPT.
- */
+/** Type guard: multi-purpose token. */
 export function isMPT(currency: XrplCurrency): currency is MPToken {
   return typeof currency === 'object' && 'mpt_issuance_id' in currency
 }

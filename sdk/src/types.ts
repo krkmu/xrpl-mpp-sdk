@@ -1,7 +1,5 @@
 import type { NetworkId } from './constants.js'
 
-// -- Currency Types --
-
 /** XRP native currency. */
 export type XrpCurrency = 'XRP'
 
@@ -19,13 +17,10 @@ export type MPToken = {
 /** Any supported XRPL currency type. */
 export type XrplCurrency = XrpCurrency | IssuedCurrency | MPToken
 
-// -- Payment Mode --
-
 /** Pull: client signs tx blob, server submits. Push: client submits, sends hash. */
 export type PaymentMode = 'pull' | 'push'
 
-// -- Charge Progress --
-
+/** Lifecycle event emitted by the client charge flow's `onProgress` callback. */
 export type ChargeProgressEvent =
   | { type: 'challenge'; recipient: string; amount: string; currency: string }
   | { type: 'preflight' }
@@ -40,8 +35,6 @@ export type ChargeProgressEvent =
   | { type: 'signed'; mode: PaymentMode }
   | { type: 'submitting' }
   | { type: 'confirmed'; hash: string }
-
-// -- Charge Configuration --
 
 export type ChargeClientConfig = {
   /** Wallet seed or Wallet instance. */
@@ -112,8 +105,6 @@ export type ChargeServerConfig = {
   /** Custom WebSocket RPC URL. */
   rpcUrl?: string
 }
-
-// -- Channel Configuration --
 
 export type ChannelClientConfig = {
   /** Wallet seed or Wallet instance. */

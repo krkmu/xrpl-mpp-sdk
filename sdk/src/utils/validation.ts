@@ -76,8 +76,7 @@ async function checkSufficientBalance(params: {
 
 const LSF_DEFAULT_RIPPLE = 0x00800000
 const LSF_GLOBAL_FREEZE = 0x00400000
-// const LSF_NO_FREEZE = 0x00200000 -- positive trust signal, not enforced here
-const LSF_REQUIRE_AUTH = 0x00040000 // asfRequireAuth on issuer
+const LSF_REQUIRE_AUTH = 0x00040000
 
 /** Read issuer flags via account_info; returns 0 if the issuer does not exist. */
 async function readIssuerFlags(client: Client, issuer: string): Promise<number> {

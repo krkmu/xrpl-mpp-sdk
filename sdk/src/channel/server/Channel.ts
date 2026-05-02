@@ -60,12 +60,12 @@ export function channel(parameters: channel.Parameters) {
 
   const rpcUrl = customRpcUrl ?? XRPL_RPC_URLS[network]
 
-  // Serialize verify operations to prevent concurrent race conditions
+  // Serialise verify calls so per-channel monotonicity checks don't race.
   let verifyLock: Promise<unknown> = Promise.resolve()
 
   return Method.toServer(ChannelMethod, {
     async request({ request }) {
-      // Look up current cumulative from store so clients know where to resume
+      // Surface the current cumulative so clients know where to resume.
       let cumulativeAmount = '0'
       if (store && request.channelId) {
         const state = (await store.get(`xrpl:channel:${request.channelId}`)) as any
@@ -111,7 +111,6 @@ export function channel(parameters: channel.Parameters) {
       )
     }
 
-    // Reject credentials on finalized channels
     if (store && channelId) {
       const finalized = await store.get(`xrpl:channel:finalized:${channelId}`)
       if (finalized) {
@@ -119,7 +118,6 @@ export function channel(parameters: channel.Parameters) {
       }
     }
 
-    // Check challenge TTL
     if (maxChallengeAge > 0 && challenge.createdAt) {
       const age = Date.now() - new Date(challenge.createdAt).getTime()
       if (age > maxChallengeAge) {
@@ -132,7 +130,6 @@ export function channel(parameters: channel.Parameters) {
 
     const action = payload.action ?? 'voucher'
 
-    // Challenge replay protection
     if (store) {
       const challengeKey = `xrpl:challenge:${challenge.id}`
       const existing = await store.get(challengeKey)
@@ -142,7 +139,6 @@ export function channel(parameters: channel.Parameters) {
       await store.put(challengeKey, { usedAt: new Date().toISOString() })
     }
 
-    // Handle open action -- broadcast PaymentChannelCreate and init store
     if (action === 'open') {
       return await doVerifyOpen(credential)
     }
@@ -151,7 +147,7 @@ export function channel(parameters: channel.Parameters) {
     const signature = payload.signature
     const requestedAmount = BigInt(challenge.request?.amount ?? '0')
 
-    // verifyPaymentChannelClaim expects XRP (not drops) -- it internally calls xrpToDrops
+    // verifyPaymentChannelClaim expects XRP, not drops -- it internally calls xrpToDrops.
     const claimXrp = dropsToXrp(payload.amount).toString()
     let isValid: boolean
     try {
@@ -194,9 +190,9 @@ export function channel(parameters: channel.Parameters) {
       }
     }
 
-    // Check cumulative amount is strictly monotonic via store
-    // Note: in distributed deployments, concurrent requests may race here.
-    // For single-instance deployments, the verifyLock serializes access.
+    // Single-instance deployments serialise via verifyLock above; distributed
+    // deployments using a shared Store can race here -- atomic compare-and-set
+    // would be needed.
     if (store) {
       const cumulativeKey = `xrpl:channel:${channelId}`
       const state = (await store.get(cumulativeKey)) as any
@@ -222,7 +218,6 @@ export function channel(parameters: channel.Parameters) {
         }
       }
 
-      // Update cumulative amount
       await store.put(cumulativeKey, {
         cumulative: payload.amount,
         signature,
@@ -243,7 +238,6 @@ export function channel(parameters: channel.Parameters) {
     const { challenge, payload } = credential
     const blob = payload.transaction as string
 
-    // Decode and validate the tx is a PaymentChannelCreate
     let decoded: any
     try {
       decoded = decode(blob)
@@ -258,7 +252,6 @@ export function channel(parameters: channel.Parameters) {
       )
     }
 
-    // Verify destination matches the server's expected recipient
     const expectedRecipient = challenge.request?.recipient
     if (expectedRecipient && decoded.Destination !== expectedRecipient) {
       throw verificationFailed(
@@ -267,7 +260,6 @@ export function channel(parameters: channel.Parameters) {
       )
     }
 
-    // Verify the public key matches what the server expects
     if (decoded.PublicKey?.toUpperCase() !== publicKey.toUpperCase()) {
       throw verificationFailed(
         'SUBMISSION_FAILED',
@@ -275,10 +267,10 @@ export function channel(parameters: channel.Parameters) {
       )
     }
 
-    // Bind the on-chain Account (funder) to the credential's DID source. doVerify()
-    // already verified that the credential source matches the address derived from
-    // publicKey, but this re-asserts the binding inside the open path so any
-    // refactor that splits these flows keeps the invariant.
+    // Re-assert the funder/source binding inside the open path. doVerify()
+    // already checked source vs publicKey-derived address; this also covers
+    // the funder (decoded.Account) so a refactor that splits the paths
+    // doesn't drop the invariant.
     const credentialSenderAddress = classicAddressFromDID(credential.source)
     if (decoded.Account !== credentialSenderAddress) {
       throw verificationFailed(
@@ -287,7 +279,6 @@ export function channel(parameters: channel.Parameters) {
       )
     }
 
-    // Broadcast the tx
     const client = new Client(rpcUrl)
     await client.connect()
 
@@ -302,7 +293,6 @@ export function channel(parameters: channel.Parameters) {
         )
       }
 
-      // Poll for confirmation
       const txHash = submitResult.result.tx_json?.hash
       if (!txHash) {
         throw verificationFailed('SUBMISSION_FAILED', 'No tx hash returned from submit')
@@ -330,7 +320,6 @@ export function channel(parameters: channel.Parameters) {
         throw verificationFailed('SUBMISSION_FAILED', 'PaymentChannelCreate not confirmed in time')
       }
 
-      // Extract channelId from metadata
       const channelId = extractChannelIdFromMeta(meta)
 
       // Validate the initial claim against the real channelId.
@@ -592,11 +581,10 @@ export async function close(params: {
   await client.connect()
 
   try {
-    // Look up the channel to determine the caller's role
     const channelObj = await lookupChannel(client, channelId)
     const isSource = channelObj?.Account === wallet.classicAddress
 
-    // tfClose = 0x00010000 -- only the source can use this flag
+    // tfClose = 0x00010000. Only the source (funder) is allowed to set it.
     const TF_CLOSE = 0x00010000
 
     const channelClaim = {
@@ -642,9 +630,7 @@ async function lookupChannel(client: Client, channelId: string): Promise<any | n
     } as any)
     return (response.result as any).node ?? null
   } catch (err: any) {
-    // entryNotFound means the channel does not exist -- return null
     if (err?.data?.error === 'entryNotFound') return null
-    // Re-throw network errors so callers can handle them
     throw err
   }
 }

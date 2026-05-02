@@ -46,7 +46,6 @@ export async function ensureMPTHolding(params: {
   }
   const issuerRequiresAuth = (issuanceFlags & LSF_MPT_REQUIRE_AUTH) !== 0
 
-  // Reserve check before submitting MPTokenAuthorize
   const state = await getReserveState(client, wallet.classicAddress)
   if (!state) {
     throw new Error(
@@ -120,9 +119,7 @@ async function checkMPTHolding(client: Client, account: string, mpt: MPToken): P
       (obj: any) => obj.MPTokenIssuanceID === mpt.mpt_issuance_id,
     )
   } catch (err: any) {
-    // Account not found -- no MPT holding possible
     if (err?.data?.error === 'actNotFound') return false
-    // Re-throw network errors
     throw err
   }
 }

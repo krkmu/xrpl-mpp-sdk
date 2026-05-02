@@ -42,7 +42,6 @@ export async function ensureTrustline(params: {
 
   const { requiresAuth } = await assertIssuerHealth(client, currency)
 
-  // Reserve check before issuing TrustSet (which adds one owner object).
   const state = await getReserveState(client, wallet.classicAddress)
   if (!state) {
     throw new Error(
@@ -140,9 +139,7 @@ export async function checkRippling(client: Client, issuer: string): Promise<boo
     const flags = response.result.account_data.Flags ?? 0
     return (flags & LSF_DEFAULT_RIPPLE) !== 0
   } catch (err: any) {
-    // Account not found -- rippling not possible
     if (err?.data?.error === 'actNotFound') return false
-    // Re-throw network errors
     throw err
   }
 }

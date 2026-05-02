@@ -64,8 +64,6 @@ export const charge = Method.from({
   },
 })
 
-// -- Helpers --
-
 /**
  * Convert XRP to drops.
  *

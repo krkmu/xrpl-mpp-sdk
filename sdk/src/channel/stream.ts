@@ -34,7 +34,6 @@ export class ChannelStream {
     this.units += BigInt(units)
     this.cumulative = this.units * this.dropsPerUnit
 
-    // Only sign if we've crossed a granularity boundary
     const prevBucket = (this.units - BigInt(units)) / this.granularity
     const currBucket = this.units / this.granularity
 
@@ -49,7 +48,7 @@ export class ChannelStream {
    */
   sign(): ChannelClaim {
     const amount = this.cumulative.toString()
-    // signPaymentChannelClaim expects XRP (not drops) -- it internally calls xrpToDrops
+    // signPaymentChannelClaim expects XRP, not drops -- it internally calls xrpToDrops.
     const amountXrp = dropsToXrp(amount).toString()
     const signature = signPaymentChannelClaim(this.channelId, amountXrp, this.#privateKey)
 

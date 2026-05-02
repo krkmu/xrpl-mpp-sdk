@@ -101,7 +101,7 @@ export async function resolveIouPaymentExtras(params: {
     pathFindRetryDelaysMs = [1_000, 2_000, 4_000],
   } = params
 
-  // --- Case 1: sender == issuer (self-issued IOU) ---
+  // Case 1: sender == issuer (self-issued IOU). No path, no SendMax.
   if (sender === destinationAmount.issuer) {
     return {
       sourceAmountValue: destinationAmount.value,
@@ -113,16 +113,10 @@ export async function resolveIouPaymentExtras(params: {
 
   const transferRateFactor = await readTransferRateFactor(client, destinationAmount.issuer)
 
-  // --- Case 2: direct trustline ---
-  //
-  // The direct path (sender -> issuer -> recipient via rippling) only works
-  // when BOTH parties trust the same issuer for the same currency:
-  //   - recipient must hold a trustline with `Amount.issuer` for `Amount.currency`
-  //   - sender must either be the issuer (handled in Case 1 above) or also
-  //     hold a trustline with `Amount.issuer`.
-  // If the sender holds a different issuer's IOU, even a recipient with a
-  // direct trustline can only be reached via a cross-issuer path through the
-  // orderbook -- so we fall through to Case 3.
+  // Case 2: direct trustline. The sender -> issuer -> recipient route via
+  // rippling only works when both parties trust the same issuer for the same
+  // currency. Asymmetric cases (only one side holds the issuer's trustline)
+  // fall through to Case 3 because the orderbook is the only viable route.
   const [recipientHasDirectTrustline, senderHasDirectTrustline] = await Promise.all([
     accountHoldsTrustline(client, recipient, destinationAmount),
     accountHoldsTrustline(client, sender, destinationAmount),
@@ -143,17 +137,12 @@ export async function resolveIouPaymentExtras(params: {
     }
   }
 
-  // --- Case 3: cross-issuer; ask the ledger for paths ---
+  // Case 3: cross-issuer. Ask the ledger for paths.
   //
   // Pass the sender's holdings as `source_currencies` so the ledger only
-  // returns alternatives the sender can actually afford. This both reduces
-  // server work and avoids surprising bridge currencies (e.g. XRP) when the
-  // sender has a direct IOU position that would route just as well.
-  //
-  // ripple_path_find is non-blocking: the first call may return zero
-  // alternatives or time out while the path indexer warms its cache,
-  // especially right after a new offer was placed. Retry with a short
-  // backoff before declaring no path.
+  // returns alternatives the sender can actually afford. ripple_path_find is
+  // non-blocking; the first call after a new offer can return zero
+  // alternatives while the path indexer warms its cache, hence the retries.
   const sourceCurrencies = await listSourceCurrencies(client, sender)
   const alternatives = await pathFindWithRetry(
     client,
@@ -187,19 +176,13 @@ export async function resolveIouPaymentExtras(params: {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Ledger helpers
-// ---------------------------------------------------------------------------
+// -- Ledger helpers ----------------------------------------------------------
 
 /**
- * Run ripple_path_find with a few retries. The path indexer caches results
- * lazily, so the first call after a new offer/trustline can return an empty
- * `alternatives` array or time out at the WebSocket level. Retries between
- * calls give the indexer time to warm.
- *
- * Total worst-case time: ~7 seconds (1 + 2 + 4s backoff before each retry,
- * 3 attempts). This is acceptable on the credential-creation path -- the
- * alternative is a confusing tecPATH_DRY at submit time.
+ * Run ripple_path_find with a few retries between calls so a cold path
+ * indexer has time to warm. Total worst-case wait: ~7 seconds (1 + 2 + 4s
+ * backoff over 3 attempts). Cheaper than letting tecPATH_DRY surface at
+ * submit time.
  */
 async function pathFindWithRetry(
   client: Client,
@@ -301,14 +284,13 @@ async function listSourceCurrencies(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Alternative ranking + amount math
-// ---------------------------------------------------------------------------
+// -- Alternative ranking and amount math -------------------------------------
 
 /**
- * Pick the cheapest alternative by source_amount. XRP and IOU source amounts
- * sort independently -- if alternatives mix, prefer the one with the lowest
- * normalized cost (we treat XRP source as drops and IOU source as `value`).
+ * Pick the cheapest alternative by source_amount. The sort key normalises
+ * across currencies (XRP drops are converted to XRP units before comparing),
+ * which is good enough for ranking since the SDK's SendMax math uses
+ * string-decimal arithmetic on the chosen alternative.
  */
 function pickCheapestAlternative<
   T extends { paths_computed: PathStep[][]; source_amount: SourceAmount },
@@ -326,7 +308,7 @@ function pickCheapestAlternative<
 }
 
 function sourceAmountSortKey(amount: SourceAmount): number {
-  if (typeof amount === 'string') return Number(amount) / 1_000_000 // XRP drops -> XRP
+  if (typeof amount === 'string') return Number(amount) / 1_000_000
   return Number(amount.value)
 }
 
@@ -336,11 +318,11 @@ function sourceAmountSortKey(amount: SourceAmount): number {
  */
 function applySlippageToSourceAmount(source: SourceAmount, slippageBps: number): SourceAmount {
   if (typeof source === 'string') {
-    // XRP drops -- round up
     const factor = 1 + slippageBps / 10_000
     const drops = BigInt(source)
     const buffered = (drops * BigInt(Math.round(factor * 1_000_000))) / 1_000_000n
-    // Ensure at least +1 drop when slippage > 0 to defeat exact-equality races.
+    // Force at least +1 drop when slippage > 0 so a tiny source amount
+    // doesn't truncate back to the original after the BigInt division.
     const min = slippageBps > 0 ? drops + 1n : drops
     return (buffered > min ? buffered : min).toString()
   }
@@ -368,9 +350,10 @@ function describeSourceAmount(source: SourceAmount): {
  */
 function multiplyDecimal(value: string, multiplier: number): string {
   if (multiplier === 1) return value
+  // Number is good for ~16 significant digits, which matches XRPL IOU
+  // encoding (15-16 sig digs). Slippage and TransferRate multipliers are
+  // bounded so compounding rounding stays well within the SendMax buffer.
   const product = Number(value) * multiplier
-  // 16 significant digits is the safe ceiling for IEEE-754 doubles. XRPL IOU
-  // amounts encode at most 15-16 significant digits, so this is enough.
   return formatDecimal(product)
 }
 
@@ -391,7 +374,8 @@ function formatDecimal(n: number): string {
   if (!sig.includes('e') && !sig.includes('E')) {
     return trimTrailingZeros(sig)
   }
-  // Fall back to a manual scientific-to-decimal expansion.
+  // toPrecision returned scientific notation. Expand it to plain decimal so
+  // the result is canonical for XRPL IOU values.
   const [mantissa, expPart] = sig.toLowerCase().split('e')
   const exp = Number.parseInt(expPart ?? '0', 10)
   const sign = mantissa.startsWith('-') ? '-' : ''

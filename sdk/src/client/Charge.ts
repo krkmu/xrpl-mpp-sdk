@@ -61,9 +61,7 @@ export function charge(parameters: charge.Parameters) {
       onProgress?.({ type: 'challenge', recipient, amount, currency: currencyStr })
 
       // 60s per-request timeout. ripple_path_find for cross-issuer payments
-      // on a busy ledger can exceed the xrpl.js default of 20s while the path
-      // indexer warms; this gives it room without forcing every caller to
-      // configure a custom Client.
+      // can exceed xrpl.js's 20s default while the path indexer warms.
       const client = new Client(rpcUrl, { timeout: 60_000 })
       await client.connect()
 
@@ -79,8 +77,8 @@ export function charge(parameters: charge.Parameters) {
           })
         }
 
-        // For IOU payments, resolve Paths + SendMax before signing. This covers
-        // cross-issuer payments (path-find + chosen alternative) and same-issuer
+        // For IOU payments, resolve Paths + SendMax before signing. Covers
+        // cross-issuer payments (path-find + chosen alternative) and direct
         // payments where the issuer charges a TransferRate.
         let pathsField: { Paths?: unknown; SendMax?: unknown } = {}
         if (isIOU(currency) && typeof xrplAmount === 'object' && 'currency' in xrplAmount) {
