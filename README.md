@@ -104,10 +104,15 @@ pnpm build
 
 ### Server (charge)
 
+Charge configuration splits across two call sites: the **method instance**, registered once at startup, and the **per-request invocation**, called at the 402 point for each protected route.
+
 ```ts
 import { Mppx, Store } from 'mppx/server'
 import { charge } from 'xrpl-mpp-sdk/server'
 
+// ── Method instance (set up once) ───────────────────────────────────────
+// recipient, currency (default), network, store, autoTrustline, etc. are
+// captured here. They apply to every charge that goes through this method.
 const mppx = Mppx.create({
   secretKey: process.env.MPP_SECRET_KEY,
   methods: [
@@ -124,6 +129,9 @@ const mppx = Mppx.create({
 //   mppx.charge(...)          -- shorthand (only when the intent is unique across methods)
 //   mppx.xrpl.charge(...)     -- nested by name
 export async function handler(request: Request) {
+  // ── Per-request (set per protected route) ─────────────────────────────
+  // amount has no default and must be supplied here. currency and any
+  // methodDetails passed here override the method-instance defaults.
   const result = await mppx['xrpl/charge']({
     amount: '1000000',
     currency: 'XRP',
@@ -199,10 +207,16 @@ const response = await fetch('https://api.example.com/resource')
 
 ### Server options (charge)
 
+Charge has two distinct call sites:
+
+- **Method-instance config** (`charge({ ... })`, listed below): set once when registering the method with `Mppx.create()`. Applies to every charge handled by this instance: which account receives funds, which network, which store backs replay protection, whether to auto-create trustlines or MPT auths, etc. These are not changeable per-request.
+- **Per-request invocation** (`mppx['xrpl/charge']({ amount, currency?, methodDetails? })`): called at each 402 point. The `amount` has no default and must be supplied here; everything else (`currency`, `methodDetails`) overrides the method-instance default if specified, or falls back to it if omitted (mppx's standard `defaults` precedence -- per-call wins).
+
 ```ts
 charge({
   recipient: string,                // XRPL classic address (r...)
-  currency?: XrplCurrency,          // default: 'XRP'. Also: {currency, issuer} or {mpt_issuance_id}
+  currency?: XrplCurrency,          // default: 'XRP'. Also: {currency, issuer} or {mpt_issuance_id}.
+                                    // Per-request currency on mppx['xrpl/charge']({...}) overrides.
   network?: 'mainnet' | 'testnet' | 'devnet',  // default: 'testnet'
   rpcUrl?: string,                  // custom WebSocket RPC URL
   store?: Store.Store,              // required by default for replay protection (see requireStore)
@@ -277,11 +291,11 @@ channel({
 
 ### Tags, InvoiceID, and memos
 
-The charge schema's `methodDetails` lets the server attach optional fields the client must put on the Payment tx. The server enforces them on verify, so a client who omits a required `DestinationTag` is rejected with `SUBMISSION_FAILED`.
+`methodDetails` is a per-request field passed at the 402 point (not on the method instance), so its values can vary per protected route. The server attaches these to the challenge; the client puts them on the Payment tx; the server enforces them on verify. A client who omits a required `DestinationTag` (or sends a different one) is rejected with `SUBMISSION_FAILED`.
 
 ```ts
-// Server-side: bind a Payment to additional fields
-mppx['xrpl/charge']({
+// Per-request -- bind a particular charge to additional Payment fields
+const result = await mppx['xrpl/charge']({
   amount: '1000000',
   currency: 'XRP',
   methodDetails: {
@@ -292,7 +306,7 @@ mppx['xrpl/charge']({
       { type: 'reconciliation-id', data: 'order-42' },
     ],
   },
-})
+})(request)
 ```
 
 ### Cross-issuer IOU payments
