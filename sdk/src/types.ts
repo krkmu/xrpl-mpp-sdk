@@ -72,6 +72,12 @@ export type ChargeClientConfig = {
    * @default 50
    */
   slippageBps?: number
+  /**
+   * Backoff delays (ms) between ripple_path_find retries when the first call
+   * returns no alternatives. Default `[1000, 2000, 4000]`. Pass an empty
+   * array to disable retries.
+   */
+  pathFindRetryDelaysMs?: number[]
   /** XRPL network. */
   network?: NetworkId
   /** Custom WebSocket RPC URL. */

@@ -31,6 +31,7 @@ export function charge(parameters: charge.Parameters) {
     mode: defaultMode = 'pull',
     preflight: runPreflightCheck = true,
     slippageBps = 50,
+    pathFindRetryDelaysMs,
     network: defaultNetwork = 'testnet',
     rpcUrl: defaultRpcUrl,
     onProgress,
@@ -59,7 +60,11 @@ export function charge(parameters: charge.Parameters) {
 
       onProgress?.({ type: 'challenge', recipient, amount, currency: currencyStr })
 
-      const client = new Client(rpcUrl)
+      // 60s per-request timeout. ripple_path_find for cross-issuer payments
+      // on a busy ledger can exceed the xrpl.js default of 20s while the path
+      // indexer warms; this gives it room without forcing every caller to
+      // configure a custom Client.
+      const client = new Client(rpcUrl, { timeout: 60_000 })
       await client.connect()
 
       try {
@@ -86,6 +91,7 @@ export function charge(parameters: charge.Parameters) {
             recipient,
             destinationAmount: xrplAmount,
             slippageBps,
+            ...(pathFindRetryDelaysMs ? { pathFindRetryDelaysMs } : {}),
           })
           pathsField = {
             ...(extras.Paths ? { Paths: extras.Paths } : {}),

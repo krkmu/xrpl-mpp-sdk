@@ -84,8 +84,22 @@ export async function resolveIouPaymentExtras(params: {
   recipient: string
   destinationAmount: IouAmount
   slippageBps: number
+  /**
+   * Backoff delays (ms) between ripple_path_find retries when the first call
+   * returns no alternatives or times out. Default `[1000, 2000, 4000]`. Pass
+   * an empty array to disable retries (useful in tests where the mock returns
+   * a definitive empty answer).
+   */
+  pathFindRetryDelaysMs?: number[]
 }): Promise<ResolvedIouExtras> {
-  const { client, sender, recipient, destinationAmount, slippageBps } = params
+  const {
+    client,
+    sender,
+    recipient,
+    destinationAmount,
+    slippageBps,
+    pathFindRetryDelaysMs = [1_000, 2_000, 4_000],
+  } = params
 
   // --- Case 1: sender == issuer (self-issued IOU) ---
   if (sender === destinationAmount.issuer) {
@@ -99,13 +113,21 @@ export async function resolveIouPaymentExtras(params: {
 
   const transferRateFactor = await readTransferRateFactor(client, destinationAmount.issuer)
 
-  // --- Case 2: direct trustline (recipient holds the same issuer) ---
-  const recipientHasDirectTrustline = await accountHoldsTrustline(
-    client,
-    recipient,
-    destinationAmount,
-  )
-  if (recipientHasDirectTrustline) {
+  // --- Case 2: direct trustline ---
+  //
+  // The direct path (sender -> issuer -> recipient via rippling) only works
+  // when BOTH parties trust the same issuer for the same currency:
+  //   - recipient must hold a trustline with `Amount.issuer` for `Amount.currency`
+  //   - sender must either be the issuer (handled in Case 1 above) or also
+  //     hold a trustline with `Amount.issuer`.
+  // If the sender holds a different issuer's IOU, even a recipient with a
+  // direct trustline can only be reached via a cross-issuer path through the
+  // orderbook -- so we fall through to Case 3.
+  const [recipientHasDirectTrustline, senderHasDirectTrustline] = await Promise.all([
+    accountHoldsTrustline(client, recipient, destinationAmount),
+    accountHoldsTrustline(client, sender, destinationAmount),
+  ])
+  if (recipientHasDirectTrustline && senderHasDirectTrustline) {
     const sourceValue = multiplyDecimal(destinationAmount.value, transferRateFactor)
     const sendMaxValue = applySlippage(sourceValue, slippageBps)
     return {
@@ -122,19 +144,27 @@ export async function resolveIouPaymentExtras(params: {
   }
 
   // --- Case 3: cross-issuer; ask the ledger for paths ---
+  //
+  // Pass the sender's holdings as `source_currencies` so the ledger only
+  // returns alternatives the sender can actually afford. This both reduces
+  // server work and avoids surprising bridge currencies (e.g. XRP) when the
+  // sender has a direct IOU position that would route just as well.
+  //
+  // ripple_path_find is non-blocking: the first call may return zero
+  // alternatives or time out while the path indexer warms its cache,
+  // especially right after a new offer was placed. Retry with a short
+  // backoff before declaring no path.
   const sourceCurrencies = await listSourceCurrencies(client, sender)
-  const pathFindRes = (await client.request({
-    command: 'ripple_path_find',
-    source_account: sender,
-    destination_account: recipient,
-    destination_amount: destinationAmount,
-    ...(sourceCurrencies.length > 0 ? { source_currencies: sourceCurrencies } : {}),
-  } as any)) as any
-
-  const alternatives =
-    (pathFindRes?.result?.alternatives as
-      | Array<{ paths_computed: PathStep[][]; source_amount: SourceAmount }>
-      | undefined) ?? []
+  const alternatives = await pathFindWithRetry(
+    client,
+    {
+      source_account: sender,
+      destination_account: recipient,
+      destination_amount: destinationAmount,
+      ...(sourceCurrencies.length > 0 ? { source_currencies: sourceCurrencies } : {}),
+    },
+    pathFindRetryDelaysMs,
+  )
   if (alternatives.length === 0) {
     throw verificationFailed(
       'PAYMENT_PATH_FAILED',
@@ -162,6 +192,48 @@ export async function resolveIouPaymentExtras(params: {
 // ---------------------------------------------------------------------------
 
 /**
+ * Run ripple_path_find with a few retries. The path indexer caches results
+ * lazily, so the first call after a new offer/trustline can return an empty
+ * `alternatives` array or time out at the WebSocket level. Retries between
+ * calls give the indexer time to warm.
+ *
+ * Total worst-case time: ~7 seconds (1 + 2 + 4s backoff before each retry,
+ * 3 attempts). This is acceptable on the credential-creation path -- the
+ * alternative is a confusing tecPATH_DRY at submit time.
+ */
+async function pathFindWithRetry(
+  client: Client,
+  request: {
+    source_account: string
+    destination_account: string
+    destination_amount: IouAmount
+    source_currencies?: Array<{ currency: string; issuer?: string }>
+  },
+  delaysMs: number[],
+): Promise<Array<{ paths_computed: PathStep[][]; source_amount: SourceAmount }>> {
+  let lastError: unknown
+  for (let attempt = 0; attempt <= delaysMs.length; attempt++) {
+    if (attempt > 0) {
+      const delay = delaysMs[attempt - 1]
+      if (delay > 0) await new Promise((r) => setTimeout(r, delay))
+    }
+    try {
+      const res = (await client.request({ command: 'ripple_path_find', ...request } as any)) as any
+      const alternatives =
+        (res?.result?.alternatives as
+          | Array<{ paths_computed: PathStep[][]; source_amount: SourceAmount }>
+          | undefined) ?? []
+      if (alternatives.length > 0) return alternatives
+      lastError = undefined
+    } catch (err) {
+      lastError = err
+    }
+  }
+  if (lastError) throw lastError
+  return []
+}
+
+/**
  * Read the issuer's TransferRate as a decimal multiplier. Default 1 (no fee).
  *
  * On XRPL, TransferRate is stored as an integer in [1_000_000_000, 2_000_000_000]
@@ -181,8 +253,10 @@ async function readTransferRateFactor(client: Client, issuer: string): Promise<n
 }
 
 /**
- * Return true when `account` holds a trustline for `currency.currency` from
- * the same issuer. Used to detect "direct trustline" cross-issuer scenarios.
+ * Return true when `account` holds a trustline for `currency.currency` issued
+ * by `currency.issuer`. Defensive about the ledger response: matches both the
+ * currency code and the peer (line.account) to defeat servers that don't
+ * filter on `peer` and to cleanly compose with mocked clients in tests.
  */
 async function accountHoldsTrustline(
   client: Client,
@@ -195,7 +269,9 @@ async function accountHoldsTrustline(
       account,
       peer: currency.issuer,
     })
-    return (r.result.lines as any[]).some((l) => l.currency === currency.currency)
+    return (r.result.lines as any[]).some(
+      (l) => l.currency === currency.currency && l.account === currency.issuer,
+    )
   } catch (err: any) {
     if (err?.data?.error === 'actNotFound') return false
     throw err
