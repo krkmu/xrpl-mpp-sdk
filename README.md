@@ -218,7 +218,9 @@ charge({
   network?: 'mainnet' | 'testnet' | 'devnet',
   rpcUrl?: string,
   preflight?: boolean,              // balance, reserves, destination, rippling (default: true)
-  onProgress?: (event) => void,     // lifecycle callback (challenge, preflight, signing, signed, submitting, confirmed)
+  slippageBps?: number,             // SendMax buffer for IOU payments, 0-1000 (default: 50 = 0.5%)
+  pathFindRetryDelaysMs?: number[], // ripple_path_find retry backoff (default: [1000, 2000, 4000])
+  onProgress?: (event) => void,     // lifecycle callback (challenge, preflight, pathfinding, paths_resolved, signing, signed, submitting, confirmed)
 })
 ```
 
@@ -256,6 +258,30 @@ channel({
 
 // MPT -- multi-purpose token
 { amount: '100', currency: '{"mpt_issuance_id":"00ABC..."}' }
+```
+
+### Cross-issuer IOU payments
+
+The SDK auto-resolves IOU paths. When the sender holds one issuer's IOU and the recipient holds a different issuer's IOU, the client calls `ripple_path_find` before signing, picks the cheapest alternative, and attaches `Paths` and `SendMax` to the Payment. The issuer's `TransferRate` is read from `account_info` and factored into `SendMax`. The default slippage buffer is 50 bps (0.5%), tunable via `slippageBps` (range 0-1000). Same-issuer payments and self-issued IOUs skip path-find. See [`demo/iou-cross-issuer.ts`](demo/iou-cross-issuer.ts) for a runnable end-to-end example.
+
+```ts
+import { Mppx } from 'mppx/client'
+import { charge } from 'xrpl-mpp-sdk/client'
+
+const mppx = Mppx.create({
+  methods: [
+    charge({
+      seed: 'sEdV...',          // sender holds USD.IssuerA
+      slippageBps: 50,           // 0.5% buffer (default)
+      onProgress: (e) => e.type === 'paths_resolved' && console.log(e.strategy, e.sourceAmountValue),
+    }),
+  ],
+})
+
+// Server's challenge specifies USD.IssuerB. The SDK routes through whatever
+// liquidity exists from sender's USD.IssuerA holdings to recipient's
+// USD.IssuerB trustline -- no manual path construction.
+const res = await mppx.fetch('https://example.com/resource')
 ```
 
 ### Opening and closing channels
