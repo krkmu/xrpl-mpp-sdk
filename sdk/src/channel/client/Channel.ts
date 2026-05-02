@@ -3,6 +3,7 @@ import { Client, dropsToXrp, signPaymentChannelClaim, Wallet } from 'xrpl'
 import { z } from 'zod/mini'
 import { type NetworkId, XRPL_RPC_URLS } from '../../constants.js'
 import type { ChannelClientConfig } from '../../types.js'
+import { assertReserveCovers, getReserveState } from '../../utils/reserves.js'
 import { channel as ChannelMethod } from '../Methods.js'
 
 /**
@@ -53,8 +54,11 @@ export function channel(parameters: channel.Parameters) {
         }
         const initialAmount = amount
         const initialXrp = dropsToXrp(initialAmount).toString()
-        // channelId is not known yet for open -- use a placeholder that the server will replace
-        // The signature covers the amount only; the server will verify after extracting the real channelId
+        // The real channelId is unknown until the server broadcasts the open
+        // tx. Sign over an all-zero placeholder; the server verifies the
+        // signature against the real channelId after extracting it from
+        // metadata, and rejects the credential if initialAmount > 0 and the
+        // signature does not match.
         const signature = signPaymentChannelClaim(
           channelId || '0'.repeat(64),
           initialXrp,
@@ -81,7 +85,7 @@ export function channel(parameters: channel.Parameters) {
 
       const cumulativeStr = cumulativeAmount.toString()
 
-      // signPaymentChannelClaim expects XRP (not drops) -- it internally calls xrpToDrops
+      // signPaymentChannelClaim expects XRP, not drops -- it internally calls xrpToDrops.
       const cumulativeXrp = dropsToXrp(cumulativeStr).toString()
       const signature = signPaymentChannelClaim(channelId, cumulativeXrp, wallet.privateKey)
 
@@ -130,11 +134,40 @@ export async function openChannel(params: {
   } = params
 
   const wallet = Wallet.fromSeed(seed)
+
+  // Reject dust before connecting: an Amount of 0 drops produces a dead
+  // channel that burns the source's reserve increment without delivering
+  // value, and the ledger would surface this only as a tem*** code.
+  if (BigInt(amount) <= 0n) {
+    throw new Error(
+      `[INVALID_AMOUNT] PaymentChannelCreate amount must be > 0 drops, got ${amount}.`,
+    )
+  }
+  if (settleDelay < 0 || !Number.isFinite(settleDelay)) {
+    throw new Error(
+      `[INVALID_AMOUNT] PaymentChannelCreate settleDelay must be a non-negative integer, got ${settleDelay}.`,
+    )
+  }
+
   const resolvedRpcUrl = rpcUrl ?? XRPL_RPC_URLS[network]
   const client = new Client(resolvedRpcUrl)
   await client.connect()
 
   try {
+    // PaymentChannelCreate adds an owner object on the source. Preflight the
+    // reserve so the caller sees a typed error instead of tecINSUFFICIENT_RESERVE.
+    const state = await getReserveState(client, wallet.classicAddress)
+    if (!state) {
+      throw new Error(`[INSUFFICIENT_BALANCE] Account ${wallet.classicAddress} is not yet funded.`)
+    }
+    assertReserveCovers({
+      account: wallet.classicAddress,
+      state,
+      addedOwnerObjects: 1,
+      paymentDrops: BigInt(amount),
+      kind: 'PaymentChannelCreate',
+    })
+
     const channelCreate: any = {
       TransactionType: 'PaymentChannelCreate',
       Account: wallet.classicAddress,
@@ -155,7 +188,6 @@ export async function openChannel(params: {
       throw new Error(`PaymentChannelCreate failed: ${meta?.TransactionResult ?? 'unknown'}`)
     }
 
-    // Extract channel ID from affected nodes
     const channelId = extractChannelId(meta)
     const txHash = result.result.hash
 

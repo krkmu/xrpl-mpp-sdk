@@ -5,6 +5,7 @@ import { fromTecResult, replayDetected, verificationFailed } from '../errors.js'
 import * as Methods from '../Methods.js'
 import type { ChargeServerConfig, XrplCurrency } from '../types.js'
 import { isIOU, isMPT, parseCurrency, serializeCurrency } from '../utils/currency.js'
+import { classicAddressFromDID } from '../utils/did.js'
 import { ensureMPTHolding } from '../utils/mpt.js'
 import { ensureTrustline } from '../utils/trustline.js'
 
@@ -84,7 +85,9 @@ export function charge(parameters: charge.Parameters) {
   const rpcUrl = customRpcUrl ?? XRPL_RPC_URLS[network]
   const currencyStr = currency ? serializeCurrency(currency) : 'XRP'
 
-  // Run auto-setup for recipient account (trustline/MPT) on first verify
+  // Auto-setup runs at most once per process: trustline / MPT auth on the
+  // recipient is created lazily on first verify rather than at boot, so a
+  // restart with no traffic doesn't burn a TrustSet fee.
   let recipientSetupDone = false
   async function ensureRecipientSetup(client: Client): Promise<void> {
     if (recipientSetupDone || !currency) return
@@ -113,7 +116,8 @@ export function charge(parameters: charge.Parameters) {
     recipientSetupDone = true
   }
 
-  // Serialize verify operations to prevent concurrent race conditions
+  // Serialise verify calls so concurrent credentials can't race the store's
+  // get/put on the same challenge id or tx hash.
   let verifyLock: Promise<unknown> = Promise.resolve()
 
   return Method.toServer(Methods.charge, {
@@ -143,7 +147,6 @@ export function charge(parameters: charge.Parameters) {
   })
 
   async function doVerify(credential: any): Promise<Receipt.Receipt> {
-    // Check credential size before processing
     if (maxCredentialSize > 0) {
       const size = JSON.stringify(credential).length
       if (size > maxCredentialSize) {
@@ -157,7 +160,6 @@ export function charge(parameters: charge.Parameters) {
     const { challenge } = credential
     const { request: challengeRequest } = challenge
 
-    // Check challenge TTL
     if (maxChallengeAge > 0 && challenge.createdAt) {
       const age = Date.now() - new Date(challenge.createdAt).getTime()
       if (age > maxChallengeAge) {
@@ -168,7 +170,6 @@ export function charge(parameters: charge.Parameters) {
       }
     }
 
-    // Check challenge replay
     if (store) {
       const challengeKey = `xrpl:challenge:${challenge.id}`
       const existing = await store.get(challengeKey)
@@ -183,13 +184,54 @@ export function charge(parameters: charge.Parameters) {
     const expectedRecipient = challengeRequest.recipient
     const expectedCurrency = parseCurrency(challengeRequest.currency)
     const expectedInvoiceId = challengeRequest.methodDetails?.invoiceId as string | undefined
+    const expectedDestinationTag = challengeRequest.methodDetails?.destinationTag as
+      | number
+      | undefined
+    const expectedSourceTag = challengeRequest.methodDetails?.sourceTag as number | undefined
+    // Bind the credential to its DID-encoded sender. Without this, an attacker can
+    // submit a third party's hash (push) or third party's signed blob (pull) as
+    // their own credential.
+    const expectedSender = classicAddressFromDID(credential.source)
     const payload = credential.payload
+
+    // Pull mode: decode and validate the blob *before* connecting to the
+    // network so a tampered or third-party-signed credential is rejected
+    // without holding an open WebSocket.
+    let preDecodedTx: any | undefined
+    let preDerivedTxHash: string | undefined
+    if (payload.type === 'transaction') {
+      preDecodedTx = decode(payload.blob) as any
+      if (preDecodedTx.TransactionType !== 'Payment') {
+        throw verificationFailed(
+          'SUBMISSION_FAILED',
+          `Expected Payment transaction, got ${preDecodedTx.TransactionType}`,
+        )
+      }
+      validatePaymentFields(
+        preDecodedTx,
+        expectedAmount,
+        expectedRecipient,
+        expectedCurrency,
+        expectedSender,
+        expectedInvoiceId,
+        expectedDestinationTag,
+        expectedSourceTag,
+      )
+      preDerivedTxHash = hashes.hashSignedTx(payload.blob)
+      if (store && preDerivedTxHash) {
+        const hashKey = `xrpl:tx:${preDerivedTxHash}`
+        const hashUsed = await store.get(hashKey)
+        if (hashUsed) {
+          throw replayDetected(preDerivedTxHash)
+        }
+        await store.put(hashKey, { status: 'pending', startedAt: Date.now() })
+      }
+    }
 
     const client = new Client(rpcUrl)
     await client.connect()
 
     try {
-      // Ensure recipient has trustline/MPT holding before verifying payment
       await ensureRecipientSetup(client)
 
       switch (payload.type) {
@@ -200,8 +242,11 @@ export function charge(parameters: charge.Parameters) {
             expectedAmount,
             expectedRecipient,
             expectedCurrency,
+            expectedSender,
             store,
             expectedInvoiceId,
+            expectedDestinationTag,
+            expectedSourceTag,
             challengeId,
           )
         }
@@ -209,11 +254,8 @@ export function charge(parameters: charge.Parameters) {
           return await verifyPull(
             client,
             payload.blob,
-            expectedAmount,
-            expectedRecipient,
-            expectedCurrency,
+            preDerivedTxHash,
             store,
-            expectedInvoiceId,
             pollTimeout,
             pollInterval,
             challengeId,
@@ -240,13 +282,16 @@ async function verifyPush(
   expectedAmount: string,
   expectedRecipient: string,
   expectedCurrency: XrplCurrency,
+  expectedSender: string,
   store: Store.Store | undefined,
   expectedInvoiceId?: string,
+  expectedDestinationTag?: number,
+  expectedSourceTag?: number,
   challengeId?: string,
 ): Promise<Receipt.Receipt> {
-  // Mark tx hash as pending BEFORE verification to close the TOCTOU window.
-  // In distributed deployments, this prevents two instances from both passing
-  // the check before either marks the key.
+  // Claim the tx hash before verification to close the TOCTOU window: in
+  // distributed deployments two instances could otherwise both pass the
+  // get-check before either reaches put.
   if (store) {
     const hashKey = `xrpl:tx:${txHash}`
     const hashUsed = await store.get(hashKey)
@@ -256,14 +301,13 @@ async function verifyPush(
     await store.put(hashKey, { status: 'pending', startedAt: Date.now() })
   }
 
-  // Look up the transaction on-chain
   const txResponse = await client.request({
     command: 'tx',
     transaction: txHash,
   })
 
   const result = txResponse.result as any
-  // xrpl.js v4: transaction fields are nested under tx_json
+  // xrpl.js v4 nests the transaction fields under tx_json; older shapes flatten.
   const tx = result.tx_json ?? result
   const meta = result.meta ?? result.metaData ?? tx.meta ?? tx.metaData
 
@@ -272,17 +316,18 @@ async function verifyPush(
     throw fromTecResult(tecResult, `Transaction ${txHash} did not succeed`)
   }
 
-  // Validate the Payment fields match the challenge (use delivered_amount from meta)
   validatePaymentFields(
     tx,
     expectedAmount,
     expectedRecipient,
     expectedCurrency,
+    expectedSender,
     expectedInvoiceId,
+    expectedDestinationTag,
+    expectedSourceTag,
     meta,
   )
 
-  // Update to confirmed after successful verification
   if (store) {
     await store.put(`xrpl:tx:${txHash}`, { status: 'confirmed', usedAt: new Date().toISOString() })
   }
@@ -302,47 +347,14 @@ async function verifyPush(
 async function verifyPull(
   client: Client,
   blob: string,
-  expectedAmount: string,
-  expectedRecipient: string,
-  expectedCurrency: XrplCurrency,
+  txHash: string | undefined,
   store: Store.Store | undefined,
-  expectedInvoiceId: string | undefined,
   pollTimeout: number,
   pollInterval: number,
   challengeId?: string,
 ): Promise<Receipt.Receipt> {
-  // Decode and validate the transaction before submitting
-  const decoded = decode(blob) as any
-
-  if (decoded.TransactionType !== 'Payment') {
-    throw verificationFailed(
-      'SUBMISSION_FAILED',
-      `Expected Payment transaction, got ${decoded.TransactionType}`,
-    )
-  }
-
-  // Validate fields match challenge BEFORE submitting
-  validatePaymentFields(
-    decoded,
-    expectedAmount,
-    expectedRecipient,
-    expectedCurrency,
-    expectedInvoiceId,
-  )
-
-  // Derive tx hash from blob BEFORE submit so we can dedup before hitting the network
-  const txHash = hashes.hashSignedTx(blob)
-
-  // Mark tx hash as pending BEFORE submitting to close the TOCTOU window
-  if (store && txHash) {
-    const hashKey = `xrpl:tx:${txHash}`
-    const hashUsed = await store.get(hashKey)
-    if (hashUsed) {
-      throw replayDetected(txHash)
-    }
-    await store.put(hashKey, { status: 'pending', startedAt: Date.now() })
-  }
-
+  // Field validation, hash derivation, and replay claim already happened in
+  // doVerify() before we connected.
   const submitResult = await client.submit(blob)
   const engineResult = submitResult.result.engine_result
 
@@ -350,7 +362,6 @@ async function verifyPull(
     throw fromTecResult(engineResult, `Transaction submission failed: ${engineResult}`)
   }
 
-  // Wait for validation with configurable timeout and interval
   if (txHash) {
     let validated = false
     const deadline = Date.now() + pollTimeout
@@ -370,7 +381,7 @@ async function verifyPull(
           throw fromTecResult(meta.TransactionResult, 'Transaction failed on-chain')
         }
       } catch (err: any) {
-        // txnNotFound means not yet validated -- keep polling
+        // txnNotFound: tx hasn't been validated yet, keep polling. Other errors propagate.
         if (err?.data?.error !== 'txnNotFound') {
           throw err
         }
@@ -385,7 +396,6 @@ async function verifyPull(
       )
     }
 
-    // Update to confirmed after successful validation
     if (store) {
       await store.put(`xrpl:tx:${txHash}`, {
         status: 'confirmed',
@@ -420,21 +430,47 @@ function rejectPartialPayment(tx: any): void {
   }
 }
 
-/** Validate Payment tx fields (Destination, Amount, Currency, InvoiceID) against challenge. */
+/** Validate Payment tx fields (Account, Destination, Amount, Currency, InvoiceID, tags) against challenge. */
 function validatePaymentFields(
   tx: any,
   expectedAmount: string,
   expectedRecipient: string,
   expectedCurrency: XrplCurrency,
+  expectedSender: string,
   expectedInvoiceId?: string,
+  expectedDestinationTag?: number,
+  expectedSourceTag?: number,
   meta?: any,
 ): void {
   rejectPartialPayment(tx)
+
+  // Bind the on-chain payer to the credential's DID source. This blocks
+  // hash-theft (push) and third-party-blob replay (pull).
+  if (tx.Account !== expectedSender) {
+    throw verificationFailed(
+      'SOURCE_MISMATCH',
+      `Expected payer ${expectedSender} (from credential source), got ${tx.Account}`,
+    )
+  }
 
   if (expectedInvoiceId && tx.InvoiceID !== expectedInvoiceId) {
     throw verificationFailed(
       'SUBMISSION_FAILED',
       `InvoiceID mismatch: expected ${expectedInvoiceId}, got ${tx.InvoiceID ?? 'none'}`,
+    )
+  }
+
+  if (expectedDestinationTag !== undefined && tx.DestinationTag !== expectedDestinationTag) {
+    throw verificationFailed(
+      'SUBMISSION_FAILED',
+      `DestinationTag mismatch: expected ${expectedDestinationTag}, got ${tx.DestinationTag ?? 'none'}`,
+    )
+  }
+
+  if (expectedSourceTag !== undefined && tx.SourceTag !== expectedSourceTag) {
+    throw verificationFailed(
+      'SUBMISSION_FAILED',
+      `SourceTag mismatch: expected ${expectedSourceTag}, got ${tx.SourceTag ?? 'none'}`,
     )
   }
 
@@ -451,7 +487,6 @@ function validatePaymentFields(
   const txAmount = meta?.delivered_amount ?? tx.Amount ?? tx.DeliverMax
 
   if (expectedCurrency === 'XRP') {
-    // XRP native -- amount must be a drops string
     if (typeof txAmount !== 'string') {
       throw verificationFailed('AMOUNT_MISMATCH', 'Expected XRP (drops string), got object')
     }
@@ -462,7 +497,6 @@ function validatePaymentFields(
       )
     }
   } else if ('currency' in expectedCurrency) {
-    // IOU -- validate currency, issuer, and value
     if (typeof txAmount !== 'object') {
       throw verificationFailed('AMOUNT_MISMATCH', 'Expected IOU amount object, got string')
     }
@@ -485,7 +519,6 @@ function validatePaymentFields(
       )
     }
   } else if ('mpt_issuance_id' in expectedCurrency) {
-    // MPT -- validate mpt_issuance_id and value
     if (typeof txAmount !== 'object') {
       throw verificationFailed('AMOUNT_MISMATCH', 'Expected MPT amount object, got string')
     }

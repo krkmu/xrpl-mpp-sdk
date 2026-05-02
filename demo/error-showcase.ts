@@ -625,6 +625,7 @@ async function main() {
     const wrongCred = Credential.from({
       challenge: ch as any,
       payload: { action: 'voucher', channelId, amount: '100000', signature: wrongSig },
+      source: `did:pkh:xrpl:${NETWORK}:${channelFunder.classicAddress}`,
     })
 
     try {
@@ -643,6 +644,7 @@ async function main() {
     const correctCred = Credential.from({
       challenge: { ...ch, id: `err-chan-fix-${Date.now()}` } as any,
       payload: { action: 'voucher', channelId, amount: '100000', signature: correctSig },
+      source: `did:pkh:xrpl:${NETWORK}:${channelFunder.classicAddress}`,
     })
 
     log.loading('Retrying...')
@@ -692,6 +694,7 @@ async function main() {
     const cred1 = Credential.from({
       challenge: ch1 as any,
       payload: { action: 'voucher', channelId, amount: '100000', signature: sig1 },
+      source: `did:pkh:xrpl:${NETWORK}:${channelFunder.classicAddress}`,
     })
     await srvMethod.verify({ credential: cred1 as any, request: ch1.request })
     log.success('First claim (100,000 drops) accepted')
@@ -701,6 +704,7 @@ async function main() {
     const cred2 = Credential.from({
       challenge: ch2 as any,
       payload: { action: 'voucher', channelId, amount: '100000', signature: sig1 },
+      source: `did:pkh:xrpl:${NETWORK}:${channelFunder.classicAddress}`,
     })
     try {
       await srvMethod.verify({ credential: cred2 as any, request: ch2.request })
@@ -719,6 +723,7 @@ async function main() {
     const cred3 = Credential.from({
       challenge: ch3 as any,
       payload: { action: 'voucher', channelId, amount: '200000', signature: sig2 },
+      source: `did:pkh:xrpl:${NETWORK}:${channelFunder.classicAddress}`,
     })
 
     log.loading('Retrying...')
@@ -771,6 +776,7 @@ async function main() {
     const credOver = Credential.from({
       challenge: chOver as any,
       payload: { action: 'voucher', channelId, amount: '2000000', signature: overSig },
+      source: `did:pkh:xrpl:${NETWORK}:${channelFunder.classicAddress}`,
     })
 
     try {
@@ -810,6 +816,7 @@ async function main() {
     const credGood = Credential.from({
       challenge: chGood as any,
       payload: { action: 'voucher', channelId, amount: '500000', signature: goodSig },
+      source: `did:pkh:xrpl:${NETWORK}:${channelFunder.classicAddress}`,
     })
 
     log.loading('Retrying...')
@@ -841,7 +848,6 @@ async function main() {
     const srvMethod = serverChannel({ publicKey: channelFunder.publicKey, network: NETWORK, store })
 
     // Client makes 3 claims then disappears
-    let lastSig = ''
     let lastAmount = '0'
     for (const cumDrops of ['100000', '200000', '300000']) {
       const sig = signPaymentChannelClaim(
@@ -868,9 +874,9 @@ async function main() {
       const cred = Credential.from({
         challenge: ch as any,
         payload: { action: 'voucher', channelId, amount: cumDrops, signature: sig },
+        source: `did:pkh:xrpl:${NETWORK}:${channelFunder.classicAddress}`,
       })
       await srvMethod.verify({ credential: cred as any, request: ch.request })
-      lastSig = sig
       lastAmount = cumDrops
     }
     log.success(`Client made 3 claims (cumulative: ${lastAmount} drops), then disappeared`)
@@ -943,6 +949,7 @@ async function main() {
     const cred = Credential.from({
       challenge: ch as any,
       payload: { action: 'voucher', channelId, amount: cumDrops, signature: sig },
+      source: `did:pkh:xrpl:${NETWORK}:${channelFunder.classicAddress}`,
     })
     await srvMethod.verify({ credential: cred as any, request: ch.request })
     log.success(`First claim accepted (${cumDrops} drops)`)
@@ -991,6 +998,7 @@ async function main() {
     const cred2 = Credential.from({
       challenge: ch2 as any,
       payload: { action: 'voucher', channelId, amount: newCum, signature: newSig },
+      source: `did:pkh:xrpl:${NETWORK}:${channelFunder.classicAddress}`,
     })
 
     try {

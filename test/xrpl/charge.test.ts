@@ -81,8 +81,24 @@ describe('XRPL Charge', () => {
       expect(mapTecResult('tefPAST_SEQ')).toBe('SUBMISSION_FAILED')
     })
 
-    it('maps tecPATH_PARTIAL to INSUFFICIENT_BALANCE', () => {
-      expect(mapTecResult('tecPATH_PARTIAL')).toBe('INSUFFICIENT_BALANCE')
+    it('maps tecPATH_PARTIAL to PAYMENT_PATH_FAILED (path liquidity issue, not balance)', () => {
+      expect(mapTecResult('tecPATH_PARTIAL')).toBe('PAYMENT_PATH_FAILED')
+    })
+
+    it('maps tecNO_PERMISSION to MPT_NOT_AUTHORIZED', () => {
+      expect(mapTecResult('tecNO_PERMISSION')).toBe('MPT_NOT_AUTHORIZED')
+    })
+
+    it('maps tecINSUFF_FEE to INSUFFICIENT_FEE', () => {
+      expect(mapTecResult('tecINSUFF_FEE')).toBe('INSUFFICIENT_FEE')
+    })
+
+    it('maps tecFROZEN to TRUSTLINE_FROZEN', () => {
+      expect(mapTecResult('tecFROZEN')).toBe('TRUSTLINE_FROZEN')
+    })
+
+    it('maps tefBAD_AUTH to INVALID_SIGNATURE', () => {
+      expect(mapTecResult('tefBAD_AUTH')).toBe('INVALID_SIGNATURE')
     })
 
     it('returns undefined for unknown tecResult', () => {
@@ -107,9 +123,14 @@ describe('XRPL Charge', () => {
       expect(err.message).toContain('INSUFFICIENT_FEE')
     })
 
-    it('creates InsufficientBalanceError for tecPATH_PARTIAL', () => {
+    it('creates VerificationFailedError for tecPATH_PARTIAL', () => {
       const err = fromTecResult('tecPATH_PARTIAL')
-      expect(err.message).toContain('INSUFFICIENT_BALANCE')
+      expect(err.message).toContain('PAYMENT_PATH_FAILED')
+    })
+
+    it('creates VerificationFailedError for tecNO_PERMISSION', () => {
+      const err = fromTecResult('tecNO_PERMISSION')
+      expect(err.message).toContain('MPT_NOT_AUTHORIZED')
     })
 
     it('creates VerificationFailedError with SUBMISSION_FAILED for unknown tec', () => {

@@ -6,7 +6,8 @@ import { type NetworkId, XRPL_RPC_URLS } from '../constants.js'
 import { fromTecResult } from '../errors.js'
 import * as Methods from '../Methods.js'
 import type { ChargeClientConfig, PaymentMode } from '../types.js'
-import { buildAmount, parseCurrency } from '../utils/currency.js'
+import { buildAmount, isIOU, parseCurrency } from '../utils/currency.js'
+import { resolveIouPaymentExtras, validateSlippageBps } from '../utils/paths.js'
 import { runPreflight } from '../utils/validation.js'
 
 /**
@@ -29,6 +30,8 @@ export function charge(parameters: charge.Parameters) {
     seed,
     mode: defaultMode = 'pull',
     preflight: runPreflightCheck = true,
+    slippageBps = 50,
+    pathFindRetryDelaysMs,
     network: defaultNetwork = 'testnet',
     rpcUrl: defaultRpcUrl,
     onProgress,
@@ -37,6 +40,8 @@ export function charge(parameters: charge.Parameters) {
   if (!seed) {
     throw new Error('seed is required for client charge method.')
   }
+
+  validateSlippageBps(slippageBps)
 
   const wallet = Wallet.fromSeed(seed)
 
@@ -55,7 +60,9 @@ export function charge(parameters: charge.Parameters) {
 
       onProgress?.({ type: 'challenge', recipient, amount, currency: currencyStr })
 
-      const client = new Client(rpcUrl)
+      // 60s per-request timeout. ripple_path_find for cross-issuer payments
+      // can exceed xrpl.js's 20s default while the path indexer warms.
+      const client = new Client(rpcUrl, { timeout: 60_000 })
       await client.connect()
 
       try {
@@ -70,13 +77,49 @@ export function charge(parameters: charge.Parameters) {
           })
         }
 
+        // For IOU payments, resolve Paths + SendMax before signing. Covers
+        // cross-issuer payments (path-find + chosen alternative) and direct
+        // payments where the issuer charges a TransferRate.
+        let pathsField: { Paths?: unknown; SendMax?: unknown } = {}
+        if (isIOU(currency) && typeof xrplAmount === 'object' && 'currency' in xrplAmount) {
+          onProgress?.({ type: 'pathfinding' })
+          const extras = await resolveIouPaymentExtras({
+            client,
+            sender: wallet.classicAddress,
+            recipient,
+            destinationAmount: xrplAmount,
+            slippageBps,
+            ...(pathFindRetryDelaysMs ? { pathFindRetryDelaysMs } : {}),
+          })
+          pathsField = {
+            ...(extras.Paths ? { Paths: extras.Paths } : {}),
+            ...(extras.SendMax ? { SendMax: extras.SendMax } : {}),
+          }
+          onProgress?.({
+            type: 'paths_resolved',
+            strategy: extras.strategy,
+            sourceAmountValue: extras.sourceAmountValue,
+            sourceAmountCurrency: extras.sourceAmountCurrency,
+          })
+        }
+
         const payment = {
           TransactionType: 'Payment' as const,
           Account: wallet.classicAddress,
           Destination: recipient,
           Amount: xrplAmount,
+          ...pathsField,
           ...(request.methodDetails?.invoiceId
             ? { InvoiceID: request.methodDetails.invoiceId }
+            : {}),
+          ...(request.methodDetails?.destinationTag !== undefined
+            ? { DestinationTag: request.methodDetails.destinationTag }
+            : {}),
+          ...(request.methodDetails?.sourceTag !== undefined
+            ? { SourceTag: request.methodDetails.sourceTag }
+            : {}),
+          ...(request.methodDetails?.memos && request.methodDetails.memos.length > 0
+            ? { Memos: encodeMemos(request.methodDetails.memos) }
             : {}),
         }
 
@@ -121,4 +164,26 @@ export function charge(parameters: charge.Parameters) {
 
 export declare namespace charge {
   export type Parameters = ChargeClientConfig
+}
+
+type ChallengeMemo = { type?: string; format?: string; data?: string }
+
+/**
+ * Encode UTF-8 memo fields as hex per XRPL Memos[].Memo encoding. Each field
+ * is optional; absent fields are dropped from the encoded entry.
+ */
+function encodeMemos(
+  memos: ChallengeMemo[],
+): Array<{ Memo: { MemoType?: string; MemoFormat?: string; MemoData?: string } }> {
+  return memos.map((m) => {
+    const memo: { MemoType?: string; MemoFormat?: string; MemoData?: string } = {}
+    if (m.type) memo.MemoType = utf8ToHex(m.type)
+    if (m.format) memo.MemoFormat = utf8ToHex(m.format)
+    if (m.data) memo.MemoData = utf8ToHex(m.data)
+    return { Memo: memo }
+  })
+}
+
+function utf8ToHex(s: string): string {
+  return Buffer.from(s, 'utf8').toString('hex').toUpperCase()
 }

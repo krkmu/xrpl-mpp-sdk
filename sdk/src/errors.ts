@@ -1,16 +1,37 @@
 import { Errors } from 'mppx'
 
+/**
+ * Mapping from XRPL transaction engine results (tec/tem/ter/tef) to the SDK's
+ * typed error codes. Sub-headings group related codes; the comments next to a
+ * specific code call out a non-obvious mapping.
+ */
 export const TEC_RESULT_MAP: Record<string, string> = {
+  // Payment failures
   tecPATH_DRY: 'PAYMENT_PATH_FAILED',
+  // tecPATH_PARTIAL is a path/liquidity issue, not a sender-balance shortfall.
+  tecPATH_PARTIAL: 'PAYMENT_PATH_FAILED',
   tecUNFUNDED_PAYMENT: 'INSUFFICIENT_BALANCE',
   tecNO_DST: 'RECIPIENT_NOT_FOUND',
+  // Trustline / authorisation
   tecNO_AUTH: 'TRUSTLINE_NOT_AUTHORIZED',
   tecNO_LINE: 'MISSING_TRUSTLINE',
-  temBAD_AMOUNT: 'INVALID_AMOUNT',
-  terINSUF_FEE_B: 'INSUFFICIENT_FEE',
+  tecNO_LINE_INSUF_RESERVE: 'INSUFFICIENT_RESERVE',
+  tecNO_LINE_REDUNDANT: 'MISSING_TRUSTLINE',
+  tecFROZEN: 'TRUSTLINE_FROZEN',
+  // Reserve / fee
   tecINSUFFICIENT_RESERVE: 'INSUFFICIENT_RESERVE',
-  tecPATH_PARTIAL: 'INSUFFICIENT_BALANCE',
+  tecINSUFF_FEE: 'INSUFFICIENT_FEE',
+  terINSUF_FEE_B: 'INSUFFICIENT_FEE',
+  // Sequence / submission
   tefPAST_SEQ: 'SUBMISSION_FAILED',
+  tefALREADY: 'SUBMISSION_FAILED',
+  tefBAD_AUTH: 'INVALID_SIGNATURE',
+  tefMASTER_DISABLED: 'INVALID_SIGNATURE',
+  // Validation
+  temBAD_AMOUNT: 'INVALID_AMOUNT',
+  // tecNO_PERMISSION on the MPT path: holder not authorised when the issuance
+  // has lsfMPTRequireAuth set.
+  tecNO_PERMISSION: 'MPT_NOT_AUTHORIZED',
 }
 
 export type XrplErrorCode =
@@ -20,14 +41,19 @@ export type XrplErrorCode =
   | 'INSUFFICIENT_RESERVE'
   | 'RECIPIENT_NOT_FOUND'
   | 'TRUSTLINE_NOT_AUTHORIZED'
+  | 'TRUSTLINE_REQUIRES_AUTH'
+  | 'TRUSTLINE_FROZEN'
   | 'MISSING_TRUSTLINE'
+  | 'ISSUER_GLOBAL_FROZEN'
   | 'INVALID_AMOUNT'
   | 'CHANNEL_EXPIRED'
   | 'CHANNEL_NOT_FOUND'
+  | 'CHANNEL_EXHAUSTED'
   | 'INVALID_SIGNATURE'
   | 'REPLAY_DETECTED'
   | 'AMOUNT_MISMATCH'
   | 'RECIPIENT_MISMATCH'
+  | 'SOURCE_MISMATCH'
   | 'SUBMISSION_FAILED'
   | 'MPT_NOT_AUTHORIZED'
 
@@ -66,6 +92,16 @@ export function channelNotFound(channelId: string): Errors.ChannelNotFoundError 
 export function channelClosed(channelId: string): Errors.ChannelClosedError {
   return new Errors.ChannelClosedError({
     reason: `[CHANNEL_EXPIRED] Channel ${channelId} is expired or closed`,
+  })
+}
+
+export function channelExhausted(
+  channelId: string,
+  cumulative: bigint,
+  available: bigint,
+): Errors.AmountExceedsDepositError {
+  return new Errors.AmountExceedsDepositError({
+    reason: `[CHANNEL_EXHAUSTED] Cumulative ${cumulative} drops on channel ${channelId} exceeds available balance ${available} drops -- top up via PaymentChannelFund or reset cumulative.`,
   })
 }
 

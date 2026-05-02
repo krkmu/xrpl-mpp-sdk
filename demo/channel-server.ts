@@ -78,7 +78,7 @@ async function main() {
 
         const channelMethod = channel({ publicKey: body.publicKey, network: 'testnet', store })
         const mppx = Mppx.create({ secretKey: 'channel-demo-secret', methods: [channelMethod] })
-        handler = (mppx as any)['xrpl/channel']({
+        handler = mppx['xrpl/channel']({
           amount: '100000',
           channelId,
           recipient: wallet.classicAddress,

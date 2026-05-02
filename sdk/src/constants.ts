@@ -1,4 +1,4 @@
-// -- Network Configuration --
+/** XRPL network identifiers, RPC URLs, faucet endpoints, explorer URLs, and well-known assets. */
 
 export const XRPL_NETWORK_IDS = {
   mainnet: 0,
@@ -26,8 +26,6 @@ export const XRPL_EXPLORER_URLS: Record<NetworkId, string> = {
   devnet: 'https://devnet.xrpl.org/transactions/',
 }
 
-// -- Well-Known Currencies --
-
 /** XRP native currency identifier. */
 export const XRP = 'XRP' as const
 
@@ -43,16 +41,20 @@ export const RLUSD_TESTNET = {
   issuer: 'rQhWct2fTR9z7bBQaflfqMEr2u8avFFpKH',
 } as const
 
-// -- Defaults --
-
 /** XRP has 6 decimal places (drops). */
 export const XRP_DECIMALS = 6
 
 /** Default transaction timeout in seconds. */
 export const DEFAULT_TIMEOUT = 60
 
-/** Base reserve in drops (currently 1 XRP since 2024-09). */
+/**
+ * Mainnet base reserve in drops (1 XRP after the ReducedReserve amendment).
+ * Static fallback only -- the SDK's preflight reads live values via server_state.
+ */
 export const BASE_RESERVE_DROPS = '1000000'
 
-/** Owner reserve per object in drops (currently 0.2 XRP since 2024-09). */
+/**
+ * Mainnet per-owner-object reserve in drops (0.2 XRP after ReducedReserve).
+ * Static fallback only -- the SDK's preflight reads live values via server_state.
+ */
 export const OWNER_RESERVE_DROPS = '200000'

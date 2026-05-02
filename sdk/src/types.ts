@@ -1,7 +1,5 @@
 import type { NetworkId } from './constants.js'
 
-// -- Currency Types --
-
 /** XRP native currency. */
 export type XrpCurrency = 'XRP'
 
@@ -19,22 +17,24 @@ export type MPToken = {
 /** Any supported XRPL currency type. */
 export type XrplCurrency = XrpCurrency | IssuedCurrency | MPToken
 
-// -- Payment Mode --
-
 /** Pull: client signs tx blob, server submits. Push: client submits, sends hash. */
 export type PaymentMode = 'pull' | 'push'
 
-// -- Charge Progress --
-
+/** Lifecycle event emitted by the client charge flow's `onProgress` callback. */
 export type ChargeProgressEvent =
   | { type: 'challenge'; recipient: string; amount: string; currency: string }
   | { type: 'preflight' }
+  | { type: 'pathfinding' }
+  | {
+      type: 'paths_resolved'
+      strategy: 'self-issued' | 'direct-trustline' | 'cross-issuer'
+      sourceAmountValue: string
+      sourceAmountCurrency: string
+    }
   | { type: 'signing' }
   | { type: 'signed'; mode: PaymentMode }
   | { type: 'submitting' }
   | { type: 'confirmed'; hash: string }
-
-// -- Charge Configuration --
 
 export type ChargeClientConfig = {
   /** Wallet seed or Wallet instance. */
@@ -53,6 +53,24 @@ export type ChargeClientConfig = {
    * @default true
    */
   preflight?: boolean
+  /**
+   * Slippage buffer applied to SendMax for IOU payments, in basis points
+   * (1 bp = 0.01%). The SendMax sent to the ledger is
+   * `source_amount * (1 + slippageBps / 10000)`. Range 0-1000 (max 10%).
+   *
+   * The default 50 bps (0.5%) covers small intra-block price moves on
+   * cross-issuer paths and the standard issuer TransferRate range without
+   * overpaying for typical liquidity.
+   *
+   * @default 50
+   */
+  slippageBps?: number
+  /**
+   * Backoff delays (ms) between ripple_path_find retries when the first call
+   * returns no alternatives. Default `[1000, 2000, 4000]`. Pass an empty
+   * array to disable retries.
+   */
+  pathFindRetryDelaysMs?: number[]
   /** XRPL network. */
   network?: NetworkId
   /** Custom WebSocket RPC URL. */
@@ -87,8 +105,6 @@ export type ChargeServerConfig = {
   /** Custom WebSocket RPC URL. */
   rpcUrl?: string
 }
-
-// -- Channel Configuration --
 
 export type ChannelClientConfig = {
   /** Wallet seed or Wallet instance. */

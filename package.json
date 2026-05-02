@@ -40,7 +40,9 @@
     "check:types": "tsc --noEmit",
     "lint": "biome check --write sdk/ test/ demo/ examples/",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "peerDependencies": {
     "mppx": ">=0.4.0",
@@ -55,6 +57,7 @@
   "devDependencies": {
     "@biomejs/biome": "^2.4.8",
     "@types/node": "^25.5.0",
+    "@vitest/coverage-v8": "^3.2.4",
     "picocolors": "^1.1.1",
     "tsup": "^8.5.1",
     "tsx": "^4.21.0",

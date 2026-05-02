@@ -49,7 +49,7 @@ async function sendWebResponse(webRes: Response, res: ServerResponse) {
 
 // -- Handler --
 
-const handler = (mppx as any)['xrpl/charge']({
+const handler = mppx['xrpl/charge']({
   amount: '1000000', // 1 XRP
   currency: 'XRP',
   description: 'API access',

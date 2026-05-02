@@ -1,6 +1,7 @@
 import type { Client, Wallet } from 'xrpl'
-import type { XrplCurrency } from '../types.js'
+import type { IssuedCurrency, XrplCurrency } from '../types.js'
 import { isIOU, isXrp } from './currency.js'
+import { assertReserveCovers, getReserveState } from './reserves.js'
 
 /** Default fee estimate in drops (12 drops per tx). */
 const DEFAULT_FEE_DROPS = 12n
@@ -10,7 +11,9 @@ const DEFAULT_FEE_DROPS = 12n
  *
  * 1. Destination account exists on-chain
  * 2. Sufficient XRP balance for reserves, fees, and (if XRP) payment amount
- * 3. Rippling is enabled on the issuer for IOU payments
+ *    -- and one extra owner reserve when `addedOwnerObjects > 0`
+ *    (e.g., when an automatic TrustSet will be issued before the payment).
+ * 3. Issuer health for IOU payments: rippling enabled, not globally frozen.
  */
 export async function runPreflight(params: {
   client: Client
@@ -18,126 +21,100 @@ export async function runPreflight(params: {
   currency: XrplCurrency
   destination: string
   amount?: string
+  /**
+   * Number of owner objects the operation will add (TrustSet, MPTokenAuthorize,
+   * PaymentChannelCreate, etc.). The reserve check then asserts the wallet has
+   * enough XRP for the *new* reserve floor.
+   */
+  addedOwnerObjects?: number
 }): Promise<void> {
-  const { client, wallet, currency, destination, amount } = params
+  const { client, wallet, currency, destination, amount, addedOwnerObjects = 0 } = params
 
   await verifyDestination(client, destination)
-  await checkSufficientBalance({ client, wallet, currency, amount })
+  await checkSufficientBalance({ client, wallet, currency, amount, addedOwnerObjects })
 
   if (isIOU(currency)) {
-    const ripplingEnabled = await checkRippling(client, currency.issuer)
-    if (!ripplingEnabled) {
-      throw new Error(
-        `[PAYMENT_PATH_FAILED] Issuer ${currency.issuer} does not have DefaultRipple enabled. ` +
-          'IOU payments require rippling on the issuer account.',
-      )
-    }
-  }
-}
-
-/**
- * Query the network for current reserve values (base + increment) in drops.
- * Uses server_state RPC which returns reserves in drops directly.
- */
-async function getReserves(client: Client): Promise<{ base: bigint; inc: bigint }> {
-  const response = await client.request({ command: 'server_state' } as any)
-  const state = (response.result as any).state?.validated_ledger
-  if (!state) {
-    throw new Error('[SUBMISSION_FAILED] Could not retrieve validated ledger state from server.')
-  }
-  return {
-    base: BigInt(state.reserve_base),
-    inc: BigInt(state.reserve_inc),
+    await assertIssuerHealth(client, currency)
   }
 }
 
 /**
  * Check that the wallet has enough XRP to cover:
- * - Current reserve (base + OwnerCount * inc)
+ * - Future reserve: base + (ownerCount + addedOwnerObjects) * inc
  * - Transaction fee
  * - Payment amount (only if paying in XRP)
  *
- * Throws INSUFFICIENT_BALANCE with an actionable message if not.
+ * Throws INSUFFICIENT_BALANCE / INSUFFICIENT_RESERVE with an actionable message.
  */
 async function checkSufficientBalance(params: {
   client: Client
   wallet: Wallet
   currency: XrplCurrency
   amount?: string
+  addedOwnerObjects: number
 }): Promise<void> {
-  const { client, wallet, currency, amount } = params
+  const { client, wallet, currency, amount, addedOwnerObjects } = params
 
-  let balance: bigint
-  let ownerCount: number
-  try {
-    const response = await client.request({
-      command: 'account_info',
-      account: wallet.classicAddress,
-    })
-    balance = BigInt(response.result.account_data.Balance as string)
-    ownerCount = (response.result.account_data as any).OwnerCount ?? 0
-  } catch (err: any) {
-    if (err?.data?.error === 'actNotFound') {
-      throw new Error(
-        `[INSUFFICIENT_BALANCE] Account ${wallet.classicAddress} does not exist on the ledger. ` +
-          'Fund it with at least the base reserve (1 XRP) to activate it.',
-      )
-    }
-    throw err
+  const state = await getReserveState(client, wallet.classicAddress)
+  if (!state) {
+    throw new Error(
+      `[INSUFFICIENT_BALANCE] Account ${wallet.classicAddress} does not exist on the ledger. ` +
+        'Fund it with at least the base reserve (1 XRP) to activate it.',
+    )
   }
 
-  const reserves = await getReserves(client)
-  const totalReserve = reserves.base + BigInt(ownerCount) * reserves.inc
-  const totalFees = DEFAULT_FEE_DROPS
   const paymentDrops = isXrp(currency) && amount ? BigInt(amount) : 0n
-
-  const totalNeeded = totalReserve + totalFees + paymentDrops
-
-  if (balance < totalNeeded) {
-    const balanceXrp = formatDrops(balance)
-    const reserveXrp = formatDrops(totalReserve)
-    const availableXrp = formatDrops(balance > totalReserve ? balance - totalReserve : 0n)
-
-    const parts = [
-      `[INSUFFICIENT_BALANCE] Not enough XRP to complete this transaction.`,
-      `Balance: ${balanceXrp} XRP,`,
-      `reserve: ${reserveXrp} XRP (base ${formatDrops(reserves.base)} + ${ownerCount} objects * ${formatDrops(reserves.inc)}),`,
-      `available: ${availableXrp} XRP.`,
-    ]
-
-    const neededParts: string[] = []
-    if (paymentDrops > 0n) neededParts.push(`${formatDrops(paymentDrops)} XRP payment`)
-    neededParts.push(`${formatDrops(totalFees)} XRP fee`)
-
-    parts.push(`Needed: ${neededParts.join(' + ')}.`)
-
-    throw new Error(parts.join(' '))
-  }
-}
-
-/** Format drops as XRP string (e.g., 1200000 -> "1.2"). */
-function formatDrops(drops: bigint): string {
-  const xrp = Number(drops) / 1_000_000
-  return xrp.toString()
+  assertReserveCovers({
+    account: wallet.classicAddress,
+    state,
+    addedOwnerObjects,
+    feeDrops: DEFAULT_FEE_DROPS,
+    paymentDrops,
+    kind: 'preflight',
+  })
 }
 
 const LSF_DEFAULT_RIPPLE = 0x00800000
+const LSF_GLOBAL_FREEZE = 0x00400000
+const LSF_REQUIRE_AUTH = 0x00040000
 
-/**
- * Check if the issuer has the DefaultRipple flag set.
- */
-async function checkRippling(client: Client, issuer: string): Promise<boolean> {
+/** Read issuer flags via account_info; returns 0 if the issuer does not exist. */
+async function readIssuerFlags(client: Client, issuer: string): Promise<number> {
   try {
-    const response = await client.request({
-      command: 'account_info',
-      account: issuer,
-    })
-    const flags = response.result.account_data.Flags ?? 0
-    return (flags & LSF_DEFAULT_RIPPLE) !== 0
+    const r = await client.request({ command: 'account_info', account: issuer })
+    return (r.result.account_data.Flags as number) ?? 0
   } catch (err: any) {
-    if (err?.data?.error === 'actNotFound') return false
+    if (err?.data?.error === 'actNotFound') return 0
     throw err
   }
+}
+
+/**
+ * Assert the IOU issuer is in a healthy state: rippling enabled, no global
+ * freeze, and (if RequireAuth is set) callers should expect a per-trustline
+ * authorization step. Surfaces typed errors that map onto the SDK error codes.
+ *
+ * Exposed so trustline-creation flows can call it without re-running the full
+ * preflight.
+ */
+export async function assertIssuerHealth(
+  client: Client,
+  currency: IssuedCurrency,
+): Promise<{ requiresAuth: boolean }> {
+  const flags = await readIssuerFlags(client, currency.issuer)
+  if ((flags & LSF_GLOBAL_FREEZE) !== 0) {
+    throw new Error(
+      `[ISSUER_GLOBAL_FROZEN] Issuer ${currency.issuer} has set lsfGlobalFreeze. All ` +
+        `transfers of ${currency.currency} are blocked until the issuer clears the freeze.`,
+    )
+  }
+  if ((flags & LSF_DEFAULT_RIPPLE) === 0) {
+    throw new Error(
+      `[PAYMENT_PATH_FAILED] Issuer ${currency.issuer} does not have DefaultRipple enabled. ` +
+        'IOU payments require rippling on the issuer account (asfDefaultRipple).',
+    )
+  }
+  return { requiresAuth: (flags & LSF_REQUIRE_AUTH) !== 0 }
 }
 
 /**
@@ -146,10 +123,7 @@ async function checkRippling(client: Client, issuer: string): Promise<boolean> {
  */
 async function verifyDestination(client: Client, address: string): Promise<void> {
   try {
-    await client.request({
-      command: 'account_info',
-      account: address,
-    })
+    await client.request({ command: 'account_info', account: address })
   } catch (err: any) {
     if (err?.data?.error === 'actNotFound') {
       throw new Error(

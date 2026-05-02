@@ -30,15 +30,39 @@ export const charge = Method.from({
           reference: z.optional(z.string()),
           /** XRPL network identifier ("mainnet" | "testnet" | "devnet"). */
           network: z.optional(z.string()),
-          /** Optional InvoiceID to bind payment to challenge. */
+          /** Optional InvoiceID (32-byte hex) to bind payment to challenge. */
           invoiceId: z.optional(z.string()),
+          /**
+           * Optional XRPL DestinationTag the server expects on the inbound
+           * Payment. Used by hosted wallets / exchanges to route the
+           * incoming credit. When set, the server enforces it on verify.
+           */
+          destinationTag: z.optional(z.number()),
+          /**
+           * Optional XRPL SourceTag the server expects -- mirrors
+           * destinationTag but on the sender side (rare, but supported for
+           * symmetry).
+           */
+          sourceTag: z.optional(z.number()),
+          /**
+           * Optional UTF-8 memos to embed in the Payment. Servers can use
+           * these for off-chain reconciliation. Each memo is encoded into
+           * the tx as a Memos[].Memo entry with hex-encoded fields.
+           */
+          memos: z.optional(
+            z.array(
+              z.object({
+                type: z.optional(z.string()),
+                format: z.optional(z.string()),
+                data: z.optional(z.string()),
+              }),
+            ),
+          ),
         }),
       ),
     }),
   },
 })
-
-// -- Helpers --
 
 /**
  * Convert XRP to drops.
