@@ -413,3 +413,116 @@ charge configuration`.
 After each change: `pnpm tsc --noEmit`, `pnpm biome check`,
 `pnpm test` -- all green (230 unit tests pass).
 No commit on point 2 (no-op).
+
+## Follow-up: code-quality pass
+
+Polish pass before push. Two atomic commits.
+
+### Phase 1 -- dead code
+
+`98f568d chore: remove dead code (unreferenced exports, unused test helpers)`.
+
+- `sdk/src/utils/paths.ts`: dropped the `export` keyword from
+  `IouAmount`, `PathStep`, `ResolvedIouExtras`. Verified no importer
+  outside `paths.ts` itself across `sdk/`, `test/`, `demo/`,
+  `examples/`. The module is internal (not in `package.json` exports);
+  unexporting only tightens the boundary.
+- `test/utils/test-helpers.ts`: slimmed from 153 lines to 86. Removed
+  eight scaffolded helpers nothing imported (`createTestWallet`,
+  `createTestClient`, `createTestStore`, `serializeCredential`,
+  `trackClient`, `disconnectAll`, `SKIP_NETWORK`, `describeNetwork`)
+  and the now-dead `Credential`, `Store`, `Wallet`, `XrplClient`,
+  `NetworkId`, `XRPL_RPC_URLS` imports. The two used factories
+  (`createMockChargeChallenge`, `createMockChannelChallenge`) and a
+  short file-level docstring stay.
+
+Considered but kept:
+
+- All public-surface symbols in the package's `exports` map (e.g.
+  `BASE_RESERVE_DROPS`, `OWNER_RESERVE_DROPS`, `DEFAULT_TIMEOUT`,
+  `XRP_DECIMALS`, `XRP`, `RLUSD_MAINNET`, `RLUSD_TESTNET`,
+  `XRPL_NETWORK_IDS`, `XRPL_FAUCET_URLS`, `XRPL_EXPLORER_URLS`)
+  -- they're part of the SDK contract.
+- `formatDrops` and `ReserveState` from `utils/reserves.ts`
+  -- internal but imported by `test/xrpl/reserves.test.ts`.
+- `verifyPull`'s defensive `if (txHash)` guard -- the type still
+  carries `string | undefined` and unwrapping it would require
+  refactoring the function signature and the caller pre-decode block;
+  not worth the touch radius for a static-analysis nit.
+- `// const LSF_NO_FREEZE = ...` line in `validation.ts` -- removed in
+  Phase 2 instead since it's a comment cleanup.
+- `examples/channel-open-mpp.ts` "commented-out" lines 76, 99 -- they
+  are illustrative pseudocode in a doc-block walking a reader through
+  the API; not dead code.
+
+### Phase 2 -- comments
+
+`b96401a chore: tighten comments and JSDoc per repo convention`.
+
+Removed (rough counts):
+
+- ~25 single-line "restate" comments above an if-block / call site
+  (e.g. `// Reject credentials on finalized channels` above
+  `if (finalized) throw channelClosed(channelId)`).
+- 2 banner sub-headings in `types.ts` and `Methods.ts` that didn't
+  structure long files.
+- The commented-out `LSF_NO_FREEZE` constant in `validation.ts`.
+- Stale "Re-throw network errors" notes around throws that don't
+  need a comment to explain themselves.
+
+Improved / kept:
+
+- All JSDoc on exported symbols.
+- All XRPL-quirk why-comments (TransferRate semantics, BigInt
+  slippage +1 floor, ripple_path_find indexer cold-start, Number
+  precision in `multiplyDecimal`, partial-payment defense).
+- The "did : pkh : xrpl : {network} : {address}" structural reminder
+  in `did.ts` -- it's a parser shape map.
+- Long block on the open-action placeholder-signature policy in
+  `channel/server/Channel.ts.doVerifyOpen` -- substantive policy
+  documentation, would be replaced six months from now without it.
+- Section dividers in long files (>200 lines) where they actually
+  segment the file. Compressed the `// -------------------------- /
+  // X / // --------------------------` style to single-line
+  `// -- X --------` form.
+
+Most affected files: `channel/server/Channel.ts` (49 -> 35 comments),
+`server/Charge.ts` (31 -> 22), `utils/paths.ts` (33 -> 20),
+`channel/client/Channel.ts` (11 -> 11, mostly tightened wording),
+`errors.ts` (9 -> 8 with the table reorganised), `types.ts` (5 -> 1).
+
+Convention enforcement:
+- Sentence case, ending in periods for full sentences.
+- No emojis, no first-person ("we", "I"), no references to "the
+  session" or "the previous fix".
+- `//` for inline, `/** */` for JSDoc on declarations.
+
+Two-line file-level comment added to `test/utils/test-helpers.ts`
+explaining the file's role (mock factories for offline suites; devnet
+integration uses `test/integration/devnet-helpers.ts`).
+
+### Phase 3 -- verification
+
+| Step | Result |
+|---|---|
+| `pnpm tsc --noEmit` | exit 0 |
+| `pnpm biome check` | clean |
+| `pnpm test` | 24 files / 230 tests pass, ~2s |
+| `pnpm test:coverage` | threshold met. All files: 90.87% lines / 81.57% branches / 95.31% funcs / 90.87% stmts |
+| `pnpm test:integration` (devnet) | 3 files / 3 tests pass, ~147s |
+| `pnpm build` (tsup) | success in 16ms (ESM) + 3.7s (DTS), no warnings |
+
+Demos run end-to-end (testnet unless noted, devnet for the cross-issuer demo):
+
+| Demo | Result | Settlement tx |
+|---|---|---|
+| `demo/xrp-server.ts` + `demo/xrp-client.ts` | 200 OK, 1 XRP charged | `37E3913192D66135CCBDAEF5CF0FD834E79BFAF9DAAF9F4F3F004AD77FEBE89C` |
+| `demo/iou-charge.ts` | 200 OK, 10 USD charged | `63152DB42E345A4D4C4C90E58C2F62A06C9C3B1667CA8993ABD55A4D7A64A4A8` |
+| `demo/iou-cross-issuer.ts` (devnet) | 10 USD.A debited, 10 USD.B delivered, 0 bps realised slippage | `B0ED21215F922D8E872A7A4745C650581B8DDAE63760A1BA9243AEA90E9D5A38` |
+| `demo/mpt-charge.ts` | 200 OK, 100 MPT charged | `BFF2BF4CC3A39A8A977977ED2B38194DCFAEF2044AAC79D9C1FE5303E1921E4F` |
+| `demo/channel-server.ts` + `demo/channel-client.ts` | open + 5 vouchers + close, 500_000 drops settled | open `10E69F5969727EDE5AEB20B4DBA56C54752DBDE663219BE1B94E6E697739FB5D`, close `E95EEB718F07FE0CFC0CDE0DB3C4EA943D36E37DB9C94686E594261E79B9BD32` |
+| `demo/error-showcase.ts` | all 13 cases completed | -- |
+| `examples/stream-llm.ts` (offline) | 21 tokens settled at 2100 drops | -- |
+
+Nothing broke. Coverage still above the 80% gate. Build clean. Ready
+for review.
