@@ -145,3 +145,32 @@ All demos run successfully against testnet. Output transcripts in `/tmp/xrp-serv
 ## Stop and wait
 
 Done. No remote pushes. Eight commits on the local branch. Read `docs/audit.md`, `docs/security-pass.md`, and this report; the code changes are what they describe.
+
+## Follow-up: open-flow placeholder check (2026-05-01)
+
+Targeted single-task pass on the open-flow placeholder signature issue
+flagged in `docs/audit.md`.
+
+**Findings** (`docs/open-flow-check.md`): the gap was still present.
+The Phase 2 DID source binding did not close it -- those checks are
+orthogonal. The server's `doVerifyOpen` was silently zeroing
+`cumulative` whenever the client's placeholder signature did not
+verify against the real channelId, discarding the funder's stated
+initial commitment and hiding client-side bugs.
+
+**Fix** (in `sdk/src/channel/server/Channel.ts.doVerifyOpen`):
+- `initialAmount === 0`: accept the open without a signature check
+  (no value claim, placeholder vs real-channelId mismatch is fine).
+- `initialAmount > 0` AND signature verifies against real channelId:
+  honor the commitment.
+- `initialAmount > 0` AND signature does NOT verify: throw
+  `INVALID_SIGNATURE` with a message that points the caller at the
+  fix.
+
+**Tests** (`test/xrpl/channel-open-signature.test.ts`, 4 cases):
+zero-amount accepted, placeholder-mismatch rejected, real-channelId
+match accepted, plus an export sanity check. Suite: 208 -> 212. Lint
+and typecheck clean.
+
+Commit: `feat(channel): reject open with placeholder sig + nonzero
+initial amount` on the existing branch.

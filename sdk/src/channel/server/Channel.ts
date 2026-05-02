@@ -333,34 +333,49 @@ export function channel(parameters: channel.Parameters) {
       // Extract channelId from metadata
       const channelId = extractChannelIdFromMeta(meta)
 
-      // Verify initial claim signature against the real channelId
+      // Validate the initial claim against the real channelId.
+      //
+      // The client cannot know the channelId at sign time, so the open-action
+      // signature is typically computed against an all-zero placeholder. Two
+      // legitimate cases:
+      //   (a) initialAmount === 0: client is opening without an initial
+      //       commitment. The signature carries no value claim, so the
+      //       placeholder vs real-channelId mismatch is fine. Store
+      //       cumulative=0 and let the first real voucher set the floor.
+      //   (b) initialAmount > 0 AND the signature verifies against the real
+      //       channelId: the client knew the channelId in advance (rare but
+      //       valid). Honor it.
+      //
+      // Anything else (initialAmount > 0 and sig does NOT verify) is rejected.
+      // Silently zeroing the cumulative would discard the funder's stated
+      // initial commitment and hide client bugs (wrong wallet, off-by-one
+      // channelId, wrong amount in the sig vs the payload).
       const initialAmount = payload.amount
-      const initialXrp = dropsToXrp(initialAmount).toString()
-      let sigValid: boolean
-      try {
-        sigValid = verifyPaymentChannelClaim(channelId, initialXrp, payload.signature, publicKey)
-      } catch {
-        sigValid = false
+      const initialAmountBig = BigInt(initialAmount)
+
+      if (initialAmountBig > 0n) {
+        const initialXrp = dropsToXrp(initialAmount).toString()
+        let sigValid: boolean
+        try {
+          sigValid = verifyPaymentChannelClaim(channelId, initialXrp, payload.signature, publicKey)
+        } catch {
+          sigValid = false
+        }
+        if (!sigValid) {
+          throw invalidSignature(
+            `Initial claim signature does not verify against the real channelId ${channelId}. ` +
+              'Set request.amount to "0" on the open action to commit nothing, or sign ' +
+              'against the real channelId after it is known.',
+          )
+        }
       }
 
-      // If the client signed with a placeholder channelId, the sig won't match.
-      // In that case, we just init the store without verifying the initial claim.
-      // The first real voucher will be verified normally.
-
       if (store) {
-        if (sigValid) {
-          await store.put(`xrpl:channel:${channelId}`, {
-            cumulative: initialAmount,
-            signature: payload.signature,
-            timestamp: Date.now(),
-          })
-        } else {
-          await store.put(`xrpl:channel:${channelId}`, {
-            cumulative: '0',
-            signature: '',
-            timestamp: Date.now(),
-          })
-        }
+        await store.put(`xrpl:channel:${channelId}`, {
+          cumulative: initialAmountBig > 0n ? initialAmount : '0',
+          signature: initialAmountBig > 0n ? payload.signature : '',
+          timestamp: Date.now(),
+        })
       }
 
       return Receipt.from({
