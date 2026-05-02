@@ -5,7 +5,7 @@ import type { IssuedCurrency } from '../types.js'
 /**
  * IOU Amount object as it appears on a Payment transaction.
  */
-export type IouAmount = { currency: string; issuer: string; value: string }
+type IouAmount = { currency: string; issuer: string; value: string }
 
 /**
  * Source amount returned by ripple_path_find -- either a drops string (XRP)
@@ -19,7 +19,7 @@ type SourceAmount = string | IouAmount
  * The shape varies by step type (issuer hop, currency hop, account hop). We
  * pass these through to the Payment tx unchanged, so a partial type is enough.
  */
-export type PathStep = {
+type PathStep = {
   account?: string
   currency?: string
   issuer?: string
@@ -37,7 +37,7 @@ export type PathStep = {
  * - `sourceAmountValue` / `sourceAmountCurrency` / `sourceAmountIssuer`: the
  *   pre-slippage source amount, exposed for telemetry / progress events.
  */
-export type ResolvedIouExtras = {
+type ResolvedIouExtras = {
   Paths?: PathStep[][]
   SendMax?: SourceAmount
   sourceAmountValue: string
