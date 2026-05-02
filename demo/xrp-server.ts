@@ -37,7 +37,7 @@ async function main() {
     methods: [chargeMethod],
   })
 
-  const handler = (mppx as any)['xrpl/charge']({ amount: '1000000', currency: 'XRP' })
+  const handler = mppx['xrpl/charge']({ amount: '1000000', currency: 'XRP' })
 
   function toWebRequest(req: IncomingMessage): Request {
     const host = req.headers.host ?? 'localhost:3000'

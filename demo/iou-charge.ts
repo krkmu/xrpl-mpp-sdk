@@ -107,7 +107,7 @@ async function main() {
   })
 
   const mppx = Mppx.create({ secretKey: 'iou-demo-secret', methods: [chargeMethod] })
-  const handler = (mppx as any)['xrpl/charge']({ amount: '10', currency: currencyJson })
+  const handler = mppx['xrpl/charge']({ amount: '10', currency: currencyJson })
 
   const httpServer = createServer(async (req, res) => {
     const path = req.url ?? '/'

@@ -119,9 +119,12 @@ const mppx = Mppx.create({
   ],
 })
 
-// Works with any HTTP framework
+// Works with any HTTP framework. Three equivalent typed call shapes:
+//   mppx['xrpl/charge'](...)  -- explicit name/intent key
+//   mppx.charge(...)          -- shorthand (only when the intent is unique across methods)
+//   mppx.xrpl.charge(...)     -- nested by name
 export async function handler(request: Request) {
-  const result = await (mppx as any)['xrpl/charge']({
+  const result = await mppx['xrpl/charge']({
     amount: '1000000',
     currency: 'XRP',
   })(request)

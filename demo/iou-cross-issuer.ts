@@ -234,7 +234,7 @@ async function main() {
   })
 
   const mppx = Mppx.create({ secretKey: 'cross-issuer-demo-secret', methods: [chargeMethod] })
-  const handler = (mppx as any)['xrpl/charge']({
+  const handler = mppx['xrpl/charge']({
     amount: desiredAmount,
     currency: destCurrencyJson,
   })

@@ -60,7 +60,7 @@ const server = createServer(async (req, res) => {
       secretKey: process.env.MPP_SECRET_KEY ?? 'dev-secret-change-me',
       methods: [channel({ publicKey: PUBKEY, network: 'testnet', store })],
     })
-    handler = (mppx as any)['xrpl/channel']({
+    handler = mppx['xrpl/channel']({
       amount: '100000', // 0.1 XRP per request
       channelId,
       recipient: recipient ?? 'rPlaceholder',
