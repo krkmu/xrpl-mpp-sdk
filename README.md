@@ -202,10 +202,16 @@ charge({
   currency?: XrplCurrency,          // default: 'XRP'. Also: {currency, issuer} or {mpt_issuance_id}
   network?: 'mainnet' | 'testnet' | 'devnet',  // default: 'testnet'
   rpcUrl?: string,                  // custom WebSocket RPC URL
-  store?: Store.Store,              // replay protection (recommended)
+  store?: Store.Store,              // required by default for replay protection (see requireStore)
+  requireStore?: boolean,           // require store for replay protection (default: true)
   autoTrustline?: boolean,          // auto-create TrustSet on recipient for IOUs (default: false)
+  autoTrustlineLimit?: string,      // max balance willing to hold from issuer (default: '10000')
   autoMPTAuthorize?: boolean,       // auto MPTokenAuthorize on recipient for MPTs (default: false)
   seed?: string,                    // recipient wallet seed -- required if autoTrustline or autoMPTAuthorize
+  maxChallengeAge?: number,         // max challenge age in ms (default: 300_000 = 5 min, 0 disables)
+  maxCredentialSize?: number,       // max credential size in bytes (default: 65_536 = 64KB, 0 disables)
+  pollTimeout?: number,             // tx validation polling timeout in ms (default: 60_000)
+  pollInterval?: number,            // tx validation polling interval in ms (default: 1_000)
 })
 ```
 
@@ -231,11 +237,17 @@ channel({
   publicKey: string,                // channel funder's public key (ED... or 02.../03...)
   network?: 'mainnet' | 'testnet' | 'devnet',
   rpcUrl?: string,
-  store?: Store.Store,              // required for cumulative tracking + replay protection
-  verifyChannelOnChain?: boolean,   // verify channel state on-chain per claim (default: false)
-  onDisputeDetected?: (state) => void, // called when unilateral close detected on-chain
+  store?: Store.Store,              // required by default for cumulative tracking + replay protection
+  requireStore?: boolean,           // require store (default: true)
+  maxChallengeAge?: number,         // max challenge age in ms (default: 300_000 = 5 min, 0 disables)
+  verifyChannelOnChain?: boolean,   // verify channel exists, expiration, balance on-chain (default: true)
+  channelMetadataTtlMs?: number,    // cache TTL for channel metadata in ms (default: 60_000, 0 disables)
+  channelLookup?: ChannelLookup,    // override the on-chain lookup (test injection, custom transport)
+  onDisputeDetected?: (state) => void, // called when unilateral close detected on-chain (CancelAfter set)
 })
 ```
+
+When `verifyChannelOnChain` is on (the default), the first voucher per channel costs one `ledger_entry` RPC; subsequent vouchers reuse cached `Amount`/`Expiration`/`CancelAfter` until `channelMetadataTtlMs` elapses or the cumulative exceeds the cached `Amount` (force-refresh detects a `PaymentChannelFund` top-up). Without it, the server accepts any cryptographically-valid claim for any channelId, including fabricated ones.
 
 ### Client options (channel)
 
@@ -258,6 +270,26 @@ channel({
 
 // MPT -- multi-purpose token
 { amount: '100', currency: '{"mpt_issuance_id":"00ABC..."}' }
+```
+
+### Tags, InvoiceID, and memos
+
+The charge schema's `methodDetails` lets the server attach optional fields the client must put on the Payment tx. The server enforces them on verify, so a client who omits a required `DestinationTag` is rejected with `SUBMISSION_FAILED`.
+
+```ts
+// Server-side: bind a Payment to additional fields
+mppx['xrpl/charge']({
+  amount: '1000000',
+  currency: 'XRP',
+  methodDetails: {
+    invoiceId: '0123...64-hex...',          // 32-byte InvoiceID, hex
+    destinationTag: 12345,                   // routes to a hosted-wallet user
+    sourceTag: 7,                            // optional, mirrors destinationTag
+    memos: [                                 // UTF-8, hex-encoded by the SDK
+      { type: 'reconciliation-id', data: 'order-42' },
+    ],
+  },
+})
 ```
 
 ### Cross-issuer IOU payments
@@ -340,7 +372,7 @@ session.pay()                // returns ChannelClaim | null
 session.settle()             // force-sign for settlement
 ```
 
-### Replay protection
+### Replay protection and source binding
 
 Provide an mppx `Store` to prevent credential reuse:
 
@@ -353,8 +385,22 @@ charge({
 })
 ```
 
+The server keys off the challenge ID, the transaction hash (charge), and the `xrpl:channel:{channelId}` cumulative state (channel). The default config requires a store; pass `requireStore: false` to opt out (not recommended).
+
+The server also binds every credential to its issuer DID. The credential's `source` field is parsed as `did:pkh:xrpl:{network}:{address}` and the embedded address is matched against:
+
+- For charge: `tx.Account` on the submitted Payment.
+- For channel voucher/close: the address derived from the configured `publicKey`.
+- For channel open: `decoded.Account` on the PaymentChannelCreate.
+
+This closes hash-theft (push mode) and third-party-blob replay (pull mode) -- an attacker cannot wrap a third party's tx hash or signed blob in their own credential and claim credit. Mismatches surface as `SOURCE_MISMATCH`.
+
 For charge: deduplicates challenge IDs and transaction hashes.
-For channels: enforces strict cumulative monotonicity (new > previous).
+For channels: enforces strict cumulative monotonicity (new > previous), rejects fabricated channelIds via on-chain verification, and emits `CHANNEL_EXHAUSTED` when cumulative exceeds the funded `Amount` (with one force-refresh to detect a `PaymentChannelFund` top-up).
+
+### Owner-reserve preflight
+
+Operations that add an owner object (`TrustSet`, `MPTokenAuthorize`, `PaymentChannelCreate`) run a reserve preflight before submitting. The check reads `server_state` for the current base + per-object reserve, factors in the wallet's existing `OwnerCount`, and asserts the wallet can cover the new floor plus fee plus payment. Failures surface as `INSUFFICIENT_RESERVE` or `INSUFFICIENT_BALANCE` with an actionable message naming the operation kind, instead of letting the raw `tecINSUFFICIENT_RESERVE` bubble up.
 
 ### Key types
 
@@ -371,20 +417,39 @@ XRPL transaction engine results are mapped to MPP error types (RFC 9457 Problem 
 | tecResult | SDK Code | MPP Error Type |
 |---|---|---|
 | `tecPATH_DRY` | `PAYMENT_PATH_FAILED` | VerificationFailedError |
+| `tecPATH_PARTIAL` | `PAYMENT_PATH_FAILED` | VerificationFailedError |
 | `tecUNFUNDED_PAYMENT` | `INSUFFICIENT_BALANCE` | InsufficientBalanceError |
-| `tecPATH_PARTIAL` | `INSUFFICIENT_BALANCE` | InsufficientBalanceError |
 | `tecNO_DST` | `RECIPIENT_NOT_FOUND` | VerificationFailedError |
 | `tecNO_AUTH` | `TRUSTLINE_NOT_AUTHORIZED` | VerificationFailedError |
 | `tecNO_LINE` | `MISSING_TRUSTLINE` | VerificationFailedError |
-| `temBAD_AMOUNT` | `INVALID_AMOUNT` | VerificationFailedError |
-| `terINSUF_FEE_B` | `INSUFFICIENT_FEE` | VerificationFailedError |
+| `tecNO_LINE_INSUF_RESERVE` | `INSUFFICIENT_RESERVE` | VerificationFailedError |
+| `tecNO_LINE_REDUNDANT` | `MISSING_TRUSTLINE` | VerificationFailedError |
+| `tecFROZEN` | `TRUSTLINE_FROZEN` | VerificationFailedError |
 | `tecINSUFFICIENT_RESERVE` | `INSUFFICIENT_RESERVE` | VerificationFailedError |
+| `tecINSUFF_FEE` | `INSUFFICIENT_FEE` | VerificationFailedError |
+| `terINSUF_FEE_B` | `INSUFFICIENT_FEE` | VerificationFailedError |
+| `tecNO_PERMISSION` | `MPT_NOT_AUTHORIZED` | VerificationFailedError |
+| `temBAD_AMOUNT` | `INVALID_AMOUNT` | VerificationFailedError |
+| `tefPAST_SEQ` | `SUBMISSION_FAILED` | VerificationFailedError |
+| `tefALREADY` | `SUBMISSION_FAILED` | VerificationFailedError |
+| `tefBAD_AUTH` | `INVALID_SIGNATURE` | VerificationFailedError |
+| `tefMASTER_DISABLED` | `INVALID_SIGNATURE` | VerificationFailedError |
 
-Additional channel errors:
-- `INVALID_SIGNATURE` -- InvalidSignatureError (claim signer mismatch)
-- `REPLAY_DETECTED` -- VerificationFailedError (same cumulative resubmitted)
+Additional SDK-level error codes (raised before submit, no tecResult):
+- `SOURCE_MISMATCH` -- VerificationFailedError, the on-chain payer or channel funder does not match the credential's `did:pkh:xrpl:...` source
+- `RECIPIENT_MISMATCH` -- VerificationFailedError, the tx Destination does not match the challenge recipient
+- `AMOUNT_MISMATCH` -- VerificationFailedError, the delivered amount does not equal the challenge amount
+- `ISSUER_GLOBAL_FROZEN` -- raised by trustline preflight when the issuer has `lsfGlobalFreeze`
+- `TRUSTLINE_REQUIRES_AUTH` -- raised after a TrustSet against an issuer with `asfRequireAuth`; the trustline exists but cannot hold balance until the issuer authorizes it
+- `MPT_NOT_AUTHORIZED` (no holding) -- raised when no MPToken object exists and `autoMPTAuthorize` is false
+- `MPT_NOT_AUTHORIZED` (issuer side) -- raised after holder-side authorization when the issuance has `lsfMPTRequireAuth` and the issuer must run a paired MPTokenAuthorize
+
+Channel-specific:
+- `INVALID_SIGNATURE` -- InvalidSignatureError, claim signature does not verify against the configured `publicKey`
+- `REPLAY_DETECTED` -- VerificationFailedError, same cumulative resubmitted or challenge id reused
 - `CHANNEL_NOT_FOUND` -- ChannelNotFoundError (410)
-- `CHANNEL_EXPIRED` -- ChannelClosedError (410)
+- `CHANNEL_EXPIRED` -- ChannelClosedError (410), `Expiration` elapsed or channel finalized
+- `CHANNEL_EXHAUSTED` -- AmountExceedsDepositError, cumulative exceeds the channel's funded `Amount` even after a force-refresh
 
 All errors extend mppx's `PaymentError` base class and serialize to RFC 9457 Problem Details format.
 
@@ -392,17 +457,25 @@ All errors extend mppx's `PaymentError` base class and serialize to RFC 9457 Pro
 
 | Constant | Value |
 |---|---|
-| `XRPL_RPC_URLS.testnet` | `wss://s.altnet.rippletest.net:51233` |
 | `XRPL_RPC_URLS.mainnet` | `wss://xrplcluster.com` |
+| `XRPL_RPC_URLS.testnet` | `wss://s.altnet.rippletest.net:51233` |
+| `XRPL_RPC_URLS.devnet`  | `wss://s.devnet.rippletest.net:51233` |
+| `XRPL_FAUCET_URLS.testnet` | `https://faucet.altnet.rippletest.net/accounts` |
+| `XRPL_FAUCET_URLS.devnet`  | `https://faucet.devnet.rippletest.net/accounts` |
+| `XRPL_EXPLORER_URLS.mainnet` | `https://xrpl.org/transactions/` |
+| `XRPL_EXPLORER_URLS.testnet` | `https://testnet.xrpl.org/transactions/` |
+| `XRPL_EXPLORER_URLS.devnet`  | `https://devnet.xrpl.org/transactions/` |
 | `RLUSD_MAINNET` | `{ currency: 'RLUSD', issuer: 'rMxWzrBMyeKR9oJfYBrhAEGsxwsdLFSfim' }` |
 | `RLUSD_TESTNET` | `{ currency: 'RLUSD', issuer: 'rQhWct2fTR9z7bBQaflfqMEr2u8avFFpKH' }` |
 | `XRP_DECIMALS` | `6` |
-| `BASE_RESERVE_DROPS` | `'1000000'` (1 XRP) |
-| `OWNER_RESERVE_DROPS` | `'200000'` (0.2 XRP) |
+| `BASE_RESERVE_DROPS` | `'1000000'` (1 XRP, current mainnet) |
+| `OWNER_RESERVE_DROPS` | `'200000'` (0.2 XRP, current mainnet) |
+
+The reserve constants are static fallbacks. The SDK's preflight reads live values via `server_state` so wallets stay correct after any future ledger-wide reserve change.
 
 ## Demos
 
-All demos run on XRPL testnet. Zero env vars -- every script generates wallets and funds them automatically. See [demo/README.md](demo/README.md) for details.
+Most demos run on XRPL testnet; the cross-issuer demo runs on devnet (rationale below). Zero env vars -- every script generates wallets and funds them automatically via the network's faucet. See [demo/README.md](demo/README.md) for details.
 
 ```bash
 # XRP charge (two terminals)
@@ -411,6 +484,10 @@ npx tsx demo/xrp-client.ts          # Terminal 2
 
 # IOU charge (all-in-one: issuer + trustlines + issuance + charge)
 npx tsx demo/iou-charge.ts
+
+# Cross-issuer IOU (devnet -- faster path-find indexer; sender holds USD.A,
+# recipient holds USD.B, market-maker bridges; SDK auto-resolves the path)
+npx tsx demo/iou-cross-issuer.ts
 
 # MPT charge (all-in-one: MPT issuance + authorize + charge)
 npx tsx demo/mpt-charge.ts
@@ -426,51 +503,62 @@ npx tsx demo/error-showcase.ts
 npx tsx examples/stream-llm.ts
 ```
 
+The cross-issuer demo runs on devnet because public testnet's path indexer is materially slower at surfacing freshly-created orderbooks; on devnet a fresh `OfferCreate` is visible to `ripple_path_find` within seconds.
+
 ## Project structure
 
 ```
 xrpl-mpp-sdk/
   sdk/src/
     index.ts                 # Root exports, constants, types, error helpers
-    Methods.ts               # Method schema (name: 'xrpl', intent: 'charge')
-    constants.ts             # RPC URLs, well-known currencies, reserves
-    types.ts                 # XrplCurrency, config types
-    errors.ts                # tecResult mapping, error constructors
+    Methods.ts               # Charge schema (name: 'xrpl', intent: 'charge')
+    constants.ts             # RPC URLs, faucet URLs, explorer URLs, well-known currencies, reserves
+    types.ts                 # XrplCurrency, config types, ChargeProgressEvent
+    errors.ts                # tecResult mapping, typed error constructors
     utils/
       currency.ts            # parseCurrency, buildAmount, isXrp/isIOU/isMPT
-      trustline.ts           # ensureTrustline, checkRippling
-      mpt.ts                 # ensureMPTHolding
-      validation.ts          # runPreflight (balance + reserves + destination + rippling)
+      did.ts                 # classicAddressFromDID, classicAddressFromPublicKey (source binding)
+      paths.ts               # resolveIouPaymentExtras (ripple_path_find + SendMax + slippage)
+      reserves.ts            # getReserveState, assertReserveCovers (owner-reserve preflight)
+      trustline.ts           # ensureTrustline, checkRippling, freeze + RequireAuth detection
+      mpt.ts                 # ensureMPTHolding, lsfMPTRequireAuth detection
+      validation.ts          # runPreflight, assertIssuerHealth (rippling, global freeze, RequireAuth)
     client/
-      Charge.ts              # Client charge: sign Payment tx, create credential
+      Charge.ts              # Client charge: preflight, IOU path resolve, sign, push/pull
       Methods.ts             # xrpl.charge() convenience wrapper
       index.ts
     server/
-      Charge.ts              # Server charge: verify + submit Payment tx
-      Methods.ts             # xrpl.charge() convenience wrapper
+      Charge.ts              # Server charge: DID source bind, validate, submit, poll
+      Methods.ts
       index.ts
     channel/
-      Methods.ts             # Method schema (name: 'xrpl', intent: 'channel')
+      Methods.ts             # Channel schema (name: 'xrpl', intent: 'channel')
       stream.ts              # ChannelStream, ChannelSession
       index.ts
       client/
-        Channel.ts           # Sign PayChannel claims, openChannel, fundChannel
+        Channel.ts           # Sign claims, openChannel (reserve preflight), fundChannel
         Methods.ts
         index.ts
       server/
-        Channel.ts           # Verify claims, track cumulative, close()
+        Channel.ts           # Verify claims, on-chain channel verification, cache, close()
         Methods.ts
         index.ts
   test/
-    compliance/              # MPP protocol, intents, interop (42 tests)
-    security/                # Replay, tamper, input validation, channel auth (38 tests)
-    xrpl/                    # Charge, channel, trustline, MPT, dual-curve (61 tests)
+    compliance/              # MPP protocol, intents, interop
+    security/                # Replay, tamper, input validation, channel auth, source binding
+    xrpl/                    # Charge, channel, paths, reserves, trustline freeze, MPT auth, stream, dual-curve
+    integration/             # Devnet end-to-end (gated)
+      devnet-helpers.ts
+      charge.devnet.test.ts
+      channel.devnet.test.ts
+      iou-cross-issuer.devnet.test.ts
     utils/test-helpers.ts
   demo/
     log.ts                   # Shared styled terminal output utility
     xrp-server.ts            # XRP charge server (two-terminal)
     xrp-client.ts            # XRP charge client (two-terminal)
-    iou-charge.ts            # IOU charge all-in-one
+    iou-charge.ts            # Same-issuer IOU charge all-in-one
+    iou-cross-issuer.ts      # Cross-issuer IOU charge (devnet, all-in-one)
     mpt-charge.ts            # MPT charge all-in-one
     channel-server.ts        # PayChannel server (two-terminal)
     channel-client.ts        # PayChannel client (two-terminal)
@@ -482,6 +570,14 @@ xrpl-mpp-sdk/
     channel-client.ts        # Minimal channel client (env var config)
     stream-llm.ts            # Pay-per-token streaming simulation (offline)
     channel-open-mpp.ts      # Channel open via MPP 402 flow (concept example)
+  vitest.config.ts            # Unit suite + coverage threshold (80% on core modules)
+  vitest.integration.config.ts # Devnet integration suite (single-fork, no coverage)
+  .github/workflows/ci.yml    # Two jobs: unit (every push/PR) + integration (gated)
+  docs/
+    audit.md                 # Module-by-module gap analysis and PR sequence
+    open-flow-check.md       # Channel open placeholder-signature analysis
+    security-pass.md         # Targeted private-key-handling review
+    session-report.md        # Per-session change log
 ```
 
 ## Development
@@ -490,8 +586,13 @@ xrpl-mpp-sdk/
 pnpm install
 pnpm check:types             # TypeScript strict mode
 pnpm lint                    # Biome lint + format
-pnpm test                    # Vitest (141 tests)
+pnpm test                    # Unit suite (~230 tests, ~2s)
+pnpm test:coverage           # Unit suite with v8 coverage (80% threshold on core modules)
+pnpm test:integration        # Devnet integration suite (real ledger, faucet-funded ephemeral wallets)
+pnpm build                   # tsup build to dist/
 ```
+
+CI runs `unit` on every push and PR; `integration` is gated to push-to-main, PRs labelled `run-integration`, or manual `workflow_dispatch`. The integration job is informational only -- it does not block PRs because the public devnet faucet can be flaky.
 
 ## Protocol
 
