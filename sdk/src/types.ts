@@ -1,4 +1,5 @@
 import type { NetworkId } from './constants.js'
+import type { Wallet } from './utils/wallet.js'
 
 /** XRP native currency. */
 export type XrpCurrency = 'XRP'
@@ -37,7 +38,9 @@ export type ChargeProgressEvent =
   | { type: 'confirmed'; hash: string }
 
 export type ChargeClientConfig = {
-  /** Wallet seed or Wallet instance. */
+  /** Wallet used to sign the payment. Preferred over `seed`. */
+  wallet?: Wallet
+  /** Family seed of the payer. Kept for backward compatibility -- prefer `wallet`. */
   seed?: string
   /** Payment mode -- pull (default) or push. */
   mode?: PaymentMode
@@ -98,7 +101,15 @@ export type ChargeServerConfig = {
    * @default false
    */
   autoMPTAuthorize?: boolean
-  /** Wallet seed for the recipient -- required if autoTrustline or autoMPTAuthorize is set. */
+  /**
+   * Recipient wallet -- required if autoTrustline or autoMPTAuthorize is set.
+   * Preferred over `seed`.
+   */
+  wallet?: Wallet
+  /**
+   * Recipient family seed -- required if autoTrustline or autoMPTAuthorize is
+   * set. Kept for backward compatibility -- prefer `wallet`.
+   */
   seed?: string
   /** XRPL network. */
   network?: NetworkId
@@ -107,7 +118,9 @@ export type ChargeServerConfig = {
 }
 
 export type ChannelClientConfig = {
-  /** Wallet seed or Wallet instance. */
+  /** Funder wallet. Preferred over `seed`. */
+  wallet?: Wallet
+  /** Family seed of the channel funder. Kept for backward compatibility -- prefer `wallet`. */
   seed?: string
   /** XRPL network. */
   network?: NetworkId

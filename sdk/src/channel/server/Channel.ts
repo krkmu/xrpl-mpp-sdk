@@ -1,5 +1,5 @@
 import { Method, Receipt, type Store } from 'mppx'
-import { Client, decode, dropsToXrp, verifyPaymentChannelClaim, Wallet } from 'xrpl'
+import { Client, decode, dropsToXrp, verifyPaymentChannelClaim } from 'xrpl'
 import { type NetworkId, XRPL_RPC_URLS } from '../../constants.js'
 import {
   channelClosed,
@@ -11,6 +11,7 @@ import {
 } from '../../errors.js'
 import type { ChannelServerConfig } from '../../types.js'
 import { classicAddressFromDID, classicAddressFromPublicKey } from '../../utils/did.js'
+import { resolveWallet, type Wallet } from '../../utils/wallet.js'
 import { channel as ChannelMethod } from '../Methods.js'
 
 /** Default max challenge age: 5 minutes. */
@@ -553,7 +554,10 @@ export declare namespace channel {
  * The function looks up the channel on-chain to detect the caller's role.
  */
 export async function close(params: {
-  seed: string
+  /** Wallet of the closer (funder or recipient). Preferred over `seed`. */
+  wallet?: Wallet
+  /** Family seed of the closer. Kept for backward compatibility -- prefer `wallet`. */
+  seed?: string
   channelId: string
   amount: string
   signature: string
@@ -565,6 +569,7 @@ export async function close(params: {
   store?: Store.Store
 }): Promise<{ txHash: string }> {
   const {
+    wallet: walletInput,
     seed,
     channelId,
     amount,
@@ -575,21 +580,21 @@ export async function close(params: {
     store: closeStore,
   } = params
 
-  const wallet = Wallet.fromSeed(seed)
+  const wallet = resolveWallet({ wallet: walletInput, seed })
   const resolvedRpcUrl = rpcUrl ?? XRPL_RPC_URLS[network]
   const client = new Client(resolvedRpcUrl)
   await client.connect()
 
   try {
     const channelObj = await lookupChannel(client, channelId)
-    const isSource = channelObj?.Account === wallet.classicAddress
+    const isSource = channelObj?.Account === wallet.address
 
     // tfClose = 0x00010000. Only the source (funder) is allowed to set it.
     const TF_CLOSE = 0x00010000
 
     const channelClaim = {
       TransactionType: 'PaymentChannelClaim' as const,
-      Account: wallet.classicAddress,
+      Account: wallet.address,
       Channel: channelId,
       Balance: amount,
       Amount: amount,
@@ -598,7 +603,7 @@ export async function close(params: {
       ...(isSource ? { Flags: TF_CLOSE } : {}),
     }
 
-    const result = await client.submitAndWait(channelClaim, { wallet })
+    const result = await client.submitAndWait(channelClaim, { wallet: wallet._xrplWallet })
     const meta = result.result.meta as any
 
     if (meta?.TransactionResult !== 'tesSUCCESS') {

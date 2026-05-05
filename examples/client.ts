@@ -8,8 +8,8 @@
  */
 import { Receipt } from 'mppx'
 import { Mppx } from 'mppx/client'
-import { Wallet } from 'xrpl'
 import { charge } from '../sdk/src/client/Charge.js'
+import { Wallet } from '../sdk/src/utils/wallet.js'
 
 const SEED = process.env.XRPL_SEED
 if (!SEED) {
@@ -18,13 +18,13 @@ if (!SEED) {
 }
 
 const wallet = Wallet.fromSeed(SEED)
-console.log(`Using XRPL account: ${wallet.classicAddress}`)
+console.log(`Using XRPL account: ${wallet.address}`)
 
 // Patches globalThis.fetch -- 402 responses handled automatically
 Mppx.create({
   methods: [
     charge({
-      seed: SEED,
+      wallet,
       mode: 'pull',
       network: 'testnet',
     }),

@@ -1,4 +1,5 @@
 export { Expires, Mppx, Store } from 'mppx/server'
+export { type FromFaucetOptions, Wallet, type WalletAlgorithm } from '../../utils/wallet.js'
 export {
   type ChannelDisputeState,
   type ChannelLookup,

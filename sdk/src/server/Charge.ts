@@ -1,5 +1,5 @@
 import { Method, Receipt, type Store } from 'mppx'
-import { Client, decode, hashes, Wallet } from 'xrpl'
+import { Client, decode, hashes } from 'xrpl'
 import { XRPL_RPC_URLS } from '../constants.js'
 import { fromTecResult, replayDetected, verificationFailed } from '../errors.js'
 import * as Methods from '../Methods.js'
@@ -8,6 +8,7 @@ import { isIOU, isMPT, parseCurrency, serializeCurrency } from '../utils/currenc
 import { classicAddressFromDID } from '../utils/did.js'
 import { ensureMPTHolding } from '../utils/mpt.js'
 import { ensureTrustline } from '../utils/trustline.js'
+import { Wallet } from '../utils/wallet.js'
 
 /** Default max challenge age: 5 minutes. */
 const DEFAULT_MAX_CHALLENGE_AGE_MS = 5 * 60 * 1000
@@ -47,6 +48,7 @@ export function charge(parameters: charge.Parameters) {
     autoTrustline = false,
     autoTrustlineLimit,
     autoMPTAuthorize = false,
+    wallet: walletInput,
     seed,
     network = 'testnet',
     rpcUrl: customRpcUrl,
@@ -58,21 +60,20 @@ export function charge(parameters: charge.Parameters) {
     pollInterval = 1_000,
   } = parameters
 
-  if ((autoTrustline || autoMPTAuthorize) && !seed) {
+  const recipientWallet: Wallet | undefined = walletInput ?? (seed ? Wallet.fromSeed(seed) : undefined)
+
+  if ((autoTrustline || autoMPTAuthorize) && !recipientWallet) {
     throw new Error(
-      '[xrpl-mpp-sdk] seed is required when autoTrustline or autoMPTAuthorize is enabled. ' +
+      '[xrpl-mpp-sdk] wallet (or seed) is required when autoTrustline or autoMPTAuthorize is enabled. ' +
         'The server needs to sign TrustSet/MPTokenAuthorize transactions for the recipient account.',
     )
   }
 
-  if (seed) {
-    const recipientWallet = Wallet.fromSeed(seed)
-    if (recipientWallet.classicAddress !== recipient) {
-      throw new Error(
-        `[xrpl-mpp-sdk] seed does not match recipient. ` +
-          `Seed derives ${recipientWallet.classicAddress}, but recipient is ${recipient}.`,
-      )
-    }
+  if (recipientWallet && recipientWallet.address !== recipient) {
+    throw new Error(
+      `[xrpl-mpp-sdk] recipient wallet does not match recipient address. ` +
+        `Wallet derives ${recipientWallet.address}, but recipient is ${recipient}.`,
+    )
   }
 
   if (!store && requireStore) {
@@ -90,14 +91,13 @@ export function charge(parameters: charge.Parameters) {
   // restart with no traffic doesn't burn a TrustSet fee.
   let recipientSetupDone = false
   async function ensureRecipientSetup(client: Client): Promise<void> {
-    if (recipientSetupDone || !currency) return
-    const wallet = seed ? Wallet.fromSeed(seed) : undefined
-    if (!wallet) return
+    if (recipientSetupDone || !currency || !recipientWallet) return
+    const xrplWallet = recipientWallet._xrplWallet
 
     if (isIOU(currency) && autoTrustline) {
       await ensureTrustline({
         client,
-        wallet,
+        wallet: xrplWallet,
         currency,
         autoTrustline: true,
         trustlineLimit: autoTrustlineLimit,
@@ -107,7 +107,7 @@ export function charge(parameters: charge.Parameters) {
     if (isMPT(currency) && autoMPTAuthorize) {
       await ensureMPTHolding({
         client,
-        wallet,
+        wallet: xrplWallet,
         mpt: currency,
         autoMPTAuthorize: true,
       })

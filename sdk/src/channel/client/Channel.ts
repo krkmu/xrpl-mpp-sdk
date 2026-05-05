@@ -1,9 +1,10 @@
 import { Credential, Method } from 'mppx'
-import { Client, dropsToXrp, signPaymentChannelClaim, Wallet } from 'xrpl'
+import { Client, dropsToXrp, signPaymentChannelClaim } from 'xrpl'
 import { z } from 'zod/mini'
 import { type NetworkId, XRPL_RPC_URLS } from '../../constants.js'
 import type { ChannelClientConfig } from '../../types.js'
 import { assertReserveCovers, getReserveState } from '../../utils/reserves.js'
+import { resolveWallet, type Wallet } from '../../utils/wallet.js'
 import { channel as ChannelMethod } from '../Methods.js'
 
 /**
@@ -26,13 +27,18 @@ import { channel as ChannelMethod } from '../Methods.js'
  * ```
  */
 export function channel(parameters: channel.Parameters) {
-  const { seed, network: defaultNetwork = 'testnet', rpcUrl: _defaultRpcUrl } = parameters
+  const {
+    wallet: walletInput,
+    seed,
+    network: defaultNetwork = 'testnet',
+    rpcUrl: _defaultRpcUrl,
+  } = parameters
 
-  if (!seed) {
-    throw new Error('seed is required for client channel method.')
+  if (!walletInput && !seed) {
+    throw new Error('A wallet or seed is required for the client channel method.')
   }
 
-  const wallet = Wallet.fromSeed(seed)
+  const wallet = resolveWallet({ wallet: walletInput, seed })
 
   return Method.toClient(ChannelMethod, {
     context: z.object({
@@ -73,7 +79,7 @@ export function channel(parameters: channel.Parameters) {
             amount: initialAmount,
             signature,
           },
-          source: `did:pkh:xrpl:${network}:${wallet.classicAddress}`,
+          source: `did:pkh:xrpl:${network}:${wallet.address}`,
         })
       }
 
@@ -97,7 +103,7 @@ export function channel(parameters: channel.Parameters) {
           amount: cumulativeStr,
           signature,
         },
-        source: `did:pkh:xrpl:${network}:${wallet.classicAddress}`,
+        source: `did:pkh:xrpl:${network}:${wallet.address}`,
       })
     },
   })
@@ -113,7 +119,10 @@ export declare namespace channel {
  * Creates a PaymentChannelCreate transaction and returns the channel ID.
  */
 export async function openChannel(params: {
-  seed: string
+  /** Funder wallet. Preferred over `seed`. */
+  wallet?: Wallet
+  /** Family seed of the funder. Kept for backward compatibility -- prefer `wallet`. */
+  seed?: string
   destination: string
   amount: string
   settleDelay: number
@@ -123,6 +132,7 @@ export async function openChannel(params: {
   rpcUrl?: string
 }): Promise<{ channelId: string; txHash: string }> {
   const {
+    wallet: walletInput,
     seed,
     destination,
     amount,
@@ -133,7 +143,8 @@ export async function openChannel(params: {
     rpcUrl,
   } = params
 
-  const wallet = Wallet.fromSeed(seed)
+  const wallet = resolveWallet({ wallet: walletInput, seed })
+  const xrplWallet = wallet._xrplWallet
 
   // Reject dust before connecting: an Amount of 0 drops produces a dead
   // channel that burns the source's reserve increment without delivering
@@ -156,12 +167,12 @@ export async function openChannel(params: {
   try {
     // PaymentChannelCreate adds an owner object on the source. Preflight the
     // reserve so the caller sees a typed error instead of tecINSUFFICIENT_RESERVE.
-    const state = await getReserveState(client, wallet.classicAddress)
+    const state = await getReserveState(client, wallet.address)
     if (!state) {
-      throw new Error(`[INSUFFICIENT_BALANCE] Account ${wallet.classicAddress} is not yet funded.`)
+      throw new Error(`[INSUFFICIENT_BALANCE] Account ${wallet.address} is not yet funded.`)
     }
     assertReserveCovers({
-      account: wallet.classicAddress,
+      account: wallet.address,
       state,
       addedOwnerObjects: 1,
       paymentDrops: BigInt(amount),
@@ -170,7 +181,7 @@ export async function openChannel(params: {
 
     const channelCreate: any = {
       TransactionType: 'PaymentChannelCreate',
-      Account: wallet.classicAddress,
+      Account: wallet.address,
       Destination: destination,
       Amount: amount,
       SettleDelay: settleDelay,
@@ -181,7 +192,7 @@ export async function openChannel(params: {
       channelCreate.CancelAfter = cancelAfter
     }
 
-    const result = await client.submitAndWait(channelCreate, { wallet })
+    const result = await client.submitAndWait(channelCreate, { wallet: xrplWallet })
     const meta = result.result.meta as any
 
     if (meta?.TransactionResult !== 'tesSUCCESS') {
@@ -201,15 +212,25 @@ export async function openChannel(params: {
  * Fund an existing PayChannel with additional XRP.
  */
 export async function fundChannel(params: {
-  seed: string
+  /** Funder wallet. Preferred over `seed`. */
+  wallet?: Wallet
+  /** Family seed of the funder. Kept for backward compatibility -- prefer `wallet`. */
+  seed?: string
   channelId: string
   amount: string
   network?: NetworkId
   rpcUrl?: string
 }): Promise<{ txHash: string }> {
-  const { seed, channelId, amount, network = 'testnet', rpcUrl } = params
+  const {
+    wallet: walletInput,
+    seed,
+    channelId,
+    amount,
+    network = 'testnet',
+    rpcUrl,
+  } = params
 
-  const wallet = Wallet.fromSeed(seed)
+  const wallet = resolveWallet({ wallet: walletInput, seed })
   const resolvedRpcUrl = rpcUrl ?? XRPL_RPC_URLS[network]
   const client = new Client(resolvedRpcUrl)
   await client.connect()
@@ -217,12 +238,12 @@ export async function fundChannel(params: {
   try {
     const channelFund = {
       TransactionType: 'PaymentChannelFund' as const,
-      Account: wallet.classicAddress,
+      Account: wallet.address,
       Channel: channelId,
       Amount: amount,
     }
 
-    const result = await client.submitAndWait(channelFund, { wallet })
+    const result = await client.submitAndWait(channelFund, { wallet: wallet._xrplWallet })
     const meta = result.result.meta as any
 
     if (meta?.TransactionResult !== 'tesSUCCESS') {

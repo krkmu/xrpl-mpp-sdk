@@ -40,3 +40,4 @@ export type {
   XrpCurrency,
   XrplCurrency,
 } from './types.js'
+export { type FromFaucetOptions, Wallet, type WalletAlgorithm } from './utils/wallet.js'

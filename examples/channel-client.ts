@@ -9,8 +9,8 @@
  * Requires examples/channel-server.ts running on localhost:3001.
  */
 import { Mppx } from 'mppx/client'
-import { Wallet } from 'xrpl'
 import { channel, openChannel } from '../sdk/src/channel/client/Channel.js'
+import { Wallet } from '../sdk/src/utils/wallet.js'
 
 const SEED = process.env.XRPL_SEED
 const DEST = process.env.XRPL_DEST
@@ -24,12 +24,12 @@ if (!SEED || !DEST) {
 
 const SERVER_URL = process.env.SERVER_URL ?? 'http://localhost:3001'
 const wallet = Wallet.fromSeed(SEED)
-console.log(`Using XRPL account: ${wallet.classicAddress}`)
+console.log(`Using XRPL account: ${wallet.address}`)
 
 // 1. Open a 5 XRP channel
 console.log('\nOpening PaymentChannel (5 XRP)...')
 const { channelId, txHash } = await openChannel({
-  seed: SEED,
+  wallet,
   destination: DEST,
   amount: '5000000',
   settleDelay: 3600,
@@ -49,7 +49,7 @@ console.log('Server configured\n')
 
 // 3. Patch fetch for auto 402 handling
 Mppx.create({
-  methods: [channel({ seed: SEED, network: 'testnet' })],
+  methods: [channel({ wallet, network: 'testnet' })],
 })
 
 // 4. Make 3 paid requests

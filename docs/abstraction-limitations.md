@@ -1,0 +1,154 @@
+# SDK Abstraction Limitations
+
+Living document tracking gaps where consumers of `xrpl-mpp-sdk` may still need
+to reach into `xrpl` directly. The goal is to make this list shrink to zero
+over time.
+
+Each entry follows the same shape:
+
+- **Status** -- `open` / `in-progress` / `closed`
+- **Scope** -- which user-facing area is affected
+- **Why it leaks** -- the underlying reason
+- **What it forces the consumer to do** -- concrete xrpl import they must add
+- **Proposed fix** -- the API we want once it's closed
+
+---
+
+## 1. Wallet abstraction
+
+### 1.1 `ChannelStream` / `ChannelSession` accept a raw `privateKey`, not a `Wallet`
+
+- **Status**: open
+- **Scope**: `xrpl-mpp-sdk/channel` -- pay-per-token streaming.
+- **Why it leaks**: the constructors of `ChannelStream` and `ChannelSession`
+  in `sdk/src/channel/stream.ts` were written before the `Wallet` abstraction
+  existed. They take `{ privateKey: string, channelId, dropsPerUnit, ... }`.
+- **What it forces the consumer to do**: nothing strictly -- a consumer with
+  a `Wallet` instance can pass `wallet.privateKey`. It just feels inconsistent
+  vs. the rest of the SDK and exposes a low-level secret on the call site.
+- **Proposed fix**: accept `wallet: Wallet` (preferred) and keep
+  `privateKey: string` as a backward-compatible alternative. The constructor
+  reads `wallet.privateKey` internally.
+
+### 1.2 No SDK helper to prepare a signed `PaymentChannelCreate` blob for the MPP open flow
+
+- **Status**: open
+- **Scope**: PayChannel open-via-MPP (`action: 'open'` credential).
+- **Why it leaks**: the credential payload for `action: 'open'` carries a
+  *client-signed* PaymentChannelCreate blob. To produce that blob, the client
+  needs `xrpl.Client.autofill(...)` followed by `wallet.sign(prepared)`. The
+  SDK does not currently expose a helper for this.
+- **What it forces the consumer to do**:
+  ```ts
+  import { Client, Wallet } from 'xrpl'
+  const xrplClient = new Client('wss://s.altnet.rippletest.net:51233')
+  await xrplClient.connect()
+  const prepared = await xrplClient.autofill({ TransactionType: 'PaymentChannelCreate', ... })
+  const signed = wallet.sign(prepared)
+  await xrplClient.disconnect()
+  // signed.tx_blob -> goes into the open credential payload
+  ```
+  See `examples/channel-open-mpp.ts`.
+- **Proposed fix**: a helper such as `prepareOpenChannelTransaction({ wallet,
+  destination, amount, settleDelay, network, rpcUrl })` that returns
+  `{ txBlob: string }`. Either standalone or as `wallet.signOpenChannel(...)`.
+
+### 1.3 `Wallet._xrplWallet` is a public-but-internal back door
+
+- **Status**: open (intentional, low-priority)
+- **Scope**: anyone reading the type of `Wallet`.
+- **Why it leaks**: SDK internals (`runPreflight`, `submitAndWait`,
+  `ensureTrustline`, `ensureMPTHolding`) need an actual `xrpl.Wallet` to call
+  xrpl.js APIs. The `Wallet` class exposes a getter `_xrplWallet` (prefixed
+  `_`, JSDoc `@internal`) so the SDK can reach the underlying handle.
+- **What it forces the consumer to do**: nothing -- a consumer that ignores
+  underscore-prefixed members never sees an `xrpl.Wallet`. But TypeScript
+  does not enforce the convention, so the type leaks `XrplWallet` if someone
+  hovers the property.
+- **Proposed fix** (later, low priority): hide the handle behind a non-string
+  symbol key, or move all internal callers behind a module-private friend
+  function so the getter can be removed entirely.
+
+---
+
+## 2. Network / Client abstraction (not yet started)
+
+### 2.1 `xrpl.Client` is still required for any operation outside the chargeable / channel happy paths
+
+- **Status**: open
+- **Scope**: any custom on-chain interaction (TrustSet, AccountSet,
+  MPTokenIssuanceCreate, MPTokenAuthorize, raw queries, etc.).
+- **Why it leaks**: the SDK only wraps the operations it cares about
+  (Payment, PaymentChannelCreate / Fund / Claim). Anything else still requires
+  the consumer to instantiate `xrpl.Client`.
+- **What it forces the consumer to do**: see the demos `iou-charge.ts`,
+  `mpt-charge.ts`, `iou-cross-issuer.ts`, `error-showcase.ts` -- they all
+  open a `Client` for setup work.
+- **Proposed fix**: TBD -- decide which ledger operations belong in the SDK.
+  Likely candidates: `enableDefaultRipple`, `setTrustline`, `issueMPT`,
+  `authorizeMPT`. For raw access, expose a thin `XrplClient` wrapper that the
+  consumer can hold without ever importing `xrpl` themselves.
+
+### 2.2 No abstraction for transaction submission (`submit`, `submitAndWait`, polling)
+
+- **Status**: open
+- **Scope**: any custom transaction the consumer wants to broadcast.
+- **Why it leaks**: there is no SDK-level "submit this signed blob and wait
+  for tesSUCCESS" helper. Today, the SDK has private inline implementations
+  inside `Charge.ts` and `Channel.ts`.
+- **Proposed fix**: extract a `submitAndWait({ blob | tx, wallet, network })`
+  utility on the eventual `XrplClient` wrapper.
+
+---
+
+## 3. Currency / amount handling
+
+### 3.1 `IssuedCurrency` / `MPToken` types are SDK-defined, but amount construction still happens via xrpl-shaped objects
+
+- **Status**: open (cosmetic / DX)
+- **Scope**: charge requests with non-XRP currencies.
+- **Why it leaks**: helpers like `buildAmount` are internal. Consumers who
+  want to handcraft an amount object end up building xrpl-shaped
+  `{ currency, issuer, value }` themselves.
+- **Proposed fix**: export `buildAmount`, `parseCurrency`, `serializeCurrency`
+  with explicit SDK contracts -- or a fluent `Amount` builder.
+
+---
+
+## 4. Errors
+
+### 4.1 `tec*` result codes are mapped to typed errors only inside the SDK
+
+- **Status**: closed for the documented codes; open for any new code added by
+  future XRPL amendments.
+- **Scope**: error handling in consumer code.
+- **Note**: `TEC_RESULT_MAP` is exported, so consumers can map arbitrary
+  result codes themselves. Keep this list in sync as new amendments land.
+
+---
+
+## 5. Tests / runtime coverage
+
+### 5.1 Unit tests do not exercise `Wallet.fromFaucet`
+
+- **Status**: open
+- **Scope**: integration coverage.
+- **Why it matters**: a runtime regression like the `ECDSA` named-export issue
+  was caught only when running a demo. `npx tsc --noEmit` and `vitest run`
+  passed silently because nothing in `test/` actually loads `wallet.ts` at
+  runtime through the same module-resolution path the demos use.
+- **Proposed fix**: add a smoke test under `test/integration/` that calls
+  `Wallet.fromFaucet({ network: 'devnet' })` and asserts that
+  `wallet.address` looks valid. Gate it on a `RUN_FAUCET_TESTS=1` env var
+  to keep CI cheap.
+
+---
+
+## How to update this file
+
+When you close a gap, change `Status` to `closed` and add a one-line note
+referencing the PR / commit. Do not delete entries -- the history is useful
+when reviewing the abstraction surface.
+
+When you find a new gap, append a section in the matching top-level group
+(or create a new one) and follow the same five-field shape.

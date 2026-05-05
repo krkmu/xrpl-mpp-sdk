@@ -184,7 +184,7 @@ describe('XRPL Charge', () => {
           network: 'testnet',
           store: { get: async () => null, put: async () => {}, delete: async () => {} } as any,
         }),
-      ).toThrow('seed does not match recipient')
+      ).toThrow('does not match recipient')
     })
 
     it('throws when autoTrustline is set without seed', async () => {
@@ -197,7 +197,7 @@ describe('XRPL Charge', () => {
           network: 'testnet',
           store: { get: async () => null, put: async () => {}, delete: async () => {} } as any,
         }),
-      ).toThrow('seed is required')
+      ).toThrow('wallet (or seed) is required')
     })
 
     it('accepts matching seed and recipient', async () => {

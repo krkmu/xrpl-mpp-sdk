@@ -7,12 +7,14 @@
  * Run: npx tsx demo/error-showcase.ts
  */
 import { Credential, Store } from 'mppx'
-import { Client, dropsToXrp, signPaymentChannelClaim, Wallet } from 'xrpl'
+import { Client } from 'xrpl'
 import { openChannel } from '../sdk/src/channel/client/Channel.js'
 import { close, channel as serverChannel } from '../sdk/src/channel/server/Channel.js'
 import { charge as clientCharge } from '../sdk/src/client/Charge.js'
 import { XRPL_RPC_URLS } from '../sdk/src/constants.js'
+import { fromDrops } from '../sdk/src/Methods.js'
 import { charge as serverCharge } from '../sdk/src/server/Charge.js'
+import { Wallet } from '../sdk/src/utils/wallet.js'
 import * as log from './log.js'
 
 const NETWORK = 'testnet'
@@ -71,6 +73,9 @@ async function main() {
   const { wallet: issuerWallet } = await xrpl.fundWallet()
   const { wallet: channelFunder } = await xrpl.fundWallet()
   const { wallet: channelReceiver } = await xrpl.fundWallet()
+  // SDK Wallet wrapper for the channel funder -- used wherever we sign
+  // off-chain claims via the SDK API instead of xrpl's signPaymentChannelClaim.
+  const channelFunderW = Wallet.fromSeed(channelFunder.seed!)
   const wrongSigner = Wallet.generate()
 
   log.wallet('Main', mainWallet.classicAddress)
@@ -97,7 +102,7 @@ async function main() {
     }
 
     log.fix('Funding wallet via testnet faucet...')
-    await xrpl.fundWallet(unfunded)
+    await unfunded.fundFromFaucet({ network: NETWORK })
 
     log.loading('Retrying...')
     try {
@@ -118,11 +123,11 @@ async function main() {
   header('RECIPIENT_NOT_FOUND')
   {
     const nonExistent = Wallet.generate()
-    log.loading(`Paying to non-existent address ${nonExistent.classicAddress}...`)
+    log.loading(`Paying to non-existent address ${nonExistent.address}...`)
     try {
       await runChargeFlow({
         clientSeed: mainWallet.seed!,
-        recipient: nonExistent.classicAddress,
+        recipient: nonExistent.address,
         amount: '1000000',
         currency: 'XRP',
       })
@@ -132,13 +137,13 @@ async function main() {
     }
 
     log.fix('Funding destination account...')
-    await xrpl.fundWallet(nonExistent)
+    await nonExistent.fundFromFaucet({ network: NETWORK })
 
     log.loading('Retrying...')
     try {
       const { hash } = await runChargeFlow({
         clientSeed: mainWallet.seed!,
-        recipient: nonExistent.classicAddress,
+        recipient: nonExistent.address,
         amount: '1000000',
         currency: 'XRP',
       })
@@ -605,11 +610,7 @@ async function main() {
     const srvMethod = serverChannel({ publicKey: channelFunder.publicKey, network: NETWORK, store })
 
     log.loading('Signing claim with WRONG wallet...')
-    const wrongSig = signPaymentChannelClaim(
-      channelId,
-      dropsToXrp('100000').toString(),
-      wrongSigner.privateKey,
-    )
+    const wrongSig = wrongSigner.signChannelClaim(channelId, '100000')
     const ch = {
       id: `err-chan-${Date.now()}`,
       realm: 'error-showcase',
@@ -636,11 +637,7 @@ async function main() {
     }
 
     log.fix('Signing with correct wallet...')
-    const correctSig = signPaymentChannelClaim(
-      channelId,
-      dropsToXrp('100000').toString(),
-      channelFunder.privateKey,
-    )
+    const correctSig = channelFunderW.signChannelClaim(channelId, '100000')
     const correctCred = Credential.from({
       challenge: { ...ch, id: `err-chan-fix-${Date.now()}` } as any,
       payload: { action: 'voucher', channelId, amount: '100000', signature: correctSig },
@@ -674,11 +671,7 @@ async function main() {
     const store = Store.memory()
     const srvMethod = serverChannel({ publicKey: channelFunder.publicKey, network: NETWORK, store })
 
-    const sig1 = signPaymentChannelClaim(
-      channelId,
-      dropsToXrp('100000').toString(),
-      channelFunder.privateKey,
-    )
+    const sig1 = channelFunderW.signChannelClaim(channelId, '100000')
     const ch1 = {
       id: `replay-1-${Date.now()}`,
       realm: 'error-showcase',
@@ -714,11 +707,7 @@ async function main() {
     }
 
     log.fix('Incrementing cumulative to 200,000 drops...')
-    const sig2 = signPaymentChannelClaim(
-      channelId,
-      dropsToXrp('200000').toString(),
-      channelFunder.privateKey,
-    )
+    const sig2 = channelFunderW.signChannelClaim(channelId, '200000')
     const ch3 = { ...ch1, id: `replay-3-${Date.now()}` }
     const cred3 = Credential.from({
       challenge: ch3 as any,
@@ -756,11 +745,7 @@ async function main() {
     })
 
     log.loading('Claiming 2,000,000 drops from a 1,000,000 drop channel...')
-    const overSig = signPaymentChannelClaim(
-      channelId,
-      dropsToXrp('2000000').toString(),
-      channelFunder.privateKey,
-    )
+    const overSig = channelFunderW.signChannelClaim(channelId, '2000000')
     const chOver = {
       id: `over-${Date.now()}`,
       realm: 'error-showcase',
@@ -796,11 +781,7 @@ async function main() {
       store: retryStore,
     })
 
-    const goodSig = signPaymentChannelClaim(
-      channelId,
-      dropsToXrp('500000').toString(),
-      channelFunder.privateKey,
-    )
+    const goodSig = channelFunderW.signChannelClaim(channelId, '500000')
     const chGood = {
       id: `over-fix-${Date.now()}`,
       realm: 'error-showcase',
@@ -850,11 +831,7 @@ async function main() {
     // Client makes 3 claims then disappears
     let lastAmount = '0'
     for (const cumDrops of ['100000', '200000', '300000']) {
-      const sig = signPaymentChannelClaim(
-        channelId,
-        dropsToXrp(cumDrops).toString(),
-        channelFunder.privateKey,
-      )
+      const sig = channelFunderW.signChannelClaim(channelId, cumDrops)
       const ch = {
         id: `redeem-${cumDrops}-${Date.now()}`,
         realm: 'error-showcase',
@@ -907,7 +884,7 @@ async function main() {
       account: channelReceiver.classicAddress,
     })
     log.info(
-      `Receiver balance: ${dropsToXrp(receiverInfo.result.account_data.Balance as string)} XRP`,
+      `Receiver balance: ${fromDrops(receiverInfo.result.account_data.Balance as string)} XRP`,
     )
   }
 
@@ -929,11 +906,7 @@ async function main() {
 
     // Make 1 successful voucher claim
     const cumDrops = '100000'
-    const sig = signPaymentChannelClaim(
-      channelId,
-      dropsToXrp(cumDrops).toString(),
-      channelFunder.privateKey,
-    )
+    const sig = channelFunderW.signChannelClaim(channelId, cumDrops)
     const ch = {
       id: `finalized-1-${Date.now()}`,
       realm: 'error-showcase',
@@ -974,11 +947,7 @@ async function main() {
     // Attempt another voucher on the finalized channel
     log.loading('Attempting another voucher on finalized channel...')
     const newCum = '200000'
-    const newSig = signPaymentChannelClaim(
-      channelId,
-      dropsToXrp(newCum).toString(),
-      channelFunder.privateKey,
-    )
+    const newSig = channelFunderW.signChannelClaim(channelId, newCum)
     const ch2 = {
       id: `finalized-2-${Date.now()}`,
       realm: 'error-showcase',
