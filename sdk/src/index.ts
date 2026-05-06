@@ -40,4 +40,15 @@ export type {
   XrpCurrency,
   XrplCurrency,
 } from './types.js'
-export { type FromFaucetOptions, Wallet, type WalletAlgorithm } from './utils/wallet.js'
+export type {
+  SetTrustlineOptions,
+  SetTrustlineResult,
+  TrustlineInfo,
+} from './utils/trustline.js'
+export {
+  type FromFaucetOptions,
+  type NetworkOptions,
+  type TokenOptions,
+  Wallet,
+  type WalletAlgorithm,
+} from './utils/wallet.js'

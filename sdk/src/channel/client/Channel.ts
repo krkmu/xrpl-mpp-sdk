@@ -221,14 +221,7 @@ export async function fundChannel(params: {
   network?: NetworkId
   rpcUrl?: string
 }): Promise<{ txHash: string }> {
-  const {
-    wallet: walletInput,
-    seed,
-    channelId,
-    amount,
-    network = 'testnet',
-    rpcUrl,
-  } = params
+  const { wallet: walletInput, seed, channelId, amount, network = 'testnet', rpcUrl } = params
 
   const wallet = resolveWallet({ wallet: walletInput, seed })
   const resolvedRpcUrl = rpcUrl ?? XRPL_RPC_URLS[network]

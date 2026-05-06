@@ -71,23 +71,37 @@ Each entry follows the same shape:
 
 ---
 
-## 2. Network / Client abstraction (not yet started)
+## 2. Network / Client abstraction (partially closed)
 
 ### 2.1 `xrpl.Client` is still required for any operation outside the chargeable / channel happy paths
 
-- **Status**: open
-- **Scope**: any custom on-chain interaction (TrustSet, AccountSet,
-  MPTokenIssuanceCreate, MPTokenAuthorize, raw queries, etc.).
-- **Why it leaks**: the SDK only wraps the operations it cares about
-  (Payment, PaymentChannelCreate / Fund / Claim). Anything else still requires
-  the consumer to instantiate `xrpl.Client`.
-- **What it forces the consumer to do**: see the demos `iou-charge.ts`,
-  `mpt-charge.ts`, `iou-cross-issuer.ts`, `error-showcase.ts` -- they all
-  open a `Client` for setup work.
-- **Proposed fix**: TBD -- decide which ledger operations belong in the SDK.
-  Likely candidates: `enableDefaultRipple`, `setTrustline`, `issueMPT`,
-  `authorizeMPT`. For raw access, expose a thin `XrplClient` wrapper that the
-  consumer can hold without ever importing `xrpl` themselves.
+- **Status**: partially closed -- trustline / IOU issuance / freeze /
+  authorize / clawback / DefaultRipple are now covered by Wallet methods
+  (see `Wallet.acceptToken`, `Wallet.refuseToken`, `Wallet.holdsToken`,
+  `Wallet.listAcceptedTokens`, `Wallet.enableTransfers`,
+  `Wallet.requireAuthorization`, `Wallet.allowClawback`, `Wallet.authorize`,
+  `Wallet.freeze` / `Wallet.unfreeze`, `Wallet.clawback`, `Wallet.issue`).
+  Each method opens / closes its own short-lived xrpl.Client internally so
+  consumers never import `xrpl`. Demos `iou-charge.ts` and `iou-cross-issuer.ts`
+  validate this -- the only remaining `xrpl` import in those files is
+  `OfferCreate` (cross-issuer demo) because the order book is intentionally
+  out of scope.
+- **Open**: MPT issuance / authorisation, OfferCreate, raw queries.
+- **Proposed fix for the remainder**: extend the same pattern (Wallet methods
+  delegating to internal utils) to MPT operations, then expose a thin
+  `XrplClient` wrapper for raw queries.
+
+### 2.1.bis (note) Naming intentionally hides the "trustline" jargon
+
+- The Wallet API speaks intent (`acceptToken`, `refuseToken`, `holdsToken`,
+  `enableTransfers`, ...). The word "trustline" only appears in the internal
+  `sdk/src/utils/trustline.ts` module, which is **not** re-exported from the
+  SDK barrel. Only the data types (`TrustlineInfo`, `SetTrustlineResult`)
+  are public.
+- One source of truth: every Wallet method is a 3-5 line wrapper around an
+  internal free function in `utils/trustline.ts`. The auto-trustline path
+  inside `serverCharge` calls the same internal API. No business logic is
+  duplicated between the two surfaces.
 
 ### 2.2 No abstraction for transaction submission (`submit`, `submitAndWait`, polling)
 

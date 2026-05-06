@@ -60,7 +60,8 @@ export function charge(parameters: charge.Parameters) {
     pollInterval = 1_000,
   } = parameters
 
-  const recipientWallet: Wallet | undefined = walletInput ?? (seed ? Wallet.fromSeed(seed) : undefined)
+  const recipientWallet: Wallet | undefined =
+    walletInput ?? (seed ? Wallet.fromSeed(seed) : undefined)
 
   if ((autoTrustline || autoMPTAuthorize) && !recipientWallet) {
     throw new Error(

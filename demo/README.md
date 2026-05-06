@@ -15,7 +15,8 @@ All demos run on XRPL testnet. Zero environment variables -- every script genera
 | `log.ts` | Shared utility | Styled terminal output (timestamps, colors, boxes) |
 | `xrp-server.ts` | Two-terminal | Server: 402-gated resource, charges 1 XRP |
 | `xrp-client.ts` | Two-terminal | Client: pays 1 XRP, prints receipt + explorer link |
-| `iou-charge.ts` | All-in-one | Creates issuer, DefaultRipple, trustlines, issues USD, runs charge |
+| `iou-charge.ts` | All-in-one | Issuer enables transfers, server + client accept the token, issuer credits client, charge runs |
+| `iou-cross-issuer.ts` | All-in-one | 5 wallets, USD.A <-> USD.B bridge via market maker, cross-issuer path-finding |
 | `mpt-charge.ts` | All-in-one | Creates MPT issuance, authorizes holders, issues tokens, runs charge |
 | `channel-server.ts` | Two-terminal | Server: verifies off-chain PayChannel claims (0.1 XRP each) |
 | `channel-client.ts` | Two-terminal | Client: opens channel, 5 paid requests, closes channel |
@@ -39,7 +40,7 @@ Server funds a recipient wallet, starts HTTP on :3000. Client funds a payer wall
 npx tsx demo/iou-charge.ts
 ```
 
-Funds 3 wallets (issuer, server, client). Enables DefaultRipple on issuer. Creates trustlines for server and client. Issues 1000 USD to client. Starts MPP server on :3001. Client pays 10 USD. Prints explorer link for every tx (AccountSet, TrustSet x2, issuance, payment).
+Funds 3 wallets (issuer, server, client). Issuer enables transfers (`enableTransfers`). Server and client accept USD (`acceptToken`). Issuer credits client with 1000 USD (`issue`). Starts MPP server on :3001. Client pays 10 USD. Zero `xrpl` import in the demo -- everything goes through the Wallet API.
 
 ## MPT Charge
 
