@@ -18,6 +18,163 @@ export type MPToken = {
 /** Any supported XRPL currency type. */
 export type XrplCurrency = XrpCurrency | IssuedCurrency | MPToken
 
+/**
+ * Snapshot of an MPT holding as the SDK exposes it.
+ *
+ * Parallel to {@link IssuedCurrency}'s `TrustlineInfo`, but for the MPT path:
+ * the holder owns an `MPToken` ledger entry rather than a trustline.
+ */
+export type MPTHoldingInfo = {
+  /** Issuance identifier. */
+  mpt_issuance_id: string
+  /** Current balance held. `'0'` if just authorised. */
+  balance: string
+  /**
+   * False only when the issuance has `requireAuthorization` and the issuer
+   * has not yet authorised this holder.
+   */
+  authorized: boolean
+  /** Issuer has frozen this specific holding (or the whole issuance). */
+  locked: boolean
+}
+
+/**
+ * Snapshot of an MPT issuance owned by an issuer wallet.
+ *
+ * Returned by {@link Wallet.listIssuedTokens} and useful after
+ * {@link Wallet.createToken} to confirm flag state on chain.
+ */
+export type MPTIssuanceInfo = {
+  mpt_issuance_id: string
+  issuer: string
+  assetScale: number
+  /** Total supply currently in circulation. */
+  outstandingAmount: string
+  /** Hard cap. Defaults to `2^63 - 1` when omitted at create time. */
+  maximumAmount: string
+  /** Transfer fee in 1/1000 percent (0..50000). 0 means no fee. */
+  transferFee: number
+  /** Whether the whole issuance is locked. */
+  locked: boolean
+  flags: {
+    canLock: boolean
+    requireAuthorization: boolean
+    canEscrow: boolean
+    canTrade: boolean
+    canTransfer: boolean
+    canClawback: boolean
+  }
+  /** Hex-encoded XLS-89 metadata blob, or undefined if not set. */
+  metadata?: string
+}
+
+/**
+ * Discriminated holding view for {@link Wallet.holdsToken} /
+ * {@link Wallet.listAcceptedTokens}: an IOU exposes a `currency` + `issuer`
+ * pair, an MPT exposes an `mpt_issuance_id`.
+ *
+ * The `kind` discriminator lets consumers narrow without importing
+ * type guards.
+ */
+export type TokenHolding =
+  | ({ kind: 'iou' } & {
+      currency: string
+      issuer: string
+      balance: string
+      limit: string
+      authorized: boolean
+      frozen: boolean
+      noRipple: boolean
+    })
+  | ({ kind: 'mpt' } & MPTHoldingInfo)
+
+/**
+ * Outcome of {@link Wallet.acceptToken} -- works for both IOU and MPT paths.
+ *
+ * - `unchanged`: the trustline / MPToken already exists in the desired state.
+ * - `created`: a new ledger entry was created.
+ * - `updated`: an existing trustline's limit was updated (IOU only).
+ * - `pending_authorization`: the holder side is in place but the issuer has
+ *   `requireAuthorization` set and has not signed yet -- payments will fail
+ *   until the issuer calls {@link Wallet.authorize}.
+ */
+export type AcceptTokenResult =
+  | { status: 'unchanged' }
+  | { status: 'created'; hash: string }
+  | { status: 'updated'; hash: string }
+  | { status: 'pending_authorization'; hash?: string }
+
+/**
+ * Outcome of {@link Wallet.refuseToken}.
+ *
+ * - `absent`: there was no trustline / MPToken -- nothing happened.
+ * - `removed`: the ledger entry has been deleted; the holder's owner
+ *   reserve is freed.
+ * - `cleared` (IOU only): the TrustSet succeeded but a non-default flag
+ *   keeps the entry pinned at limit=0 / balance=0; the reserve stays
+ *   locked until the issuer relaxes the flag.
+ */
+export type RefuseTokenResult =
+  | { status: 'absent' }
+  | { status: 'removed'; hash: string }
+  | { status: 'cleared'; hash: string }
+
+/** Options for {@link Wallet.createToken} (MPTokenIssuanceCreate). */
+export type CreateTokenOptions = {
+  /**
+   * Decimal places. `0` means token is indivisible, `2` means amounts are
+   * counted in cents, etc. Range 0..255. @default 0
+   */
+  assetScale?: number
+  /**
+   * Hard cap on circulating supply. Decimal string of an integer up to
+   * `2^63 - 1`. When omitted, defaults to the protocol max.
+   */
+  maximumAmount?: string
+  /**
+   * Transfer fee in 1/1000 percent. Range 0..50000 (= 0..50%). Only valid
+   * when {@link CreateTokenOptions.allowTransfer} is true.
+   */
+  transferFee?: number
+  /**
+   * Require the issuer to authorise each holder before they can hold a
+   * balance. Once set at creation, this flag is **immutable**.
+   * @default false
+   */
+  requireAuthorization?: boolean
+  /**
+   * Allow the issuer to lock the whole issuance or specific holders later
+   * via {@link Wallet.lockToken} / {@link Wallet.freeze}. Immutable.
+   * @default false
+   */
+  allowLock?: boolean
+  /**
+   * Allow holders to transfer the token to anyone (not just the issuer).
+   * Required for any meaningful pay-per-X use case. Immutable.
+   * @default true
+   */
+  allowTransfer?: boolean
+  /** Allow the issuer to claw the token back from holders. Immutable. @default false */
+  allowClawback?: boolean
+  /** Allow holders to escrow this token. Immutable. @default false */
+  allowEscrow?: boolean
+  /** Allow holders to trade this token on the XRPL DEX / AMM. Immutable. @default false */
+  allowTrade?: boolean
+  /**
+   * XLS-89 metadata. May be a JSON-serialisable object (the SDK encodes it
+   * to UTF-8 hex) or a pre-encoded hex string. Max 1024 bytes.
+   */
+  metadata?: string | Record<string, unknown>
+}
+
+/** Outcome of {@link Wallet.createToken}. */
+export type CreateTokenResult = {
+  /** The newly created MPT, ready to pass to other Wallet methods. */
+  mpt: MPToken
+  /** Submission hash of the `MPTokenIssuanceCreate`. */
+  hash: string
+}
+
 /** Pull: client signs tx blob, server submits. Push: client submits, sends hash. */
 export type PaymentMode = 'pull' | 'push'
 

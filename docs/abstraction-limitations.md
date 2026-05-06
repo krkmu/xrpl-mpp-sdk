@@ -76,20 +76,38 @@ Each entry follows the same shape:
 ### 2.1 `xrpl.Client` is still required for any operation outside the chargeable / channel happy paths
 
 - **Status**: partially closed -- trustline / IOU issuance / freeze /
-  authorize / clawback / DefaultRipple are now covered by Wallet methods
-  (see `Wallet.acceptToken`, `Wallet.refuseToken`, `Wallet.holdsToken`,
-  `Wallet.listAcceptedTokens`, `Wallet.enableTransfers`,
-  `Wallet.requireAuthorization`, `Wallet.allowClawback`, `Wallet.authorize`,
-  `Wallet.freeze` / `Wallet.unfreeze`, `Wallet.clawback`, `Wallet.issue`).
-  Each method opens / closes its own short-lived xrpl.Client internally so
-  consumers never import `xrpl`. Demos `iou-charge.ts` and `iou-cross-issuer.ts`
-  validate this -- the only remaining `xrpl` import in those files is
-  `OfferCreate` (cross-issuer demo) because the order book is intentionally
-  out of scope.
-- **Open**: MPT issuance / authorisation, OfferCreate, raw queries.
-- **Proposed fix for the remainder**: extend the same pattern (Wallet methods
-  delegating to internal utils) to MPT operations, then expose a thin
-  `XrplClient` wrapper for raw queries.
+  authorize / clawback / DefaultRipple **and** MPT issuance / accept /
+  refuse / authorize / lock / unlock / freeze / clawback / destroy are
+  now covered by Wallet methods. Each method opens / closes its own
+  short-lived xrpl.Client internally so consumers never import `xrpl`.
+- **IOU-only**: `Wallet.enableTransfers` / `Wallet.disableTransfers`,
+  `Wallet.requireAuthorization` (toggle), `Wallet.allowClawback` (toggle).
+  These have no MPT equivalent because MPT flags are immutable per
+  protocol -- pass them to `Wallet.createToken` instead.
+- **MPT-only**: `Wallet.createToken`, `Wallet.destroyToken`,
+  `Wallet.lockToken` / `Wallet.unlockToken`, `Wallet.listIssuedTokens`.
+  These have no IOU equivalent because IOU "issuance" is implicit (no
+  ledger object to create).
+- **Polymorphic over `IssuedCurrency | MPToken`**: `Wallet.acceptToken`,
+  `Wallet.refuseToken`, `Wallet.holdsToken`, `Wallet.listAcceptedTokens`,
+  `Wallet.authorize`, `Wallet.freeze` / `Wallet.unfreeze`,
+  `Wallet.clawback`, `Wallet.issue`. The SDK dispatches to the right
+  XRPL transaction internally based on the runtime shape of the token.
+- **Closed by**: `sdk/src/utils/mpt.ts` (rewritten as the source of
+  truth for every MPT op, parallel to `utils/trustline.ts`); `Wallet`
+  methods in `sdk/src/utils/wallet.ts`. `demo/mpt-charge.ts` no longer
+  imports `xrpl` at all -- it goes end-to-end through the SDK.
+- **Open**: OfferCreate (DEX), raw queries.
+- **MPT pre-conditions worth knowing** (immutable per protocol):
+  - `Wallet.freeze` on an MPT throws `MPT_LOCK_NOT_ALLOWED` when the
+    issuance was not minted with `allowLock: true`.
+  - `Wallet.clawback` on an MPT throws `MPT_CLAWBACK_NOT_ALLOWED` when
+    the issuance was not minted with `allowClawback: true`.
+  - The fix in both cases is to mint a new issuance with the right
+    flag -- the SDK error message says so.
+- **Proposed fix for the remainder**: a thin `XrplClient` wrapper for
+  raw queries (account_info, ledger_entry, ...) and an OfferCreate
+  helper if/when the use case lands.
 
 ### 2.1.bis (note) Naming intentionally hides the "trustline" jargon
 

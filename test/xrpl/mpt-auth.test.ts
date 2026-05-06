@@ -5,7 +5,8 @@ import { ensureMPTHolding } from '../../sdk/src/utils/mpt.js'
 const ISSUANCE_ID = '00000000A0CDEF0123456789ABCDEF0123456789ABCDEF01'
 const MPT = { mpt_issuance_id: ISSUANCE_ID }
 
-const LSF_MPT_REQUIRE_AUTH = 0x00000002
+const LSF_ISSUANCE_REQUIRE_AUTH = 0x00000004
+const LSF_HOLDING_AUTHORIZED = 0x00000002
 
 function mockClient(handlers: {
   accountObjects?: () => any
@@ -49,12 +50,28 @@ function mockClient(handlers: {
 }
 
 describe('ensureMPTHolding -- auth and reserve checks', () => {
-  it('short-circuits when account already holds the MPT', async () => {
+  it('short-circuits when account already holds the MPT (no allowlist)', async () => {
     const wallet = Wallet.generate()
     const client = mockClient({
       accountObjects: () => ({
-        result: { account_objects: [{ MPTokenIssuanceID: ISSUANCE_ID }] },
+        result: { account_objects: [{ MPTokenIssuanceID: ISSUANCE_ID, Flags: 0 }] },
       }),
+    })
+    await ensureMPTHolding({ client, wallet, mpt: MPT, autoMPTAuthorize: true })
+    expect(client.submitAndWait).not.toHaveBeenCalled()
+  })
+
+  it('short-circuits when allowlisted issuance and holder already authorized', async () => {
+    const wallet = Wallet.generate()
+    const client = mockClient({
+      accountObjects: () => ({
+        result: {
+          account_objects: [
+            { MPTokenIssuanceID: ISSUANCE_ID, Flags: LSF_HOLDING_AUTHORIZED },
+          ],
+        },
+      }),
+      ledgerEntry: () => ({ result: { node: { Flags: LSF_ISSUANCE_REQUIRE_AUTH } } }),
     })
     await ensureMPTHolding({ client, wallet, mpt: MPT, autoMPTAuthorize: true })
     expect(client.submitAndWait).not.toHaveBeenCalled()
@@ -116,11 +133,26 @@ describe('ensureMPTHolding -- auth and reserve checks', () => {
     const wallet = Wallet.generate()
     const client = mockClient({
       accountObjects: () => ({ result: { account_objects: [] } }),
-      ledgerEntry: () => ({ result: { node: { Flags: LSF_MPT_REQUIRE_AUTH } } }),
+      ledgerEntry: () => ({ result: { node: { Flags: LSF_ISSUANCE_REQUIRE_AUTH } } }),
     })
     await expect(
       ensureMPTHolding({ client, wallet, mpt: MPT, autoMPTAuthorize: true }),
     ).rejects.toThrow(/MPT_NOT_AUTHORIZED.*lsfMPTRequireAuth/)
     expect(client.submitAndWait).toHaveBeenCalledTimes(1)
+  })
+
+  it('throws MPT_NOT_AUTHORIZED when allowlisted holder created but issuer has not signed', async () => {
+    const wallet = Wallet.generate()
+    const client = mockClient({
+      accountObjects: () => ({
+        // Holder side exists but lsfMPTAuthorized is NOT set yet.
+        result: { account_objects: [{ MPTokenIssuanceID: ISSUANCE_ID, Flags: 0 }] },
+      }),
+      ledgerEntry: () => ({ result: { node: { Flags: LSF_ISSUANCE_REQUIRE_AUTH } } }),
+    })
+    await expect(
+      ensureMPTHolding({ client, wallet, mpt: MPT, autoMPTAuthorize: true }),
+    ).rejects.toThrow(/MPT_NOT_AUTHORIZED.*has not yet authorised/)
+    expect(client.submitAndWait).not.toHaveBeenCalled()
   })
 })

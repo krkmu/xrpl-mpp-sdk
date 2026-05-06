@@ -30,13 +30,20 @@ export {
 export * as Methods from './Methods.js'
 export { fromDrops, toDrops } from './Methods.js'
 export type {
+  AcceptTokenResult,
   ChannelClientConfig,
   ChannelServerConfig,
   ChargeClientConfig,
   ChargeServerConfig,
+  CreateTokenOptions,
+  CreateTokenResult,
   IssuedCurrency,
+  MPTHoldingInfo,
   MPToken,
+  MPTIssuanceInfo,
   PaymentMode,
+  RefuseTokenResult,
+  TokenHolding,
   XrpCurrency,
   XrplCurrency,
 } from './types.js'
@@ -48,6 +55,7 @@ export type {
 export {
   type FromFaucetOptions,
   type NetworkOptions,
+  type Token,
   type TokenOptions,
   Wallet,
   type WalletAlgorithm,

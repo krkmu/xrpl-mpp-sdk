@@ -114,8 +114,7 @@ async function main() {
   log.tx(seed.hash, explorer(seed.hash))
 
   log.loading('MM places parity offer bridging USD.A -> USD.B (1:1)...')
-  // OfferCreate is the only raw xrpl interaction left. Order book primitives
-  // are not yet covered by the SDK abstraction.
+  // Order book primitives are not yet covered by the SDK abstraction.
   const xrpl = new Client(XRPL_RPC_URLS[NETWORK], { timeout: 60_000 })
   await xrpl.connect()
   try {

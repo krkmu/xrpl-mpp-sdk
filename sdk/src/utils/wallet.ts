@@ -7,12 +7,40 @@
  * - the public fields needed to sign and identify the holder,
  * - PayChannel claim signing (drops in -> hex signature out),
  * - token-level operations (accept / refuse, transfer, issue, freeze,
- *   authorize, clawback, ...) that hide every TrustSet / AccountSet detail.
+ *   authorize, clawback, ...) that hide every TrustSet / MPTokenAuthorize
+ *   / MPTokenIssuanceCreate detail. The methods are polymorphic over
+ *   {@link IssuedCurrency} | {@link MPToken}: the SDK dispatches to the
+ *   right XRPL object internally.
  */
 
 import { Client, dropsToXrp, signPaymentChannelClaim, Wallet as XrplWallet } from 'xrpl'
 import { type NetworkId, XRPL_RPC_URLS } from '../constants.js'
-import type { IssuedCurrency } from '../types.js'
+import type {
+  AcceptTokenResult,
+  CreateTokenOptions,
+  CreateTokenResult,
+  IssuedCurrency,
+  MPTHoldingInfo,
+  MPToken,
+  MPTIssuanceInfo,
+  RefuseTokenResult,
+  TokenHolding,
+} from '../types.js'
+import { isMPT } from './currency.js'
+import {
+  authorizeMPTHolder,
+  clawbackMPT,
+  createMPTIssuance,
+  destroyMPTIssuance,
+  getMPTHolding,
+  issueMPTPayment,
+  listMPTHoldings,
+  listMPTIssuances,
+  removeMPTHolding,
+  setMPTHolderLock,
+  setMPTHolding,
+  setMPTIssuanceLock,
+} from './mpt.js'
 import {
   ASF_ALLOW_TRUSTLINE_CLAWBACK,
   ASF_DEFAULT_RIPPLE,
@@ -24,7 +52,6 @@ import {
   listTrustlines,
   removeTrustline,
   type SetTrustlineOptions,
-  type SetTrustlineResult,
   setAccountFlag,
   setIssuerFreeze,
   setTrustline,
@@ -50,8 +77,16 @@ export type FromFaucetOptions = {
   rpcUrl?: string
 }
 
-/** Options for token-level operations on Wallet. */
+/**
+ * Options for token-level holder operations on Wallet.
+ *
+ * The trustline-specific keys (`limit`, `noRipple`) are silently ignored when
+ * the currency is an MPT -- MPT semantics don't expose either knob.
+ */
 export type TokenOptions = NetworkOptions & SetTrustlineOptions
+
+/** Either kind of issued asset accepted by the polymorphic Wallet methods. */
+export type Token = IssuedCurrency | MPToken
 
 /**
  * XRPL wallet handle.
@@ -201,21 +236,24 @@ export class Wallet {
   // ===== Holder operations =====
 
   /**
-   * Opt in to receive a token. Creates (or updates the limit of) the
-   * trustline for the given IOU on this wallet.
+   * Opt in to receive a token. For an IOU this creates (or updates) the
+   * trustline; for an MPT this submits the holder-side `MPTokenAuthorize`.
    *
-   * Idempotent: returns `unchanged` when the line already exists at the
-   * desired limit. Returns `pending_authorization` when the issuer has
-   * RequireAuth set and has not yet authorised this account -- the line
-   * exists on the holder side but cannot hold a balance until the issuer
-   * runs `wallet.authorize(holder, currency)` from their side.
+   * Idempotent: returns `unchanged` when the holding already exists in the
+   * desired state. Returns `pending_authorization` when the issuer has
+   * `requireAuthorization` and has not yet signed -- the holder side is in
+   * place but cannot hold a balance until the issuer calls
+   * {@link Wallet.authorize} from their side.
+   *
+   * The `limit` / `noRipple` options of {@link TokenOptions} apply to IOUs
+   * only; they are silently ignored for MPT.
    */
-  async acceptToken(
-    currency: IssuedCurrency,
-    options: TokenOptions = {},
-  ): Promise<SetTrustlineResult> {
+  async acceptToken(token: Token, options: TokenOptions = {}): Promise<AcceptTokenResult> {
+    if (isMPT(token)) {
+      return this.#submit(options, (client) => setMPTHolding(client, this.#internal, token))
+    }
     return this.#submit(options, (client) =>
-      setTrustline(client, this.#internal, currency, {
+      setTrustline(client, this.#internal, token, {
         ...(options.limit !== undefined ? { limit: options.limit } : {}),
         ...(options.noRipple !== undefined ? { noRipple: options.noRipple } : {}),
       }),
@@ -223,48 +261,62 @@ export class Wallet {
   }
 
   /**
-   * Stop holding a token. Refuses to submit if the wallet still holds a
+   * Stop holding a token. Refuses to submit if the holding still has a
    * non-zero balance (send the balance back to the issuer first, or have
    * the issuer claw it back).
    *
-   * Three possible outcomes:
-   * - `absent`: there was no trustline -- nothing happened.
-   * - `removed`: the trustline ledger entry has been deleted; the holder's
-   *   owner reserve is freed.
-   * - `cleared`: the TrustSet succeeded but a non-default flag (typically
-   *   `tfSetfAuth` on a `requireAuthorization` issuer) keeps the entry
-   *   pinned to the ledger at limit=0 / balance=0. The reserve stays locked
-   *   until the issuer relaxes the flag.
+   * For IOUs the result distinguishes `removed` (trustline deleted, owner
+   * reserve freed) from `cleared` (TrustSet succeeded but a non-default
+   * flag keeps the entry pinned). For MPTs only `absent` / `removed` apply.
    */
-  async refuseToken(
-    currency: IssuedCurrency,
-    options: NetworkOptions = {},
-  ): Promise<
-    { status: 'absent' } | { status: 'removed'; hash: string } | { status: 'cleared'; hash: string }
-  > {
-    return this.#submit(options, (client) => removeTrustline(client, this.#internal, currency))
+  async refuseToken(token: Token, options: NetworkOptions = {}): Promise<RefuseTokenResult> {
+    if (isMPT(token)) {
+      return this.#submit(options, (client) => removeMPTHolding(client, this.#internal, token))
+    }
+    return this.#submit(options, (client) => removeTrustline(client, this.#internal, token))
   }
 
-  /** Read the wallet's current state for a given token. Returns null if not held. */
+  /** Read this wallet's current state for a given token. Returns null if not held. */
   async holdsToken(
-    currency: IssuedCurrency,
+    token: Token,
     options: NetworkOptions = {},
-  ): Promise<TrustlineInfo | null> {
-    return withClient(options, (client) => getTrustline(client, this.address, currency))
+  ): Promise<TrustlineInfo | MPTHoldingInfo | null> {
+    if (isMPT(token)) {
+      return withClient(options, (client) => getMPTHolding(client, this.address, token))
+    }
+    return withClient(options, (client) => getTrustline(client, this.address, token))
   }
 
-  /** List every token this wallet has accepted. */
-  async listAcceptedTokens(options: NetworkOptions = {}): Promise<TrustlineInfo[]> {
-    return withClient(options, (client) => listTrustlines(client, this.address))
+  /**
+   * List every token (IOU and MPT) this wallet has accepted. Each entry is
+   * tagged with `kind: 'iou' | 'mpt'` so consumers can narrow without a
+   * separate type guard.
+   *
+   * Performs two RPC round-trips in parallel (`account_lines` for IOUs and
+   * `account_objects type=mptoken` for MPTs).
+   */
+  async listAcceptedTokens(options: NetworkOptions = {}): Promise<TokenHolding[]> {
+    return withClient(options, async (client) => {
+      const [trustlines, mpts] = await Promise.all([
+        listTrustlines(client, this.address),
+        listMPTHoldings(client, this.address),
+      ])
+      const iouEntries: TokenHolding[] = trustlines.map((t) => ({ kind: 'iou' as const, ...t }))
+      const mptEntries: TokenHolding[] = mpts.map((m) => ({ kind: 'mpt' as const, ...m }))
+      return [...iouEntries, ...mptEntries]
+    })
   }
 
   // ===== Issuer operations =====
 
   /**
-   * Allow this wallet's tokens to flow through intermediary accounts
+   * Allow this wallet's IOU to flow through intermediary accounts
    * (`asfDefaultRipple`). Required by anyone who acts as an issuer of an
    * IOU -- without it, holders of the token cannot pay each other through
    * the issuer.
+   *
+   * MPT-only note: this flag has no MPT counterpart -- MPT transfers are
+   * gated by the immutable `allowTransfer` flag set at create time.
    */
   async enableTransfers(options: NetworkOptions = {}): Promise<{ hash: string }> {
     return this.#submit(options, (client) =>
@@ -272,7 +324,7 @@ export class Wallet {
     )
   }
 
-  /** Inverse of {@link Wallet.enableTransfers}. */
+  /** Inverse of {@link Wallet.enableTransfers}. IOU only. */
   async disableTransfers(options: NetworkOptions = {}): Promise<{ hash: string }> {
     return this.#submit(options, (client) =>
       setAccountFlag(client, this.#internal, ASF_DEFAULT_RIPPLE, false),
@@ -280,11 +332,15 @@ export class Wallet {
   }
 
   /**
-   * Toggle the `asfRequireAuth` flag. When enabled, holders cannot hold
-   * a balance of this wallet's tokens until the wallet calls
+   * Toggle the `asfRequireAuth` flag for IOUs. When enabled, holders cannot
+   * hold a balance of this wallet's IOUs until the wallet calls
    * {@link Wallet.authorize} for them.
    *
-   * Note: cannot be enabled if the issuer already has trustlines.
+   * MPT note: the equivalent flag (`tfMPTRequireAuth`) is **immutable** and
+   * is set only at create time -- pass `requireAuthorization: true` to
+   * {@link Wallet.createToken} instead.
+   *
+   * Cannot be enabled on an IOU issuer that already has trustlines.
    */
   async requireAuthorization(
     value: boolean,
@@ -296,8 +352,12 @@ export class Wallet {
   }
 
   /**
-   * Permanently allow this wallet to claw back its own tokens
+   * Permanently allow this wallet to claw back its own IOUs
    * (`asfAllowTrustlineClawback`). Once set, this flag cannot be cleared.
+   *
+   * MPT note: clawback for an MPT is gated by the immutable `allowClawback`
+   * flag of the MPTokenIssuance. Pass `allowClawback: true` to
+   * {@link Wallet.createToken} instead.
    */
   async allowClawback(options: NetworkOptions = {}): Promise<{ hash: string }> {
     return this.#submit(options, (client) =>
@@ -306,71 +366,182 @@ export class Wallet {
   }
 
   /**
-   * As issuer, authorise a holder's trustline. Only meaningful when this
-   * wallet has {@link Wallet.requireAuthorization} enabled.
+   * As issuer, authorise a holder. For an IOU this is a `TrustSet`
+   * carrying `tfSetfAuth` (only meaningful when this wallet has
+   * {@link Wallet.requireAuthorization} enabled). For an MPT this is an
+   * issuer-side `MPTokenAuthorize` carrying the `Holder` field (only
+   * meaningful when the issuance has `requireAuthorization`).
    */
   async authorize(
     holder: string,
-    currency: IssuedCurrency,
+    token: Token,
     options: NetworkOptions = {},
   ): Promise<{ hash: string }> {
+    if (isMPT(token)) {
+      return this.#submit(options, (client) =>
+        authorizeMPTHolder(client, this.#internal, holder, token),
+      )
+    }
     return this.#submit(options, (client) =>
-      authorizeTrustline(client, this.#internal, holder, currency),
-    )
-  }
-
-  /** As issuer, freeze a specific holder's trustline. */
-  async freeze(
-    holder: string,
-    currency: IssuedCurrency,
-    options: NetworkOptions = {},
-  ): Promise<{ hash: string }> {
-    return this.#submit(options, (client) =>
-      setIssuerFreeze(client, this.#internal, holder, currency, true),
-    )
-  }
-
-  /** As issuer, unfreeze a holder's trustline previously frozen via {@link Wallet.freeze}. */
-  async unfreeze(
-    holder: string,
-    currency: IssuedCurrency,
-    options: NetworkOptions = {},
-  ): Promise<{ hash: string }> {
-    return this.#submit(options, (client) =>
-      setIssuerFreeze(client, this.#internal, holder, currency, false),
+      authorizeTrustline(client, this.#internal, holder, token),
     )
   }
 
   /**
-   * As issuer, pull `amount` of `currency` back from `from`. Requires
-   * {@link Wallet.allowClawback} to have been set on this wallet first.
+   * As issuer, freeze a specific holder. For an IOU this is a `TrustSet`
+   * carrying `tfSetFreeze`. For an MPT this is an `MPTokenIssuanceSet`
+   * carrying the `Holder` field and `tfMPTLock`.
+   *
+   * MPT precondition: the issuance must have been created with
+   * `allowLock: true`. Otherwise this throws `MPT_LOCK_NOT_ALLOWED` -- the
+   * flag is immutable so the only fix is to mint a new issuance.
+   */
+  async freeze(
+    holder: string,
+    token: Token,
+    options: NetworkOptions = {},
+  ): Promise<{ hash: string }> {
+    if (isMPT(token)) {
+      return this.#submit(options, (client) =>
+        setMPTHolderLock(client, this.#internal, holder, token, true),
+      )
+    }
+    return this.#submit(options, (client) =>
+      setIssuerFreeze(client, this.#internal, holder, token, true),
+    )
+  }
+
+  /** As issuer, unfreeze a holder previously frozen via {@link Wallet.freeze}. */
+  async unfreeze(
+    holder: string,
+    token: Token,
+    options: NetworkOptions = {},
+  ): Promise<{ hash: string }> {
+    if (isMPT(token)) {
+      return this.#submit(options, (client) =>
+        setMPTHolderLock(client, this.#internal, holder, token, false),
+      )
+    }
+    return this.#submit(options, (client) =>
+      setIssuerFreeze(client, this.#internal, holder, token, false),
+    )
+  }
+
+  /**
+   * As issuer, pull `amount` of the token back from `from`.
+   *
+   * IOU precondition: {@link Wallet.allowClawback} must have been called.
+   * MPT precondition: the issuance must have been created with
+   * `allowClawback: true`. Otherwise this throws `MPT_CLAWBACK_NOT_ALLOWED`.
    */
   async clawback(
     from: string,
     amount: string,
-    currency: IssuedCurrency,
+    token: Token,
     options: NetworkOptions = {},
   ): Promise<{ hash: string }> {
+    if (isMPT(token)) {
+      return this.#submit(options, (client) =>
+        clawbackMPT(client, this.#internal, from, amount, token),
+      )
+    }
     return this.#submit(options, (client) =>
-      clawbackTokens(client, this.#internal, from, amount, currency),
+      clawbackTokens(client, this.#internal, from, amount, token),
     )
   }
 
   /**
-   * As issuer, credit `to` with `amount` of `currency` (the issuer must be
-   * this wallet). The recipient must have already accepted the token via
-   * {@link Wallet.acceptToken} -- XRPL requires the holder to consent
-   * before a balance can land on their account.
+   * As issuer, credit `to` with `amount` of `token`. The recipient must have
+   * already accepted the token via {@link Wallet.acceptToken} -- XRPL
+   * requires the holder to consent before a balance can land on their
+   * account.
+   *
+   * For IOUs the issuer must equal `token.issuer`; for MPTs it must equal
+   * the issuer recorded on the MPTokenIssuance.
    */
   async issue(
     to: string,
     amount: string,
-    currency: IssuedCurrency,
+    token: Token,
     options: NetworkOptions = {},
   ): Promise<{ hash: string }> {
+    if (isMPT(token)) {
+      return this.#submit(options, (client) =>
+        issueMPTPayment(client, this.#internal, to, amount, token),
+      )
+    }
     return this.#submit(options, (client) =>
-      issuePayment(client, this.#internal, to, amount, currency),
+      issuePayment(client, this.#internal, to, amount, token),
     )
+  }
+
+  // ===== MPT-only lifecycle =====
+
+  /**
+   * Create a new MPT issuance. Returns the freshly minted {@link MPToken}
+   * handle plus the submission hash.
+   *
+   * Most flags are **immutable** once the issuance is created -- pick
+   * `allowLock`, `allowClawback`, `allowTransfer`, `allowEscrow`,
+   * `allowTrade`, `requireAuthorization` carefully.
+   */
+  async createToken(
+    options: CreateTokenOptions & NetworkOptions = {},
+  ): Promise<CreateTokenResult> {
+    return this.#submit(options, (client) =>
+      createMPTIssuance(client, this.#internal, options),
+    )
+  }
+
+  /**
+   * Destroy an MPT issuance owned by this wallet. Refuses if there is any
+   * outstanding supply -- claw back or burn first.
+   */
+  async destroyToken(mpt: MPToken, options: NetworkOptions = {}): Promise<{ hash: string }> {
+    return this.#submit(options, (client) => destroyMPTIssuance(client, this.#internal, mpt))
+  }
+
+  /**
+   * Lock the entire issuance: every holder is frozen at once until
+   * {@link Wallet.unlockToken}. Requires the issuance to have been created
+   * with `allowLock: true`.
+   */
+  async lockToken(mpt: MPToken, options: NetworkOptions = {}): Promise<{ hash: string }> {
+    return this.#submit(options, (client) =>
+      setMPTIssuanceLock(client, this.#internal, mpt, true),
+    )
+  }
+
+  /** Inverse of {@link Wallet.lockToken}. */
+  async unlockToken(mpt: MPToken, options: NetworkOptions = {}): Promise<{ hash: string }> {
+    return this.#submit(options, (client) =>
+      setMPTIssuanceLock(client, this.#internal, mpt, false),
+    )
+  }
+
+  /** List every MPT issuance this wallet has created. */
+  async listIssuedTokens(options: NetworkOptions = {}): Promise<MPTIssuanceInfo[]> {
+    return withClient(options, (client) => listMPTIssuances(client, this.address))
+  }
+
+  // ===== Account state =====
+
+  /**
+   * Read the wallet's current XRP balance, in drops. Returns `'0'` when the
+   * account has not been activated on the ledger yet (i.e. `actNotFound`).
+   *
+   * Use {@link Methods.fromDrops} to format as XRP if needed.
+   */
+  async getXrpBalance(options: NetworkOptions = {}): Promise<string> {
+    return withClient(options, async (client) => {
+      try {
+        const r = await client.request({ command: 'account_info', account: this.address })
+        return (r.result.account_data.Balance as string) ?? '0'
+      } catch (err: any) {
+        if (err?.data?.error === 'actNotFound') return '0'
+        throw err
+      }
+    })
   }
 }
 

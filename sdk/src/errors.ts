@@ -32,6 +32,11 @@ export const TEC_RESULT_MAP: Record<string, string> = {
   // tecNO_PERMISSION on the MPT path: holder not authorised when the issuance
   // has lsfMPTRequireAuth set.
   tecNO_PERMISSION: 'MPT_NOT_AUTHORIZED',
+  // MPT-specific failure codes: the issuance lacks the relevant flag set at
+  // creation time. Both are immutable per protocol -- issuer must mint a new
+  // issuance with the right flag.
+  tecMPT_LOCKED: 'MPT_LOCKED',
+  tecMPT_NOT_AUTHORIZED: 'MPT_NOT_AUTHORIZED',
 }
 
 export type XrplErrorCode =
@@ -57,6 +62,13 @@ export type XrplErrorCode =
   | 'SOURCE_MISMATCH'
   | 'SUBMISSION_FAILED'
   | 'MPT_NOT_AUTHORIZED'
+  | 'MPT_LOCKED'
+  | 'MPT_LOCK_NOT_ALLOWED'
+  | 'MPT_CLAWBACK_NOT_ALLOWED'
+  | 'MPT_HAS_BALANCE'
+  | 'MPT_ISSUANCE_NOT_FOUND'
+  | 'MPT_NOT_ISSUER'
+  | 'MPT_INVALID_METADATA'
 
 export function mapTecResult(tecResult: string): XrplErrorCode | undefined {
   return TEC_RESULT_MAP[tecResult] as XrplErrorCode | undefined
