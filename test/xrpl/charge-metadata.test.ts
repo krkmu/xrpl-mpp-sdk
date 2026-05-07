@@ -1,18 +1,48 @@
 import { Credential, Store } from 'mppx'
-import { describe, expect, it } from 'vitest'
-import { Wallet } from 'xrpl'
-import { charge as serverCharge } from '../../sdk/src/server/Charge.js'
+import { describe, expect, it, vi } from 'vitest'
+import type xrplLib from 'xrpl'
+
+vi.mock('xrpl', async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof xrplLib
+  class FakeClient {
+    constructor(public readonly url: string) {}
+    async connect() {}
+    async disconnect() {}
+    async request(params: any) {
+      if (params.command === 'ledger_current') {
+        return { result: { ledger_current_index: 99_000_000 } }
+      }
+      return { result: {} }
+    }
+    // Unused by these tests but referenced by the server module for
+    // setup short-circuits.
+    async submit() {
+      return { result: { engine_result: 'tesSUCCESS', tx_json: { hash: 'X'.repeat(64) } } }
+    }
+    async submitAndWait() {
+      return { result: { meta: { TransactionResult: 'tesSUCCESS' }, hash: 'X'.repeat(64) } }
+    }
+    async autofill(tx: any) {
+      return { ...tx, Sequence: 1, Fee: '12', LastLedgerSequence: 100_000_000 }
+    }
+  }
+  return { ...actual, Client: FakeClient }
+})
+
+const { Wallet } = await import('xrpl')
+const { charge: serverCharge } = await import('../../sdk/src/server/Charge.js')
 
 const NETWORK = 'testnet'
 
 function buildCharge(args: {
-  payer: Wallet
-  recipient: Wallet
+  payer: InstanceType<typeof Wallet>
+  recipient: InstanceType<typeof Wallet>
   amount: string
   tx: any
   challengeMethodDetails?: Record<string, unknown>
+  expires?: string
 }) {
-  const { payer, recipient, amount, tx, challengeMethodDetails = {} } = args
+  const { payer, recipient, amount, tx, challengeMethodDetails = {}, expires } = args
   const signed = payer.sign(tx as any)
   const challenge = {
     id: `meta-${Math.random().toString(36).slice(2)}`,
@@ -20,6 +50,7 @@ function buildCharge(args: {
     method: 'xrpl' as const,
     intent: 'charge' as const,
     createdAt: new Date().toISOString(),
+    ...(expires ? { expires } : {}),
     request: {
       amount,
       currency: 'XRP',
@@ -111,5 +142,92 @@ describe('charge server -- DestinationTag / SourceTag / InvoiceID enforcement', 
     await expect(
       method.verify({ credential: cred as any, request: challenge.request }),
     ).rejects.toThrow(/DestinationTag mismatch.*got none/)
+  })
+})
+
+describe('charge server -- LastLedgerSequence vs challenge.expires enforcement', () => {
+  it('rejects a tx whose LastLedgerSequence would let it land past challenge.expires', async () => {
+    const payer = Wallet.generate()
+    const recipient = Wallet.generate()
+    // FakeClient.ledger_current returns 99_000_000. A 30s expiry caps
+    // LLS at 99_000_000 + ceil(30/4) = 99_000_008, plus 4 ledgers slack
+    // = 99_000_012. The basePayment template uses LLS = 100_000_000,
+    // way beyond the cap.
+    const tx = {
+      ...basePayment(payer, recipient.classicAddress, '1000000'),
+      LastLedgerSequence: 100_000_000,
+    }
+    const { challenge, cred } = buildCharge({
+      payer,
+      recipient,
+      amount: '1000000',
+      tx,
+      expires: new Date(Date.now() + 30_000).toISOString(),
+    })
+    const method = serverCharge({
+      recipient: recipient.classicAddress,
+      store: Store.memory(),
+      network: NETWORK,
+    })
+    await expect(
+      method.verify({ credential: cred as any, request: challenge.request }),
+    ).rejects.toThrow(/LastLedgerSequence.*exceeds.*cap/)
+  })
+
+  it('accepts a tx whose LastLedgerSequence is within the expires-derived cap', async () => {
+    const payer = Wallet.generate()
+    const recipient = Wallet.generate()
+    // Cap = 99_000_008 (+ 4 slack) = 99_000_012. LLS = 99_000_010 fits.
+    const tx = {
+      ...basePayment(payer, recipient.classicAddress, '1000000'),
+      LastLedgerSequence: 99_000_010,
+    }
+    const { challenge, cred } = buildCharge({
+      payer,
+      recipient,
+      amount: '1000000',
+      tx,
+      expires: new Date(Date.now() + 30_000).toISOString(),
+    })
+    const method = serverCharge({
+      recipient: recipient.classicAddress,
+      store: Store.memory(),
+      network: NETWORK,
+      // Trim the post-LLS poll loop -- the mock client returns no `tx`
+      // entry, so verifyPull would otherwise spin until the default
+      // pollTimeout (60 s). We only care that the LLS check itself does
+      // not reject; the eventual timeout has its own distinct message.
+      pollTimeout: 100,
+      pollInterval: 50,
+    })
+    await expect(
+      method.verify({ credential: cred as any, request: challenge.request }),
+    ).rejects.not.toThrow(/LastLedgerSequence/)
+  })
+
+  it('skips the LLS check when challenge.expires is absent', async () => {
+    const payer = Wallet.generate()
+    const recipient = Wallet.generate()
+    const tx = {
+      ...basePayment(payer, recipient.classicAddress, '1000000'),
+      LastLedgerSequence: 100_000_000, // would fail if expires was set
+    }
+    const { challenge, cred } = buildCharge({
+      payer,
+      recipient,
+      amount: '1000000',
+      tx,
+      // expires deliberately omitted
+    })
+    const method = serverCharge({
+      recipient: recipient.classicAddress,
+      store: Store.memory(),
+      network: NETWORK,
+      pollTimeout: 100,
+      pollInterval: 50,
+    })
+    await expect(
+      method.verify({ credential: cred as any, request: challenge.request }),
+    ).rejects.not.toThrow(/LastLedgerSequence/)
   })
 })

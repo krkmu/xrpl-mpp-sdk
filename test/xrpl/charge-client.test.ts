@@ -39,6 +39,9 @@ vi.mock('xrpl', async (importOriginal) => {
           },
         }
       }
+      if (params.command === 'ledger_current') {
+        return { result: { ledger_current_index: 50_000_000 } }
+      }
       return { result: {} }
     }
   }
@@ -128,5 +131,107 @@ describe('charge client createCredential() -- pull mode happy path', () => {
 
   it('throws when seed is missing', async () => {
     expect(() => charge({} as any)).toThrow(/seed is required/)
+  })
+
+  it('caps LastLedgerSequence to challenge.expires when set', async () => {
+    const payer = Wallet.generate()
+    const recipient = Wallet.generate()
+
+    const method = charge({
+      seed: payer.seed!,
+      mode: 'pull',
+      preflight: false,
+      network: 'devnet',
+    })
+
+    // 30s window vs FakeClient autofill default of LastLedgerSequence
+    // 100_000_000 (current = 50_000_000). The cap should land at
+    // ledger_current + ceil(30000 / 4000) = 50_000_008, well below the
+    // autofill default.
+    const expires = new Date(Date.now() + 30_000).toISOString()
+
+    const challenge = {
+      id: 'mock-lls-cap',
+      realm: 'test',
+      method: 'xrpl' as const,
+      intent: 'charge' as const,
+      expires,
+      request: {
+        amount: '500000',
+        currency: 'XRP',
+        recipient: recipient.classicAddress,
+        methodDetails: { network: 'devnet' as const },
+      },
+    }
+
+    const blob = await method.createCredential({ challenge: challenge as any } as any)
+    const cred = Credential.deserialize(blob)
+    const payload = cred.payload as { type: 'transaction'; blob: string }
+    const decoded = decode(payload.blob) as { LastLedgerSequence: number }
+    expect(decoded.LastLedgerSequence).toBeLessThanOrEqual(50_000_010)
+    // Sanity: still within a sensible range above ledger_current.
+    expect(decoded.LastLedgerSequence).toBeGreaterThan(50_000_000)
+  })
+
+  it('keeps autofill default when challenge.expires is absent', async () => {
+    const payer = Wallet.generate()
+    const recipient = Wallet.generate()
+
+    const method = charge({
+      seed: payer.seed!,
+      mode: 'pull',
+      preflight: false,
+      network: 'devnet',
+    })
+
+    const challenge = {
+      id: 'mock-lls-no-expires',
+      realm: 'test',
+      method: 'xrpl' as const,
+      intent: 'charge' as const,
+      request: {
+        amount: '500000',
+        currency: 'XRP',
+        recipient: recipient.classicAddress,
+        methodDetails: { network: 'devnet' as const },
+      },
+    }
+
+    const blob = await method.createCredential({ challenge: challenge as any } as any)
+    const cred = Credential.deserialize(blob)
+    const payload = cred.payload as { type: 'transaction'; blob: string }
+    const decoded = decode(payload.blob) as { LastLedgerSequence: number }
+    // Falls back to the autofill default exposed by the FakeClient.
+    expect(decoded.LastLedgerSequence).toBe(100_000_000)
+  })
+
+  it('rejects challenge.expires that leaves less than one ledger interval', async () => {
+    const payer = Wallet.generate()
+    const recipient = Wallet.generate()
+
+    const method = charge({
+      seed: payer.seed!,
+      mode: 'pull',
+      preflight: false,
+      network: 'devnet',
+    })
+
+    const challenge = {
+      id: 'mock-lls-too-tight',
+      realm: 'test',
+      method: 'xrpl' as const,
+      intent: 'charge' as const,
+      expires: new Date(Date.now() + 1_000).toISOString(), // < 4s ledger interval
+      request: {
+        amount: '500000',
+        currency: 'XRP',
+        recipient: recipient.classicAddress,
+        methodDetails: { network: 'devnet' as const },
+      },
+    }
+
+    await expect(method.createCredential({ challenge: challenge as any } as any)).rejects.toThrow(
+      /SUBMISSION_FAILED.*less than one ledger/,
+    )
   })
 })

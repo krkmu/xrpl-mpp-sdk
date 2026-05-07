@@ -6,6 +6,7 @@ import * as Methods from '../Methods.js'
 import type { ChargeServerConfig, XrplCurrency } from '../types.js'
 import { isIOU, isMPT, parseCurrency, serializeCurrency } from '../utils/currency.js'
 import { classicAddressFromDID } from '../utils/did.js'
+import { assertTxExpiresWithinChallenge, readCurrentLedgerIndex } from '../utils/ledger-time.js'
 import { ensureMPTHolding } from '../utils/mpt.js'
 import { ensureTrustline } from '../utils/trustline.js'
 import { Wallet } from '../utils/wallet.js'
@@ -229,11 +230,20 @@ export function charge(parameters: charge.Parameters) {
       }
     }
 
+    const challengeExpires = (challenge as { expires?: string }).expires
+
     const client = new Client(rpcUrl)
     await client.connect()
 
     try {
       await ensureRecipientSetup(client)
+
+      // Pull mode: reject blobs whose LastLedgerSequence would let them
+      // land past challenge.expires *before* spending a submit. Push mode
+      // does the same check after fetching the validated tx in verifyPush.
+      if (preDecodedTx && challengeExpires) {
+        await assertChallengeExpiryRespected(client, preDecodedTx, challengeExpires)
+      }
 
       switch (payload.type) {
         case 'hash': {
@@ -249,6 +259,7 @@ export function charge(parameters: charge.Parameters) {
             expectedDestinationTag,
             expectedSourceTag,
             challengeId,
+            challengeExpires,
           )
         }
         case 'transaction': {
@@ -275,6 +286,40 @@ export function charge(parameters: charge.Parameters) {
 }
 
 /**
+ * Run the LastLedgerSequence vs `challenge.expires` check, wrapping any
+ * failure into a typed `VerificationFailedError` (`SUBMISSION_FAILED`).
+ *
+ * No-op when `tx.LastLedgerSequence` is missing -- the field is
+ * technically optional; xrpl.js's autofill always sets it but a
+ * hand-crafted tx might not.
+ */
+async function assertChallengeExpiryRespected(
+  client: Client,
+  tx: { LastLedgerSequence?: number },
+  expiresIso: string,
+): Promise<void> {
+  const txLLS = tx.LastLedgerSequence
+  if (typeof txLLS !== 'number') return
+  const currentLedgerIndex = await readCurrentLedgerIndex(client)
+  try {
+    assertTxExpiresWithinChallenge({
+      txLastLedgerSequence: txLLS,
+      currentLedgerIndex,
+      expiresIso,
+    })
+  } catch (err: any) {
+    const reason =
+      typeof err?.message === 'string'
+        ? err.message
+        : 'LastLedgerSequence vs challenge expiry check failed'
+    // Strip the `[CODE] ` prefix the helper adds so verificationFailed's
+    // own prefix is not duplicated.
+    const detail = reason.replace(/^\[[^\]]+\]\s*/, '')
+    throw verificationFailed('SUBMISSION_FAILED', detail)
+  }
+}
+
+/**
  * Verify a push-mode credential (client already submitted, we have the hash).
  */
 async function verifyPush(
@@ -289,6 +334,7 @@ async function verifyPush(
   expectedDestinationTag?: number,
   expectedSourceTag?: number,
   challengeId?: string,
+  expiresIso?: string,
 ): Promise<Receipt.Receipt> {
   // Claim the tx hash before verification to close the TOCTOU window: in
   // distributed deployments two instances could otherwise both pass the
@@ -315,6 +361,10 @@ async function verifyPush(
   if (!meta || meta.TransactionResult !== 'tesSUCCESS') {
     const tecResult = meta?.TransactionResult ?? 'unknown'
     throw fromTecResult(tecResult, `Transaction ${txHash} did not succeed`)
+  }
+
+  if (expiresIso) {
+    await assertChallengeExpiryRespected(client, tx, expiresIso)
   }
 
   validatePaymentFields(

@@ -7,6 +7,7 @@ import { fromTecResult } from '../errors.js'
 import * as Methods from '../Methods.js'
 import type { ChargeClientConfig, PaymentMode } from '../types.js'
 import { buildAmount, isIOU, parseCurrency } from '../utils/currency.js'
+import { lastLedgerSequenceFromExpires, readCurrentLedgerIndex } from '../utils/ledger-time.js'
 import { resolveIouPaymentExtras, validateSlippageBps } from '../utils/paths.js'
 import { runPreflight } from '../utils/validation.js'
 import { resolveWallet } from '../utils/wallet.js'
@@ -126,6 +127,21 @@ export function charge(parameters: charge.Parameters) {
         }
 
         const prepared = await client.autofill(payment as Payment)
+
+        // Cap LastLedgerSequence to challenge.expires when set: xrpl.js's
+        // autofill default (~current + 4 ledgers, ~16 s) can outlive a
+        // tight challenge, leaving a window for an attacker who
+        // intercepts the signed blob to re-submit just before the
+        // ledger-side deadline. Always tighten, never relax.
+        const expiresIso = (challenge as { expires?: string }).expires
+        if (expiresIso) {
+          const currentLedgerIndex = await readCurrentLedgerIndex(client)
+          const cap = lastLedgerSequenceFromExpires({ currentLedgerIndex, expiresIso })
+          const autofilled = (prepared as { LastLedgerSequence?: number }).LastLedgerSequence
+          if (autofilled === undefined || cap < autofilled) {
+            ;(prepared as { LastLedgerSequence?: number }).LastLedgerSequence = cap
+          }
+        }
 
         onProgress?.({ type: 'signing' })
         const signed = wallet.sign(prepared)
