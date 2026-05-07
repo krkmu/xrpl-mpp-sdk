@@ -17,8 +17,13 @@ import { Client, dropsToXrp, signPaymentChannelClaim, Wallet as XrplWallet } fro
 import { type NetworkId, XRPL_RPC_URLS } from '../constants.js'
 import type {
   AcceptTokenResult,
+  CreateEscrowOptions,
+  CreateEscrowResult,
   CreateTokenOptions,
   CreateTokenResult,
+  EscrowInfo,
+  EscrowReference,
+  FinishEscrowOptions,
   IssuedCurrency,
   MPTHoldingInfo,
   MPTIssuanceInfo,
@@ -27,6 +32,13 @@ import type {
   TokenHolding,
 } from '../types.js'
 import { isMPT } from './currency.js'
+import {
+  cancelEscrow,
+  createEscrow,
+  finishEscrow,
+  getEscrow,
+  listEscrows,
+} from './escrow.js'
 import {
   authorizeMPTHolder,
   clawbackMPT,
@@ -43,6 +55,7 @@ import {
 } from './mpt.js'
 import {
   ASF_ALLOW_TRUSTLINE_CLAWBACK,
+  ASF_ALLOW_TRUSTLINE_LOCKING,
   ASF_DEFAULT_RIPPLE,
   ASF_REQUIRE_AUTH,
   authorizeTrustline,
@@ -366,6 +379,26 @@ export class Wallet {
   }
 
   /**
+   * Permanently allow holders of this wallet's IOUs to lock them in
+   * an XRPL escrow (`asfAllowTrustLineLocking`, gated on the
+   * `TokenEscrow` amendment). Without this flag set on the issuer,
+   * `EscrowCreate` carrying an IOU `Amount` is rejected with
+   * `tecNO_PERMISSION` even when the trustline and balance are valid.
+   *
+   * Idempotent on the SDK side: calling it twice just resubmits an
+   * `AccountSet` -- the ledger accepts setting an already-set flag.
+   *
+   * MPT note: the equivalent permission for an MPT is the immutable
+   * `allowEscrow` flag set at create time -- pass `allowEscrow: true`
+   * to {@link Wallet.createToken} instead.
+   */
+  async allowTrustLineLocking(options: NetworkOptions = {}): Promise<{ hash: string }> {
+    return this.#submit(options, (client) =>
+      setAccountFlag(client, this.#internal, ASF_ALLOW_TRUSTLINE_LOCKING, true),
+    )
+  }
+
+  /**
    * As issuer, authorise a holder. For an IOU this is a `TrustSet`
    * carrying `tfSetfAuth` (only meaningful when this wallet has
    * {@link Wallet.requireAuthorization} enabled). For an MPT this is an
@@ -514,6 +547,87 @@ export class Wallet {
   /** List every MPT issuance this wallet has created. */
   async listIssuedTokens(options: NetworkOptions = {}): Promise<MPTIssuanceInfo[]> {
     return withClient(options, (client) => listMPTIssuances(client, this.address))
+  }
+
+  // ===== Escrows =====
+
+  /**
+   * Lock funds in an `Escrow` ledger entry. Adds one owner object on
+   * this wallet -- the SDK preflights the reserve so a typed
+   * `INSUFFICIENT_RESERVE` is surfaced before submission.
+   *
+   * At least one of `finishAfter` or `condition` must be set:
+   * - `finishAfter` only: anyone can `finishEscrow` once the time has
+   *   passed (the funds always flow to `destination`).
+   * - `condition` only: anyone holding the matching crypto-condition
+   *   fulfillment can `finishEscrow` at any time.
+   * - both: the finisher must wait for `finishAfter` *and* present the
+   *   fulfillment.
+   *
+   * `cancelAfter` (when set) lets the creator (or anyone) refund the
+   * escrow back to this wallet after the cutoff. Must be strictly later
+   * than `finishAfter`.
+   *
+   * The result includes the `Sequence` and `escrowId` you'll need to
+   * `finishEscrow` / `cancelEscrow` later. Use {@link generatePreimageCondition}
+   * to mint a fresh condition + fulfillment pair when needed.
+   */
+  async createEscrow(
+    options: CreateEscrowOptions & NetworkOptions,
+  ): Promise<CreateEscrowResult> {
+    return this.#submit(options, (client) => createEscrow(client, this.#internal, options))
+  }
+
+  /**
+   * Release an escrow's funds to its `Destination`. Anyone can submit
+   * (the submitter pays the fee), the funds always go to the recipient
+   * recorded on the escrow.
+   *
+   * The SDK preflights:
+   * - The escrow exists (else `ESCROW_NOT_FOUND`).
+   * - `FinishAfter` is in the past (else `ESCROW_NOT_READY`).
+   * - When the escrow has a `Condition`, both `condition` and
+   *   `fulfillment` are provided and the condition matches.
+   */
+  async finishEscrow(
+    options: FinishEscrowOptions & NetworkOptions,
+  ): Promise<{ hash: string }> {
+    return this.#submit(options, (client) => finishEscrow(client, this.#internal, options))
+  }
+
+  /**
+   * Refund an escrow to its creator (`Owner`). Only valid after the
+   * escrow's `CancelAfter` cutoff -- the SDK surfaces an early typed
+   * `ESCROW_NOT_READY` instead of letting a `tecNO_PERMISSION` bubble
+   * up. Anyone can submit; the funds always flow back to `Owner`.
+   *
+   * Throws `ESCROW_NOT_READY` immediately when the escrow was created
+   * without `CancelAfter` -- such escrows can only be finished, never
+   * cancelled.
+   */
+  async cancelEscrow(
+    reference: EscrowReference & NetworkOptions,
+  ): Promise<{ hash: string }> {
+    return this.#submit(reference, (client) => cancelEscrow(client, this.#internal, reference))
+  }
+
+  /**
+   * Read one escrow on this wallet's behalf. Returns null when no such
+   * escrow exists (already finished, cancelled, or never created).
+   */
+  async getEscrow(
+    reference: EscrowReference,
+    options: NetworkOptions = {},
+  ): Promise<EscrowInfo | null> {
+    return withClient(options, (client) => getEscrow(client, reference))
+  }
+
+  /**
+   * List every escrow this wallet currently owns. Returns [] when the
+   * account is unfunded or has no escrow objects.
+   */
+  async listEscrows(options: NetworkOptions = {}): Promise<EscrowInfo[]> {
+    return withClient(options, (client) => listEscrows(client, this.address))
   }
 
   // ===== Account state =====

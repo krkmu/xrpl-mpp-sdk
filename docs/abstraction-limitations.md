@@ -77,9 +77,10 @@ Each entry follows the same shape:
 
 - **Status**: partially closed -- trustline / IOU issuance / freeze /
   authorize / clawback / DefaultRipple **and** MPT issuance / accept /
-  refuse / authorize / lock / unlock / freeze / clawback / destroy are
-  now covered by Wallet methods. Each method opens / closes its own
-  short-lived xrpl.Client internally so consumers never import `xrpl`.
+  refuse / authorize / lock / unlock / freeze / clawback / destroy
+  **and** escrow create / finish / cancel / list / get are now covered
+  by Wallet methods. Each method opens / closes its own short-lived
+  xrpl.Client internally so consumers never import `xrpl`.
 - **IOU-only**: `Wallet.enableTransfers` / `Wallet.disableTransfers`,
   `Wallet.requireAuthorization` (toggle), `Wallet.allowClawback` (toggle).
   These have no MPT equivalent because MPT flags are immutable per
@@ -88,6 +89,17 @@ Each entry follows the same shape:
   `Wallet.lockToken` / `Wallet.unlockToken`, `Wallet.listIssuedTokens`.
   These have no IOU equivalent because IOU "issuance" is implicit (no
   ledger object to create).
+- **Escrow** (XRP today, IOU/MPT after `TokenEscrow`): `Wallet.createEscrow`,
+  `Wallet.finishEscrow`, `Wallet.cancelEscrow`, `Wallet.getEscrow`,
+  `Wallet.listEscrows`. The `generatePreimageCondition()` helper mints a
+  fresh PREIMAGE-SHA-256 condition + fulfillment pair so consumers
+  don't pull in a crypto-conditions library. Reserve preflight,
+  `FinishAfter` / `CancelAfter` cutoff checks, and on-chain condition
+  matching all happen client-side and surface as typed
+  `ESCROW_NOT_READY` / `ESCROW_INVALID_FULFILLMENT` /
+  `ESCROW_NOT_FOUND` errors. The corresponding `tec*` codes
+  (`tecCRYPTOCONDITION_ERROR`, `tecNO_TARGET`) are also mapped through
+  `TEC_RESULT_MAP` for any path that bypasses the Wallet preflight.
 - **Polymorphic over `IssuedCurrency | MPToken`**: `Wallet.acceptToken`,
   `Wallet.refuseToken`, `Wallet.holdsToken`, `Wallet.listAcceptedTokens`,
   `Wallet.authorize`, `Wallet.freeze` / `Wallet.unfreeze`,
@@ -97,7 +109,7 @@ Each entry follows the same shape:
   truth for every MPT op, parallel to `utils/trustline.ts`); `Wallet`
   methods in `sdk/src/utils/wallet.ts`. `demo/mpt-charge.ts` no longer
   imports `xrpl` at all -- it goes end-to-end through the SDK.
-- **Open**: OfferCreate (DEX), raw queries.
+- **Open**: OfferCreate (DEX), raw queries, NFTs.
 - **MPT pre-conditions worth knowing** (immutable per protocol):
   - `Wallet.freeze` on an MPT throws `MPT_LOCK_NOT_ALLOWED` when the
     issuance was not minted with `allowLock: true`.
@@ -105,6 +117,16 @@ Each entry follows the same shape:
     the issuance was not minted with `allowClawback: true`.
   - The fix in both cases is to mint a new issuance with the right
     flag -- the SDK error message says so.
+- **Escrow pre-conditions worth knowing**:
+  - At least one of `finishAfter` or `condition` must be set
+    on `createEscrow` (the SDK rejects upfront with `INVALID_AMOUNT`).
+  - When both `finishAfter` and `cancelAfter` are set, `finishAfter`
+    must be strictly less than `cancelAfter`.
+  - Without `cancelAfter`, the escrow can never be cancelled --
+    `Wallet.cancelEscrow` throws `ESCROW_NOT_READY` immediately.
+  - Time fields accept `Date`, Unix milliseconds, or ISO-8601 strings
+    on input; the SDK converts to ripple time internally and surfaces
+    JS `Date`s on read.
 - **Proposed fix for the remainder**: a thin `XrplClient` wrapper for
   raw queries (account_info, ledger_entry, ...) and an OfferCreate
   helper if/when the use case lands.

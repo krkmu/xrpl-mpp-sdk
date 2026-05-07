@@ -40,6 +40,12 @@ export const ASF_REQUIRE_AUTH = 2
 export const ASF_DEFAULT_RIPPLE = 8
 /** Once set, cannot be cleared. */
 export const ASF_ALLOW_TRUSTLINE_CLAWBACK = 16
+/**
+ * Required on the issuer for the `TokenEscrow` amendment to allow holders
+ * to escrow IOUs of this issuer. Without it, an `EscrowCreate` carrying an
+ * IOU `Amount` is rejected with `tecNO_PERMISSION`.
+ */
+export const ASF_ALLOW_TRUSTLINE_LOCKING = 17
 
 // === Public types (re-exported from sdk/src/index.ts) ===
 

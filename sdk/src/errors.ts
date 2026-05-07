@@ -37,6 +37,12 @@ export const TEC_RESULT_MAP: Record<string, string> = {
   // issuance with the right flag.
   tecMPT_LOCKED: 'MPT_LOCKED',
   tecMPT_NOT_AUTHORIZED: 'MPT_NOT_AUTHORIZED',
+  // Escrow-specific. tecCRYPTOCONDITION_ERROR fires when the supplied
+  // fulfillment does not satisfy the on-chain condition (or is malformed).
+  // tecNO_TARGET on EscrowFinish/Cancel means the (Owner, OfferSequence)
+  // pair does not resolve to an Escrow ledger entry.
+  tecCRYPTOCONDITION_ERROR: 'ESCROW_INVALID_FULFILLMENT',
+  tecNO_TARGET: 'ESCROW_NOT_FOUND',
 }
 
 export type XrplErrorCode =
@@ -69,6 +75,10 @@ export type XrplErrorCode =
   | 'MPT_ISSUANCE_NOT_FOUND'
   | 'MPT_NOT_ISSUER'
   | 'MPT_INVALID_METADATA'
+  | 'ESCROW_NOT_FOUND'
+  | 'ESCROW_NOT_READY'
+  | 'ESCROW_INVALID_FULFILLMENT'
+  | 'ESCROW_FAILED'
 
 export function mapTecResult(tecResult: string): XrplErrorCode | undefined {
   return TEC_RESULT_MAP[tecResult] as XrplErrorCode | undefined

@@ -215,7 +215,7 @@ const response = await fetch('https://api.example.com/resource')
 
 | Path | Exports |
 |---|---|
-| `xrpl-mpp-sdk` | Methods, ChannelMethods, constants, toDrops, fromDrops, error helpers, types |
+| `xrpl-mpp-sdk` | Methods, ChannelMethods, constants, toDrops, fromDrops, error helpers, types, generatePreimageCondition |
 | `xrpl-mpp-sdk/client` | charge, xrpl, Mppx |
 | `xrpl-mpp-sdk/server` | charge, xrpl, Mppx, Store, Expires |
 | `xrpl-mpp-sdk/channel` | channel (schema), ChannelStream, ChannelSession |
@@ -350,6 +350,47 @@ const mppx = Mppx.create({
 const res = await mppx.fetch('https://example.com/resource')
 ```
 
+### Escrows
+
+Lock XRP (or post-`TokenEscrow` IOU/MPT) until either a time has passed or a crypto-condition is satisfied. The Wallet API exposes the full lifecycle without ever touching `xrpl.js`:
+
+```ts
+import { generatePreimageCondition, Wallet } from 'xrpl-mpp-sdk'
+
+const creator = await Wallet.fromFaucet({ network: 'devnet' })
+const recipient = await Wallet.fromFaucet({ network: 'devnet' })
+
+// 1. Time-locked: anyone can finish after `finishAfter`.
+const { sequence, escrowId } = await creator.createEscrow({
+  destination: recipient.address,
+  amount: '5000000', // 5 XRP, or { currency, issuer, value } / { mpt_issuance_id, value }
+  finishAfter: new Date(Date.now() + 60_000),
+})
+
+// 2. Crypto-condition gated: only the holder of `fulfillment` can finish.
+const { condition, fulfillment } = generatePreimageCondition()
+await creator.createEscrow({
+  destination: recipient.address,
+  amount: '5000000',
+  condition,
+  cancelAfter: new Date(Date.now() + 24 * 60 * 60 * 1000),
+})
+
+// Inspect / list outstanding escrows.
+const info = await creator.getEscrow({ owner: creator.address, sequence })
+const all = await creator.listEscrows()
+
+// Finish (anyone may submit -- funds always go to `Destination`).
+await recipient.finishEscrow({ owner: creator.address, sequence })
+// Or with a fulfillment:
+// await recipient.finishEscrow({ owner: creator.address, sequence, condition, fulfillment })
+
+// Cancel after `CancelAfter` -- refunds the creator (anyone may submit).
+await creator.cancelEscrow({ owner: creator.address, sequence })
+```
+
+The SDK preflights every operation: reserve coverage on `createEscrow`, `FinishAfter` cutoff on `finishEscrow` (typed `ESCROW_NOT_READY` instead of a raw `tecNO_PERMISSION`), `CancelAfter` cutoff and "no `CancelAfter` set" on `cancelEscrow`, and on-chain condition match on the fulfillment path. Time fields accept `Date`, Unix milliseconds, or ISO-8601 strings; the SDK converts to ripple time internally and surfaces JS `Date`s on read.
+
 ### Opening and closing channels
 
 ```ts
@@ -468,6 +509,8 @@ XRPL transaction engine results are mapped to MPP error types (RFC 9457 Problem 
 | `tefALREADY` | `SUBMISSION_FAILED` | VerificationFailedError |
 | `tefBAD_AUTH` | `INVALID_SIGNATURE` | VerificationFailedError |
 | `tefMASTER_DISABLED` | `INVALID_SIGNATURE` | VerificationFailedError |
+| `tecCRYPTOCONDITION_ERROR` | `ESCROW_INVALID_FULFILLMENT` | VerificationFailedError |
+| `tecNO_TARGET` | `ESCROW_NOT_FOUND` | VerificationFailedError |
 
 Additional SDK-level error codes (raised before submit, no tecResult):
 - `SOURCE_MISMATCH` -- VerificationFailedError, the on-chain payer or channel funder does not match the credential's `did:pkh:xrpl:...` source
@@ -556,6 +599,7 @@ xrpl-mpp-sdk/
       reserves.ts            # getReserveState, assertReserveCovers (owner-reserve preflight)
       trustline.ts           # ensureTrustline, checkRippling, freeze + RequireAuth detection
       mpt.ts                 # ensureMPTHolding, lsfMPTRequireAuth detection
+      escrow.ts              # createEscrow / finishEscrow / cancelEscrow + PREIMAGE-SHA-256 helper
       validation.ts          # runPreflight, assertIssuerHealth (rippling, global freeze, RequireAuth)
     client/
       Charge.ts              # Client charge: preflight, IOU path resolve, sign, push/pull
@@ -586,6 +630,7 @@ xrpl-mpp-sdk/
       charge.devnet.test.ts
       channel.devnet.test.ts
       iou-cross-issuer.devnet.test.ts
+      escrow.devnet.test.ts
     utils/test-helpers.ts
   demo/
     log.ts                   # Shared styled terminal output utility

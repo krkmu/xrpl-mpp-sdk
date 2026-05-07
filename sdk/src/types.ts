@@ -175,6 +175,112 @@ export type CreateTokenResult = {
   hash: string
 }
 
+/**
+ * Reference to an existing escrow on the ledger. An escrow is identified
+ * by its creator's address plus the `Sequence` of the `EscrowCreate`
+ * transaction. The `escrowId` (ledger entry hash) is exposed for
+ * convenience but is *not* required to finish or cancel -- XRPL operates
+ * on `(owner, offerSequence)`.
+ */
+export type EscrowReference = {
+  /** Creator of the escrow (`Account` on the original `EscrowCreate`). */
+  owner: string
+  /** `Sequence` of the original `EscrowCreate` transaction. */
+  sequence: number
+}
+
+/** Options for {@link Wallet.createEscrow}. */
+export type CreateEscrowOptions = {
+  /** Recipient classic address. */
+  destination: string
+  /**
+   * Amount to lock. XRP drops as a string (e.g. `'1000000'` for 1 XRP),
+   * an {@link IssuedCurrency} amount object, or an MPT amount.
+   * IOU/MPT escrow requires the network to have the relevant amendments
+   * (`TokenEscrow`) enabled.
+   */
+  amount: string | { currency: string; issuer: string; value: string } | { mpt_issuance_id: string; value: string }
+  /**
+   * Earliest moment the escrow can be **finished**. Pass a `Date`, a
+   * Unix timestamp in milliseconds, or an ISO-8601 string. The SDK
+   * converts it to the XRPL "ripple time" representation internally.
+   *
+   * At least one of `finishAfter` or `condition` must be set.
+   */
+  finishAfter?: Date | number | string
+  /**
+   * Earliest moment the escrow can be **cancelled** (refunded to the
+   * creator). Same accepted shapes as `finishAfter`. Must be strictly
+   * greater than `finishAfter` when both are provided.
+   */
+  cancelAfter?: Date | number | string
+  /**
+   * Hex-encoded crypto-condition (PREIMAGE-SHA-256). Whoever finishes
+   * the escrow must supply the matching fulfillment. Use
+   * {@link generatePreimageCondition} to mint a fresh pair.
+   */
+  condition?: string
+  /** Optional `DestinationTag` to attach to the escrow. */
+  destinationTag?: number
+  /** Optional `SourceTag` to attach to the escrow. */
+  sourceTag?: number
+}
+
+/** Outcome of {@link Wallet.createEscrow}. */
+export type CreateEscrowResult = {
+  /** Submission hash of the `EscrowCreate`. */
+  hash: string
+  /** `Sequence` of the submitted `EscrowCreate` -- pass to finish/cancel. */
+  sequence: number
+  /**
+   * Hash of the on-chain Escrow ledger entry (`hashEscrow(owner, sequence)`).
+   * Useful for direct ledger lookups and for external systems.
+   */
+  escrowId: string
+}
+
+/** Options for {@link Wallet.finishEscrow}. */
+export type FinishEscrowOptions = EscrowReference & {
+  /**
+   * Hex-encoded crypto-condition that the finisher claims to satisfy.
+   * Required when the escrow was created with a `condition`. Must match
+   * the original condition byte-for-byte.
+   */
+  condition?: string
+  /**
+   * Hex-encoded fulfillment proving the `condition`. Required when the
+   * escrow was created with a `condition`.
+   */
+  fulfillment?: string
+}
+
+/** Snapshot of an Escrow ledger entry. */
+export type EscrowInfo = {
+  /** Hash of the Escrow ledger entry (`hashEscrow(owner, sequence)`). */
+  escrowId: string
+  /** `Sequence` of the original `EscrowCreate`. */
+  sequence: number
+  /** Creator (and refund target on cancel). */
+  owner: string
+  /** Recipient on finish. */
+  destination: string
+  /**
+   * Amount locked. Same shape as on the original `EscrowCreate`:
+   * drops string for XRP, IOU/MPT amount object otherwise.
+   */
+  amount: string | { currency: string; issuer: string; value: string } | { mpt_issuance_id: string; value: string }
+  /** When set, the escrow can only be finished at or after this Date. */
+  finishAfter?: Date
+  /** When set, the escrow can be cancelled at or after this Date. */
+  cancelAfter?: Date
+  /** Hex-encoded crypto-condition required to finish, when set. */
+  condition?: string
+  /** Optional `DestinationTag` recorded on the escrow. */
+  destinationTag?: number
+  /** Optional `SourceTag` recorded on the escrow. */
+  sourceTag?: number
+}
+
 /** Pull: client signs tx blob, server submits. Push: client submits, sends hash. */
 export type PaymentMode = 'pull' | 'push'
 

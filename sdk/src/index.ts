@@ -35,8 +35,13 @@ export type {
   ChannelServerConfig,
   ChargeClientConfig,
   ChargeServerConfig,
+  CreateEscrowOptions,
+  CreateEscrowResult,
   CreateTokenOptions,
   CreateTokenResult,
+  EscrowInfo,
+  EscrowReference,
+  FinishEscrowOptions,
   IssuedCurrency,
   MPTHoldingInfo,
   MPTIssuanceInfo,
@@ -47,6 +52,7 @@ export type {
   XrpCurrency,
   XrplCurrency,
 } from './types.js'
+export { generatePreimageCondition } from './utils/escrow.js'
 export type {
   SetTrustlineOptions,
   SetTrustlineResult,
