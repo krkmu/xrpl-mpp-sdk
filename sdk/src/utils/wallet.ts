@@ -21,8 +21,8 @@ import type {
   CreateTokenResult,
   IssuedCurrency,
   MPTHoldingInfo,
-  MPToken,
   MPTIssuanceInfo,
+  MPToken,
   RefuseTokenResult,
   TokenHolding,
 } from '../types.js'
@@ -485,12 +485,8 @@ export class Wallet {
    * `allowLock`, `allowClawback`, `allowTransfer`, `allowEscrow`,
    * `allowTrade`, `requireAuthorization` carefully.
    */
-  async createToken(
-    options: CreateTokenOptions & NetworkOptions = {},
-  ): Promise<CreateTokenResult> {
-    return this.#submit(options, (client) =>
-      createMPTIssuance(client, this.#internal, options),
-    )
+  async createToken(options: CreateTokenOptions & NetworkOptions = {}): Promise<CreateTokenResult> {
+    return this.#submit(options, (client) => createMPTIssuance(client, this.#internal, options))
   }
 
   /**
@@ -507,16 +503,12 @@ export class Wallet {
    * with `allowLock: true`.
    */
   async lockToken(mpt: MPToken, options: NetworkOptions = {}): Promise<{ hash: string }> {
-    return this.#submit(options, (client) =>
-      setMPTIssuanceLock(client, this.#internal, mpt, true),
-    )
+    return this.#submit(options, (client) => setMPTIssuanceLock(client, this.#internal, mpt, true))
   }
 
   /** Inverse of {@link Wallet.lockToken}. */
   async unlockToken(mpt: MPToken, options: NetworkOptions = {}): Promise<{ hash: string }> {
-    return this.#submit(options, (client) =>
-      setMPTIssuanceLock(client, this.#internal, mpt, false),
-    )
+    return this.#submit(options, (client) => setMPTIssuanceLock(client, this.#internal, mpt, false))
   }
 
   /** List every MPT issuance this wallet has created. */

@@ -42,7 +42,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "test:integration": "vitest run --config vitest.integration.config.ts"
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "agent-template": "tsx --tsconfig examples/agent-template/tsconfig.json examples/agent-template/src/run-demo.ts",
+    "agent-template:server": "tsx --tsconfig examples/agent-template/tsconfig.json examples/agent-template/src/server.ts",
+    "agent-template:client": "tsx --tsconfig examples/agent-template/tsconfig.json examples/agent-template/src/client.ts"
   },
   "peerDependencies": {
     "mppx": ">=0.4.0",
@@ -56,8 +59,11 @@
   "packageManager": "pnpm@10.19.0",
   "devDependencies": {
     "@biomejs/biome": "^2.4.8",
+    "@types/express": "^5.0.0",
     "@types/node": "^25.5.0",
     "@vitest/coverage-v8": "^3.2.4",
+    "dotenv": "^16.4.7",
+    "express": "^5.0.0",
     "picocolors": "^1.1.1",
     "tsup": "^8.5.1",
     "tsx": "^4.21.0",

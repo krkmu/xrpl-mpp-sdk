@@ -100,6 +100,23 @@ pnpm install
 pnpm build
 ```
 
+## AI agent template
+
+A minimal end-to-end starter (Express server + TS client) for AI agent
+integrators lives at [`examples/agent-template`](examples/agent-template).
+After `pnpm install`, run the full demo with one command:
+
+```bash
+pnpm agent-template
+```
+
+It funds two ephemeral testnet wallets, boots an Express MPP server on
+`:3000`, sends a payment intent from the TS client, pays the 402
+challenge on XRPL, prints the receipt + explorer link, and exits. See
+[`examples/agent-template/README.md`](examples/agent-template/README.md)
+for env-based wallet management, production caveats, and how to lift
+the folder out as a standalone starter.
+
 ## Quick start
 
 ### Server (charge)

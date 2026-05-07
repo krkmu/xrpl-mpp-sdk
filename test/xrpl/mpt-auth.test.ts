@@ -66,9 +66,7 @@ describe('ensureMPTHolding -- auth and reserve checks', () => {
     const client = mockClient({
       accountObjects: () => ({
         result: {
-          account_objects: [
-            { MPTokenIssuanceID: ISSUANCE_ID, Flags: LSF_HOLDING_AUTHORIZED },
-          ],
+          account_objects: [{ MPTokenIssuanceID: ISSUANCE_ID, Flags: LSF_HOLDING_AUTHORIZED }],
         },
       }),
       ledgerEntry: () => ({ result: { node: { Flags: LSF_ISSUANCE_REQUIRE_AUTH } } }),

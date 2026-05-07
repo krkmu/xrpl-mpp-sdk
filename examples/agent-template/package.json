@@ -1,0 +1,28 @@
+{
+  "name": "xrpl-mpp-agent-template",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Minimal AI agent template consuming xrpl-mpp-sdk (Express server + TS client).",
+  "scripts": {
+    "demo": "tsx src/run-demo.ts",
+    "dev:server": "tsx watch src/server.ts",
+    "dev:client": "tsx src/client.ts",
+    "start": "tsx src/run-demo.ts",
+    "check:types": "tsc --noEmit"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^5.0.0",
+    "mppx": ">=0.4.0",
+    "xrpl": ">=4.0.0",
+    "xrpl-mpp-sdk": "file:../..",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^25.5.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

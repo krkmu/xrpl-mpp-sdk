@@ -25,8 +25,8 @@ import type {
   CreateTokenOptions,
   CreateTokenResult,
   MPTHoldingInfo,
-  MPToken,
   MPTIssuanceInfo,
+  MPToken,
 } from '../types.js'
 import { assertReserveCovers, getReserveState } from './reserves.js'
 
@@ -190,10 +190,7 @@ export async function getMPTHolding(
  * `account_objects` call plus one `ledger_entry` lookup per distinct
  * issuance to compute `authorized` correctly.
  */
-export async function listMPTHoldings(
-  client: Client,
-  account: string,
-): Promise<MPTHoldingInfo[]> {
+export async function listMPTHoldings(client: Client, account: string): Promise<MPTHoldingInfo[]> {
   const objects = await accountObjects(client, account, 'mptoken')
   const raw = objects.map(toRawHolding).filter((h): h is RawHolding => h !== null)
   const issuances = await Promise.all(raw.map((r) => readIssuance(client, r.mpt_issuance_id)))
@@ -225,9 +222,7 @@ export async function createMPTIssuance(
       )
     }
     if (!allowTransfer) {
-      throw new Error(
-        '[INVALID_AMOUNT] transferFee can only be set when allowTransfer is true.',
-      )
+      throw new Error('[INVALID_AMOUNT] transferFee can only be set when allowTransfer is true.')
     }
   }
 
@@ -310,10 +305,7 @@ export async function destroyMPTIssuance(
 }
 
 /** List every MPT issuance this account has created (issuer side). */
-export async function listMPTIssuances(
-  client: Client,
-  issuer: string,
-): Promise<MPTIssuanceInfo[]> {
+export async function listMPTIssuances(client: Client, issuer: string): Promise<MPTIssuanceInfo[]> {
   const objects = await accountObjects(client, issuer, 'mpt_issuance')
   return objects.map((o) => toIssuanceInfo(o)).filter((i): i is MPTIssuanceInfo => i !== null)
 }
@@ -610,19 +602,14 @@ function toRawHolding(o: any): RawHolding | null {
   }
 }
 
-function resolveHolding(
-  raw: RawHolding,
-  issuance: IssuanceLedgerObject | null,
-): MPTHoldingInfo {
+function resolveHolding(raw: RawHolding, issuance: IssuanceLedgerObject | null): MPTHoldingInfo {
   // When the issuance is missing (older rippled, or just-deleted issuance)
   // we fall back to "authorized = true" if the holder's flag is set,
   // otherwise we report not-authorized -- the caller can still see the
   // mismatch via the issuance lookup elsewhere.
-  const requiresAuth =
-    issuance !== null && (issuance.Flags & LSF_ISSUANCE_REQUIRE_AUTH) !== 0
+  const requiresAuth = issuance !== null && (issuance.Flags & LSF_ISSUANCE_REQUIRE_AUTH) !== 0
   const issuerAuthFlag = (raw.flags & LSF_HOLDING_AUTHORIZED) !== 0
-  const issuanceLocked =
-    issuance !== null && (issuance.Flags & LSF_ISSUANCE_LOCKED) !== 0
+  const issuanceLocked = issuance !== null && (issuance.Flags & LSF_ISSUANCE_LOCKED) !== 0
   return {
     mpt_issuance_id: raw.mpt_issuance_id,
     balance: raw.balance,
@@ -695,9 +682,7 @@ function encodeMetadata(metadata: string | Record<string, unknown>): string {
     if (/^[0-9A-Fa-f]+$/.test(metadata) && metadata.length % 2 === 0) {
       // Looks like already-encoded hex -- pass through after size check.
       if (metadata.length / 2 > MAX_MPT_METADATA_BYTES) {
-        throw new Error(
-          `[MPT_INVALID_METADATA] Metadata exceeds ${MAX_MPT_METADATA_BYTES} bytes.`,
-        )
+        throw new Error(`[MPT_INVALID_METADATA] Metadata exceeds ${MAX_MPT_METADATA_BYTES} bytes.`)
       }
       return metadata.toUpperCase()
     }

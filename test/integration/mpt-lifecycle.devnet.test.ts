@@ -154,9 +154,7 @@ describe('integration: MPT admin lifecycle on devnet', () => {
     expect(destroyed.hash).toMatch(/^[0-9A-F]{64}$/)
 
     const afterDestroy = await issuer.listIssuedTokens({ network: NETWORK })
-    expect(
-      afterDestroy.find((i) => i.mpt_issuance_id === mpt.mpt_issuance_id),
-    ).toBeUndefined()
+    expect(afterDestroy.find((i) => i.mpt_issuance_id === mpt.mpt_issuance_id)).toBeUndefined()
   }, 300_000)
 
   it('rejects freeze and clawback when the issuance lacks the immutable admin flags', async () => {
@@ -191,15 +189,13 @@ describe('integration: MPT admin lifecycle on devnet', () => {
     )
 
     // clawback should reject upfront with MPT_CLAWBACK_NOT_ALLOWED.
-    await expect(
-      issuer.clawback(holder.address, '50', mpt, { network: NETWORK }),
-    ).rejects.toThrow(/MPT_CLAWBACK_NOT_ALLOWED/)
+    await expect(issuer.clawback(holder.address, '50', mpt, { network: NETWORK })).rejects.toThrow(
+      /MPT_CLAWBACK_NOT_ALLOWED/,
+    )
 
     // refuseToken with a non-zero balance is rejected by the SDK guard --
     // the holder must drain the balance before it can delete the MPToken
     // ledger entry.
-    await expect(holder.refuseToken(mpt, { network: NETWORK })).rejects.toThrow(
-      /MPT_HAS_BALANCE/,
-    )
+    await expect(holder.refuseToken(mpt, { network: NETWORK })).rejects.toThrow(/MPT_HAS_BALANCE/)
   }, 240_000)
 })
