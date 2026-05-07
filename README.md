@@ -552,33 +552,22 @@ The reserve constants are static fallbacks. The SDK's preflight reads live value
 
 ## Demos
 
-Most demos run on XRPL testnet; the cross-issuer demo runs on devnet (rationale below). Zero env vars -- every script generates wallets and funds them automatically via the network's faucet. See [demo/README.md](demo/README.md) for details.
+Every demo is self-contained: zero env vars, ephemeral wallets funded automatically via the network's faucet, single command to run. Most run on testnet; the cross-issuer one runs on devnet (rationale at the bottom of this section). See [demo/README.md](demo/README.md) for the per-demo walkthrough.
 
-```bash
-# XRP charge (two terminals)
-npx tsx demo/xrp-server.ts          # Terminal 1
-npx tsx demo/xrp-client.ts          # Terminal 2
+### Pick a demo by use case
 
-# IOU charge (all-in-one: issuer + trustlines + issuance + charge)
-npx tsx demo/iou-charge.ts
+| If you want to... | Run | Network |
+|---|---|---|
+| Charge an API in **native XRP** | `npx tsx demo/xrp-server.ts` + `npx tsx demo/xrp-client.ts` (two terminals) | testnet |
+| Charge an API in a **fiat-backed token / stablecoin** (auto-trustline) | `npx tsx demo/iou-charge.ts` | testnet |
+| Charge across two **different stablecoin issuers** (auto path-find + slippage) | `npx tsx demo/iou-cross-issuer.ts` | devnet |
+| Charge with a **permissioned / allowlisted token** (MPT) | `npx tsx demo/mpt-charge.ts` | testnet |
+| Stream **off-chain micropayments** (PayChannel: open, claim N times, close) | `npx tsx demo/channel-server.ts` + `npx tsx demo/channel-client.ts` (two terminals) | testnet |
+| Lock funds in **escrow** (time-lock, crypto-condition, cancellable refund) | `npx tsx demo/escrow-lifecycle.ts` | testnet |
+| See **every failure mode** and how the SDK surfaces it (13 cases, fail-fix-validate) | `npx tsx demo/error-showcase.ts` | testnet |
+| Simulate **pay-per-token LLM streaming** (offline, no network) | `npx tsx examples/stream-llm.ts` | none |
 
-# Cross-issuer IOU (devnet -- faster path-find indexer; sender holds USD.A,
-# recipient holds USD.B, market-maker bridges; SDK auto-resolves the path)
-npx tsx demo/iou-cross-issuer.ts
-
-# MPT charge (all-in-one: MPT issuance + authorize + charge)
-npx tsx demo/mpt-charge.ts
-
-# PayChannel (two terminals: open, 5 off-chain claims, close)
-npx tsx demo/channel-server.ts      # Terminal 1
-npx tsx demo/channel-client.ts      # Terminal 2
-
-# Error showcase (13 cases, fail-fix-validate)
-npx tsx demo/error-showcase.ts
-
-# Streaming simulation (offline)
-npx tsx examples/stream-llm.ts
-```
+Each script generates fresh wallets via faucet, prints colored progress and explorer links, and exits cleanly. Nothing to clean up.
 
 The cross-issuer demo runs on devnet because public testnet's path indexer is materially slower at surfacing freshly-created orderbooks; on devnet a fresh `OfferCreate` is visible to `ripple_path_find` within seconds.
 
@@ -641,6 +630,7 @@ xrpl-mpp-sdk/
     mpt-charge.ts            # MPT charge all-in-one
     channel-server.ts        # PayChannel server (two-terminal)
     channel-client.ts        # PayChannel client (two-terminal)
+    escrow-lifecycle.ts      # Escrow lifecycle: time-locked, crypto-condition, cancellable
     error-showcase.ts        # 13 error cases, fail-fix-validate
   examples/
     server.ts                # Minimal charge server (env var config)

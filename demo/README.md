@@ -20,6 +20,7 @@ All demos run on XRPL testnet. Zero environment variables -- every script genera
 | `mpt-charge.ts` | All-in-one | Creates MPT issuance, authorizes holders, issues tokens, runs charge |
 | `channel-server.ts` | Two-terminal | Server: verifies off-chain PayChannel claims (0.1 XRP each) |
 | `channel-client.ts` | Two-terminal | Client: opens channel, 5 paid requests, closes channel |
+| `escrow-lifecycle.ts` | All-in-one | 3 escrow scenarios: time-locked, crypto-condition, cancellable |
 | `error-showcase.ts` | All-in-one | 13 error cases with fail-fix-validate pattern |
 
 ## XRP Charge
@@ -61,6 +62,26 @@ npx tsx demo/channel-client.ts
 ```
 
 Server funds a wallet, exposes /info, /setup, /resource, /summary. Client funds a wallet, opens a 10 XRP channel (PaymentChannelCreate), configures the server, makes 5 paid requests (cumulative 100k, 200k, 300k, 400k, 500k drops), closes the channel (PaymentChannelClaim tfClose). 2 on-chain txs, 5 off-chain claims. Prints explorer links for create + close.
+
+## Escrow Lifecycle
+
+```bash
+npx tsx demo/escrow-lifecycle.ts
+```
+
+Funds 6 ephemeral wallets (creator + recipient per scenario) and walks the
+three escrow scenarios end-to-end. Each scenario uses fail-fix-validate:
+attempt the wrong thing first to surface the typed SDK error, then perform
+the correct action and confirm on-chain settlement.
+
+| # | Scenario | What it shows |
+|---|---|---|
+| 1 | Time-locked (5 XRP) | Reserve preflight on `EscrowCreate`, `getEscrow` round-trip with `DestinationTag`, `ESCROW_NOT_READY` raised on early finish, finish + ledger-entry deletion |
+| 2 | Crypto-condition (4 XRP) | `generatePreimageCondition()` helper, `ESCROW_INVALID_FULFILLMENT` raised on missing fulfillment AND on wrong fulfillment, finish with the correct preimage |
+| 3 | Cancellable (3 XRP) | `ESCROW_NOT_READY` raised on early cancel, cancel after `CancelAfter` refunds creator |
+
+Total runtime: ~30 s on testnet (15 s wait in scenario 1, 15 s wait in
+scenario 3, scenario 2 has no time gate).
 
 ## Error Showcase
 

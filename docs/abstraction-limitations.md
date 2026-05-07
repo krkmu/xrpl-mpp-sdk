@@ -137,6 +137,34 @@ Each entry follows the same shape:
   inside `serverCharge` calls the same internal API. No business logic is
   duplicated between the two surfaces.
 
+### 2.1.ter (closed) `autoTrustline` was incompatible with the client-side IOU path resolver
+
+- **Status**: closed.
+- **Scope**: server-side `charge({ autoTrustline: true })` for IOU
+  payments against a recipient that has no trustline yet.
+- **Why it used to leak**: `serverCharge.verify()` runs the recipient-side
+  `TrustSet` lazily on first verify, but the client-side
+  `resolveIouPaymentExtras` runs *before* signing and requires the
+  recipient's trustline to already exist (either to take the
+  direct-trustline shortcut or to find a viable cross-issuer path).
+  The two ordering constraints contradict each other, and the client
+  consistently threw `PAYMENT_PATH_FAILED` end-to-end against a fresh
+  recipient.
+- **What changed**: a new public `prepareRecipient(parameters)` is now
+  exported from `xrpl-mpp-sdk/server`. It accepts the same
+  `charge.Parameters` shape, opens its own short-lived `xrpl.Client`,
+  and runs the recipient-side `TrustSet` (for IOUs when
+  `autoTrustline` is on) or `MPTokenAuthorize` (for MPTs when
+  `autoMPTAuthorize` is on). It is idempotent and a no-op for XRP
+  currencies. Call it once at boot (or before the first 402 emission
+  in a given currency) so the trustline exists by the time the client
+  resolves a path. The lazy fallback inside `verify()` is preserved as
+  a safety net for setups that skipped the eager call.
+- **Closed by**: `sdk/src/server/Charge.ts.prepareRecipient` (export);
+  `runRecipientSetup` extracted as the shared internal helper. Tests:
+  `test/integration/auto-setup.devnet.test.ts` (both the IOU and MPT
+  branches now pass on devnet).
+
 ### 2.2 No abstraction for transaction submission (`submit`, `submitAndWait`, polling)
 
 - **Status**: open
