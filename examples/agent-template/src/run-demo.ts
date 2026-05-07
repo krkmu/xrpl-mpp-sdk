@@ -43,9 +43,7 @@ async function main(): Promise<void> {
       `  (${fromDrops(config.pricePer1kTokensDrops.toString())} XRP)`,
   )
   console.log(`intent:     model=${intent.model}, maxTokens=${intent.maxTokens}`)
-  console.log(
-    `quoted:     ${quotedDrops} drops  (${fromDrops(quotedDrops.toString())} XRP)`,
-  )
+  console.log(`quoted:     ${quotedDrops} drops  (${fromDrops(quotedDrops.toString())} XRP)`)
 
   console.log('\n[1/4] funding wallets...')
   const { recipient, payer } = await loadWallets('both', config.network)

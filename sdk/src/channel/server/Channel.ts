@@ -11,6 +11,7 @@ import {
 } from '../../errors.js'
 import type { ChannelServerConfig } from '../../types.js'
 import { classicAddressFromDID, classicAddressFromPublicKey } from '../../utils/did.js'
+import { assertTxExpiresWithinChallenge, readCurrentLedgerIndex } from '../../utils/ledger-time.js'
 import { resolveWallet, type Wallet } from '../../utils/wallet.js'
 import { channel as ChannelMethod } from '../Methods.js'
 
@@ -284,6 +285,33 @@ export function channel(parameters: channel.Parameters) {
     await client.connect()
 
     try {
+      // Reject open blobs whose LastLedgerSequence would let them land past
+      // challenge.expires *before* spending a submit. Mirrors the same gate
+      // applied to charge in server/Charge.ts -- without it, an attacker who
+      // intercepts a signed PaymentChannelCreate can replay it on-ledger
+      // after the challenge has logically expired.
+      const challengeExpires = (challenge as { expires?: string }).expires
+      const txLLS = (decoded as { LastLedgerSequence?: number }).LastLedgerSequence
+      if (challengeExpires && typeof txLLS === 'number') {
+        const currentLedgerIndex = await readCurrentLedgerIndex(client)
+        try {
+          assertTxExpiresWithinChallenge({
+            txLastLedgerSequence: txLLS,
+            currentLedgerIndex,
+            expiresIso: challengeExpires,
+          })
+        } catch (err: any) {
+          const reason =
+            typeof err?.message === 'string'
+              ? err.message
+              : 'LastLedgerSequence vs challenge expiry check failed'
+          // Strip the helper's `[CODE] ` prefix so verificationFailed's own
+          // prefix is not duplicated.
+          const detail = reason.replace(/^\[[^\]]+\]\s*/, '')
+          throw verificationFailed('SUBMISSION_FAILED', detail)
+        }
+      }
+
       const submitResult = await client.submit(blob)
       const engineResult = submitResult.result.engine_result
 

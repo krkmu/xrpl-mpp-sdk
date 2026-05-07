@@ -329,7 +329,9 @@ describe('integration: Escrow lifecycle on devnet', () => {
       expect(info!.amount.issuer).toBe(issuer.address)
       expect(info!.amount.value).toBe('50')
     } else {
-      throw new Error(`Expected IOU amount object on getEscrow, got: ${JSON.stringify(info?.amount)}`)
+      throw new Error(
+        `Expected IOU amount object on getEscrow, got: ${JSON.stringify(info?.amount)}`,
+      )
     }
 
     // Wait out the cutoff (plus a small margin for ledger time skew).
@@ -407,7 +409,9 @@ describe('integration: Escrow lifecycle on devnet', () => {
       expect(info!.amount.mpt_issuance_id).toBe(mpt.mpt_issuance_id)
       expect(info!.amount.value).toBe('500')
     } else {
-      throw new Error(`Expected MPT amount object on getEscrow, got: ${JSON.stringify(info?.amount)}`)
+      throw new Error(
+        `Expected MPT amount object on getEscrow, got: ${JSON.stringify(info?.amount)}`,
+      )
     }
 
     // Wait out the cutoff (plus a small margin for ledger time skew).
@@ -448,7 +452,10 @@ async function isTokenEscrowActive(): Promise<boolean> {
   try {
     await client.connect()
     const r = await client.request({ command: 'feature' } as any)
-    const features = ((r.result as any)?.features ?? {}) as Record<string, { name?: string; enabled?: boolean }>
+    const features = ((r.result as any)?.features ?? {}) as Record<
+      string,
+      { name?: string; enabled?: boolean }
+    >
     for (const v of Object.values(features)) {
       if (v?.name === 'TokenEscrow' && v?.enabled === true) return true
     }

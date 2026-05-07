@@ -32,13 +32,7 @@ import type {
   TokenHolding,
 } from '../types.js'
 import { isMPT } from './currency.js'
-import {
-  cancelEscrow,
-  createEscrow,
-  finishEscrow,
-  getEscrow,
-  listEscrows,
-} from './escrow.js'
+import { cancelEscrow, createEscrow, finishEscrow, getEscrow, listEscrows } from './escrow.js'
 import {
   authorizeMPTHolder,
   clawbackMPT,
@@ -572,9 +566,7 @@ export class Wallet {
    * `finishEscrow` / `cancelEscrow` later. Use {@link generatePreimageCondition}
    * to mint a fresh condition + fulfillment pair when needed.
    */
-  async createEscrow(
-    options: CreateEscrowOptions & NetworkOptions,
-  ): Promise<CreateEscrowResult> {
+  async createEscrow(options: CreateEscrowOptions & NetworkOptions): Promise<CreateEscrowResult> {
     return this.#submit(options, (client) => createEscrow(client, this.#internal, options))
   }
 
@@ -589,9 +581,7 @@ export class Wallet {
    * - When the escrow has a `Condition`, both `condition` and
    *   `fulfillment` are provided and the condition matches.
    */
-  async finishEscrow(
-    options: FinishEscrowOptions & NetworkOptions,
-  ): Promise<{ hash: string }> {
+  async finishEscrow(options: FinishEscrowOptions & NetworkOptions): Promise<{ hash: string }> {
     return this.#submit(options, (client) => finishEscrow(client, this.#internal, options))
   }
 
@@ -605,9 +595,7 @@ export class Wallet {
    * without `CancelAfter` -- such escrows can only be finished, never
    * cancelled.
    */
-  async cancelEscrow(
-    reference: EscrowReference & NetworkOptions,
-  ): Promise<{ hash: string }> {
+  async cancelEscrow(reference: EscrowReference & NetworkOptions): Promise<{ hash: string }> {
     return this.#submit(reference, (client) => cancelEscrow(client, this.#internal, reference))
   }
 

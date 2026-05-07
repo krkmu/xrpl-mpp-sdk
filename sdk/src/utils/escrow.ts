@@ -88,15 +88,8 @@ export async function createEscrow(
   wallet: XrplWallet,
   options: CreateEscrowOptions,
 ): Promise<CreateEscrowResult> {
-  const {
-    destination,
-    amount,
-    finishAfter,
-    cancelAfter,
-    condition,
-    destinationTag,
-    sourceTag,
-  } = options
+  const { destination, amount, finishAfter, cancelAfter, condition, destinationTag, sourceTag } =
+    options
 
   if (finishAfter === undefined && condition === undefined) {
     throw new Error(
@@ -163,9 +156,7 @@ export async function createEscrow(
   const result = await client.submitAndWait(tx, { wallet })
   const meta: any = result.result.meta
   if (meta?.TransactionResult !== 'tesSUCCESS') {
-    throw new Error(
-      `[ESCROW_FAILED] EscrowCreate failed: ${meta?.TransactionResult ?? 'unknown'}`,
-    )
+    throw new Error(`[ESCROW_FAILED] EscrowCreate failed: ${meta?.TransactionResult ?? 'unknown'}`)
   }
 
   const submitted: any = result.result.tx_json ?? result.result
@@ -256,9 +247,7 @@ export async function finishEscrow(
   const result = await client.submitAndWait(tx, { wallet })
   const meta: any = result.result.meta
   if (meta?.TransactionResult !== 'tesSUCCESS') {
-    throw new Error(
-      `[ESCROW_FAILED] EscrowFinish failed: ${meta?.TransactionResult ?? 'unknown'}`,
-    )
+    throw new Error(`[ESCROW_FAILED] EscrowFinish failed: ${meta?.TransactionResult ?? 'unknown'}`)
   }
   return { hash: result.result.hash }
 }
@@ -316,9 +305,7 @@ export async function cancelEscrow(
   const result = await client.submitAndWait(tx, { wallet })
   const meta: any = result.result.meta
   if (meta?.TransactionResult !== 'tesSUCCESS') {
-    throw new Error(
-      `[ESCROW_FAILED] EscrowCancel failed: ${meta?.TransactionResult ?? 'unknown'}`,
-    )
+    throw new Error(`[ESCROW_FAILED] EscrowCancel failed: ${meta?.TransactionResult ?? 'unknown'}`)
   }
   return { hash: result.result.hash }
 }

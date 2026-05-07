@@ -199,7 +199,10 @@ export type CreateEscrowOptions = {
    * IOU/MPT escrow requires the network to have the relevant amendments
    * (`TokenEscrow`) enabled.
    */
-  amount: string | { currency: string; issuer: string; value: string } | { mpt_issuance_id: string; value: string }
+  amount:
+    | string
+    | { currency: string; issuer: string; value: string }
+    | { mpt_issuance_id: string; value: string }
   /**
    * Earliest moment the escrow can be **finished**. Pass a `Date`, a
    * Unix timestamp in milliseconds, or an ISO-8601 string. The SDK
@@ -268,7 +271,10 @@ export type EscrowInfo = {
    * Amount locked. Same shape as on the original `EscrowCreate`:
    * drops string for XRP, IOU/MPT amount object otherwise.
    */
-  amount: string | { currency: string; issuer: string; value: string } | { mpt_issuance_id: string; value: string }
+  amount:
+    | string
+    | { currency: string; issuer: string; value: string }
+    | { mpt_issuance_id: string; value: string }
   /** When set, the escrow can only be finished at or after this Date. */
   finishAfter?: Date
   /** When set, the escrow can be cancelled at or after this Date. */

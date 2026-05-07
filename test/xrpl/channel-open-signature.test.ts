@@ -8,6 +8,7 @@ import type xrplLib from 'xrpl'
 // the mocked tx metadata.
 const FAKE_CHANNEL_ID = 'A'.repeat(64)
 const FAKE_TX_HASH = 'B'.repeat(64)
+const FAKE_CURRENT_LEDGER_INDEX = 1_000
 
 vi.mock('xrpl', async (importOriginal) => {
   const actual = (await importOriginal()) as typeof xrplLib
@@ -41,6 +42,9 @@ vi.mock('xrpl', async (importOriginal) => {
           },
         }
       }
+      if (params.command === 'ledger_current') {
+        return { result: { ledger_current_index: FAKE_CURRENT_LEDGER_INDEX } }
+      }
       return { result: {} }
     }
   }
@@ -58,8 +62,19 @@ function buildOpenCredential(args: {
   initialAmountDrops: string
   /** channelId the client signs against. Use undefined for the placeholder default. */
   signOverChannelId?: string
+  /** Override the tx's LastLedgerSequence. Defaults to a far-future value. */
+  lastLedgerSequence?: number
+  /** Override the challenge.expires field. Use undefined to omit it. */
+  challengeExpires?: string | undefined
 }) {
-  const { funder, recipient, initialAmountDrops, signOverChannelId } = args
+  const {
+    funder,
+    recipient,
+    initialAmountDrops,
+    signOverChannelId,
+    lastLedgerSequence,
+    challengeExpires,
+  } = args
   const placeholder = '0'.repeat(64)
   const channelIdToSign = signOverChannelId ?? placeholder
 
@@ -75,7 +90,7 @@ function buildOpenCredential(args: {
     Sequence: 1,
     SigningPubKey: funder.publicKey,
     Flags: 0,
-    LastLedgerSequence: 100_000_000,
+    LastLedgerSequence: lastLedgerSequence ?? 100_000_000,
   }
   const signed = funder.sign(tx as any)
 
@@ -86,7 +101,7 @@ function buildOpenCredential(args: {
     funder.privateKey,
   )
 
-  const challenge = {
+  const challenge: any = {
     id: `open-sig-${Math.random().toString(36).slice(2)}`,
     realm: 'test',
     method: 'xrpl' as const,
@@ -99,6 +114,9 @@ function buildOpenCredential(args: {
       recipient,
       methodDetails: { network: NETWORK, cumulativeAmount: '0' },
     },
+  }
+  if (challengeExpires !== undefined) {
+    challenge.expires = challengeExpires
   }
   const cred = Credential.from({
     challenge: challenge as any,
@@ -204,6 +222,92 @@ describe('channel open -- placeholder signature handling', () => {
     const state = (await store.get(`xrpl:channel:${FAKE_CHANNEL_ID}`)) as any
     expect(state.cumulative).toBe('500000')
     expect(state.signature).toMatch(/^[0-9A-F]+$/i)
+  })
+
+  it('rejects open when tx LastLedgerSequence outlives challenge.expires', async () => {
+    const funder = Wallet.generate()
+    const recipient = Wallet.generate().classicAddress
+
+    const store = Store.memory()
+    const method = serverChannel({
+      publicKey: funder.publicKey,
+      network: NETWORK,
+      store,
+      verifyChannelOnChain: false,
+    })
+
+    // Cap is current (1000) + ceil(60_000 / 4_000) = 1015, plus 4 ledgers
+    // of slack -> allowed up to 1019. A LastLedgerSequence of 100_000 is
+    // *far* past that, so the server must reject before submit.
+    const expires = new Date(Date.now() + 60_000).toISOString()
+    const { challenge, cred } = buildOpenCredential({
+      funder,
+      recipient,
+      initialAmountDrops: '0',
+      challengeExpires: expires,
+      lastLedgerSequence: 100_000,
+    })
+
+    await expect(
+      method.verify({ credential: cred as any, request: challenge.request }),
+    ).rejects.toThrow(/LastLedgerSequence .* exceeds the cap .* derived from challenge\.expires/)
+  })
+
+  it('rejects open when challenge has already expired', async () => {
+    const funder = Wallet.generate()
+    const recipient = Wallet.generate().classicAddress
+
+    const store = Store.memory()
+    const method = serverChannel({
+      publicKey: funder.publicKey,
+      network: NETWORK,
+      store,
+      // Disable the maxChallengeAge gate so this case isolates the LLS check.
+      maxChallengeAge: 0,
+      verifyChannelOnChain: false,
+    })
+
+    const expires = new Date(Date.now() - 1_000).toISOString()
+    const { challenge, cred } = buildOpenCredential({
+      funder,
+      recipient,
+      initialAmountDrops: '0',
+      challengeExpires: expires,
+    })
+
+    await expect(
+      method.verify({ credential: cred as any, request: challenge.request }),
+    ).rejects.toThrow(/leaves less than one ledger interval/)
+  })
+
+  it('accepts open when tx LastLedgerSequence is within the challenge window', async () => {
+    const funder = Wallet.generate()
+    const recipient = Wallet.generate().classicAddress
+
+    const store = Store.memory()
+    const method = serverChannel({
+      publicKey: funder.publicKey,
+      network: NETWORK,
+      store,
+      verifyChannelOnChain: false,
+    })
+
+    // Mock returns ledger_current_index = 1000. With expires 5 min from now,
+    // the cap is ~1075 + 4 slack = 1079. LLS 1050 fits comfortably.
+    const expires = new Date(Date.now() + 5 * 60_000).toISOString()
+    const { challenge, cred } = buildOpenCredential({
+      funder,
+      recipient,
+      initialAmountDrops: '0',
+      challengeExpires: expires,
+      lastLedgerSequence: 1_050,
+    })
+
+    const receipt = await method.verify({
+      credential: cred as any,
+      request: challenge.request,
+    })
+    expect(receipt.status).toBe('success')
   })
 
   // encode export sanity check -- if xrpl renames it the test file fails loudly.

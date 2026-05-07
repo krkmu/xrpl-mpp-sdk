@@ -199,9 +199,9 @@ describe('finishEscrow', () => {
     const client = mockClient({
       ledgerEntry: () => ({ result: { node: null } }),
     })
-    await expect(
-      finishEscrow(client, wallet, { owner: OWNER_ADDR, sequence: 1 }),
-    ).rejects.toThrow(/ESCROW_NOT_FOUND/)
+    await expect(finishEscrow(client, wallet, { owner: OWNER_ADDR, sequence: 1 })).rejects.toThrow(
+      /ESCROW_NOT_FOUND/,
+    )
   })
 
   it('throws ESCROW_NOT_READY when FinishAfter has not elapsed', async () => {
@@ -219,9 +219,9 @@ describe('finishEscrow', () => {
         },
       }),
     })
-    await expect(
-      finishEscrow(client, wallet, { owner: OWNER_ADDR, sequence: 1 }),
-    ).rejects.toThrow(/ESCROW_NOT_READY.*FinishAfter/)
+    await expect(finishEscrow(client, wallet, { owner: OWNER_ADDR, sequence: 1 })).rejects.toThrow(
+      /ESCROW_NOT_READY.*FinishAfter/,
+    )
   })
 
   it('throws ESCROW_INVALID_FULFILLMENT when condition required but not provided', async () => {
@@ -238,9 +238,9 @@ describe('finishEscrow', () => {
         },
       }),
     })
-    await expect(
-      finishEscrow(client, wallet, { owner: OWNER_ADDR, sequence: 1 }),
-    ).rejects.toThrow(/ESCROW_INVALID_FULFILLMENT.*condition.*fulfillment/)
+    await expect(finishEscrow(client, wallet, { owner: OWNER_ADDR, sequence: 1 })).rejects.toThrow(
+      /ESCROW_INVALID_FULFILLMENT.*condition.*fulfillment/,
+    )
   })
 
   it('throws ESCROW_INVALID_FULFILLMENT when provided condition does not match on-chain one', async () => {
@@ -333,9 +333,9 @@ describe('cancelEscrow', () => {
     const client = mockClient({
       ledgerEntry: () => ({ result: { node: null } }),
     })
-    await expect(
-      cancelEscrow(client, wallet, { owner: OWNER_ADDR, sequence: 1 }),
-    ).rejects.toThrow(/ESCROW_NOT_FOUND/)
+    await expect(cancelEscrow(client, wallet, { owner: OWNER_ADDR, sequence: 1 })).rejects.toThrow(
+      /ESCROW_NOT_FOUND/,
+    )
   })
 
   it('throws ESCROW_NOT_READY when escrow has no CancelAfter', async () => {
@@ -352,9 +352,9 @@ describe('cancelEscrow', () => {
         },
       }),
     })
-    await expect(
-      cancelEscrow(client, wallet, { owner: OWNER_ADDR, sequence: 1 }),
-    ).rejects.toThrow(/ESCROW_NOT_READY.*no CancelAfter.*never be cancelled/)
+    await expect(cancelEscrow(client, wallet, { owner: OWNER_ADDR, sequence: 1 })).rejects.toThrow(
+      /ESCROW_NOT_READY.*no CancelAfter.*never be cancelled/,
+    )
   })
 
   it('throws ESCROW_NOT_READY when CancelAfter has not elapsed', async () => {
@@ -371,9 +371,9 @@ describe('cancelEscrow', () => {
         },
       }),
     })
-    await expect(
-      cancelEscrow(client, wallet, { owner: OWNER_ADDR, sequence: 1 }),
-    ).rejects.toThrow(/ESCROW_NOT_READY.*CancelAfter/)
+    await expect(cancelEscrow(client, wallet, { owner: OWNER_ADDR, sequence: 1 })).rejects.toThrow(
+      /ESCROW_NOT_READY.*CancelAfter/,
+    )
   })
 
   it('submits EscrowCancel when CancelAfter has elapsed', async () => {
