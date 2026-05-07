@@ -143,8 +143,10 @@ export type CreateTokenOptions = {
    */
   requireAuthorization?: boolean
   /**
-   * Allow the issuer to lock the whole issuance or specific holders later
-   * via {@link Wallet.lockToken} / {@link Wallet.freeze}. Immutable.
+   * Allow the issuer to later lock the whole issuance or specific holders
+   * via raw `MPTokenIssuanceSet` transactions. Immutable. The MPP SDK does
+   * not expose a Wallet helper for locking -- mint with this flag only if
+   * you plan to administer the issuance via raw XRPL tooling.
    * @default false
    */
   allowLock?: boolean
@@ -154,7 +156,13 @@ export type CreateTokenOptions = {
    * @default true
    */
   allowTransfer?: boolean
-  /** Allow the issuer to claw the token back from holders. Immutable. @default false */
+  /**
+   * Allow the issuer to later claw the token back from holders via raw
+   * `Clawback` transactions. Immutable. The MPP SDK does not expose a
+   * Wallet helper for clawback -- mint with this flag only if you plan to
+   * administer the issuance via raw XRPL tooling.
+   * @default false
+   */
   allowClawback?: boolean
   /** Allow holders to escrow this token. Immutable. @default false */
   allowEscrow?: boolean

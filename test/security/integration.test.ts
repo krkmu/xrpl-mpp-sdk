@@ -1,12 +1,18 @@
 import { Store } from 'mppx'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { dropsToXrp, signPaymentChannelClaim, verifyPaymentChannelClaim, Wallet } from 'xrpl'
+import { dropsToXrp, verifyPaymentChannelClaim } from 'xrpl'
 import { invalidSignature, replayDetected, verificationFailed } from '../../sdk/src/errors.js'
+import { Wallet } from '../../sdk/src/utils/wallet.js'
 
 /**
  * Integration-level security tests that exercise real crypto operations
  * (signature verification, cumulative tracking) rather than just testing
  * error constructors in isolation.
+ *
+ * `verifyPaymentChannelClaim` is the only `xrpl` import we keep -- it's
+ * the on-the-wire verifier the SDK servers ultimately delegate to, so
+ * asserting against it directly proves what a vanilla XRPL node would
+ * conclude about a claim signed via our high-level Wallet API.
  */
 describe('Security Integration Tests', () => {
   const channelId = '0'.repeat(64)
@@ -21,22 +27,21 @@ describe('Security Integration Tests', () => {
       const correctWallet = Wallet.generate()
       const wrongWallet = Wallet.generate()
       const amountDrops = '1000000'
-      const amountXrp = dropsToXrp(amountDrops).toString()
 
-      // Sign with wrong key
-      const signature = signPaymentChannelClaim(channelId, amountXrp, wrongWallet.privateKey)
+      // Sign with wrong key via the SDK Wallet API.
+      const signature = wrongWallet.signChannelClaim(channelId, amountDrops)
 
-      // Verify with correct key -- should fail
+      // Verify with correct key -- should fail.
       const isValid = verifyPaymentChannelClaim(
         channelId,
-        amountXrp,
+        dropsToXrp(amountDrops).toString(),
         signature,
         correctWallet.publicKey,
       )
 
       expect(isValid).toBe(false)
 
-      // SDK should throw INVALID_SIGNATURE
+      // SDK should throw INVALID_SIGNATURE.
       if (!isValid) {
         const err = invalidSignature('Claim signature verification failed')
         expect(err.message).toContain('INVALID_SIGNATURE')
@@ -46,24 +51,28 @@ describe('Security Integration Tests', () => {
     it('claim with correct key -- passes verifyPaymentChannelClaim', () => {
       const wallet = Wallet.generate()
       const amountDrops = '1000000'
-      const amountXrp = dropsToXrp(amountDrops).toString()
 
-      const signature = signPaymentChannelClaim(channelId, amountXrp, wallet.privateKey)
+      const signature = wallet.signChannelClaim(channelId, amountDrops)
 
-      const isValid = verifyPaymentChannelClaim(channelId, amountXrp, signature, wallet.publicKey)
+      const isValid = verifyPaymentChannelClaim(
+        channelId,
+        dropsToXrp(amountDrops).toString(),
+        signature,
+        wallet.publicKey,
+      )
 
       expect(isValid).toBe(true)
     })
 
     it('claim with tampered amount -- rejected by verifyPaymentChannelClaim', () => {
       const wallet = Wallet.generate()
-      const realAmountXrp = dropsToXrp('1000000').toString()
+      const realAmountDrops = '1000000'
       const tamperedAmountXrp = dropsToXrp('2000000').toString()
 
-      // Sign for real amount
-      const signature = signPaymentChannelClaim(channelId, realAmountXrp, wallet.privateKey)
+      // Sign for real amount.
+      const signature = wallet.signChannelClaim(channelId, realAmountDrops)
 
-      // Verify with tampered amount -- should fail
+      // Verify with tampered amount -- should fail.
       const isValid = verifyPaymentChannelClaim(
         channelId,
         tamperedAmountXrp,
@@ -82,11 +91,7 @@ describe('Security Integration Tests', () => {
 
       // First claim: 100000 drops
       const cumulative1 = '100000'
-      const sig1 = signPaymentChannelClaim(
-        channelId,
-        dropsToXrp(cumulative1).toString(),
-        wallet.privateKey,
-      )
+      const sig1 = wallet.signChannelClaim(channelId, cumulative1)
 
       // Verify signature
       expect(
@@ -144,9 +149,14 @@ describe('Security Integration Tests', () => {
       const wallet = Wallet.generate('ed25519')
       expect(wallet.publicKey.startsWith('ED')).toBe(true)
 
-      const amountXrp = dropsToXrp('500000').toString()
-      const signature = signPaymentChannelClaim(channelId, amountXrp, wallet.privateKey)
-      const isValid = verifyPaymentChannelClaim(channelId, amountXrp, signature, wallet.publicKey)
+      const amountDrops = '500000'
+      const signature = wallet.signChannelClaim(channelId, amountDrops)
+      const isValid = verifyPaymentChannelClaim(
+        channelId,
+        dropsToXrp(amountDrops).toString(),
+        signature,
+        wallet.publicKey,
+      )
 
       expect(isValid).toBe(true)
     })
@@ -155,9 +165,14 @@ describe('Security Integration Tests', () => {
       const wallet = Wallet.generate('ecdsa-secp256k1')
       expect(wallet.publicKey.startsWith('ED')).toBe(false)
 
-      const amountXrp = dropsToXrp('500000').toString()
-      const signature = signPaymentChannelClaim(channelId, amountXrp, wallet.privateKey)
-      const isValid = verifyPaymentChannelClaim(channelId, amountXrp, signature, wallet.publicKey)
+      const amountDrops = '500000'
+      const signature = wallet.signChannelClaim(channelId, amountDrops)
+      const isValid = verifyPaymentChannelClaim(
+        channelId,
+        dropsToXrp(amountDrops).toString(),
+        signature,
+        wallet.publicKey,
+      )
 
       expect(isValid).toBe(true)
     })
@@ -166,20 +181,20 @@ describe('Security Integration Tests', () => {
       const ed25519Wallet = Wallet.generate('ed25519')
       const secp256k1Wallet = Wallet.generate('ecdsa-secp256k1')
 
-      const amountXrp = dropsToXrp('500000').toString()
-      const signature = signPaymentChannelClaim(channelId, amountXrp, ed25519Wallet.privateKey)
+      const amountDrops = '500000'
+      const signature = ed25519Wallet.signChannelClaim(channelId, amountDrops)
 
-      // Cross-curve verification should fail
+      // Cross-curve verification should fail.
       let isValid: boolean
       try {
         isValid = verifyPaymentChannelClaim(
           channelId,
-          amountXrp,
+          dropsToXrp(amountDrops).toString(),
           signature,
           secp256k1Wallet.publicKey,
         )
       } catch {
-        // xrpl.js may throw on cross-curve verification
+        // xrpl.js may throw on cross-curve verification.
         isValid = false
       }
 

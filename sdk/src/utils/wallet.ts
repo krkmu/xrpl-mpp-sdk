@@ -35,32 +35,25 @@ import { isMPT } from './currency.js'
 import { cancelEscrow, createEscrow, finishEscrow, getEscrow, listEscrows } from './escrow.js'
 import {
   authorizeMPTHolder,
-  clawbackMPT,
   createMPTIssuance,
-  destroyMPTIssuance,
   getMPTHolding,
   issueMPTPayment,
   listMPTHoldings,
   listMPTIssuances,
   removeMPTHolding,
-  setMPTHolderLock,
   setMPTHolding,
-  setMPTIssuanceLock,
 } from './mpt.js'
 import {
-  ASF_ALLOW_TRUSTLINE_CLAWBACK,
   ASF_ALLOW_TRUSTLINE_LOCKING,
   ASF_DEFAULT_RIPPLE,
   ASF_REQUIRE_AUTH,
   authorizeTrustline,
-  clawbackTokens,
   getTrustline,
   issuePayment,
   listTrustlines,
   removeTrustline,
   type SetTrustlineOptions,
   setAccountFlag,
-  setIssuerFreeze,
   setTrustline,
   type TrustlineInfo,
 } from './trustline.js'
@@ -358,13 +351,6 @@ export class Wallet {
     )
   }
 
-  /** Inverse of {@link Wallet.enableTransfers}. IOU only. */
-  async disableTransfers(options: NetworkOptions = {}): Promise<{ hash: string }> {
-    return this.#submit(options, (client) =>
-      setAccountFlag(client, this.#internal, ASF_DEFAULT_RIPPLE, false),
-    )
-  }
-
   /**
    * Toggle the `asfRequireAuth` flag for IOUs. When enabled, holders cannot
    * hold a balance of this wallet's IOUs until the wallet calls
@@ -382,20 +368,6 @@ export class Wallet {
   ): Promise<{ hash: string }> {
     return this.#submit(options, (client) =>
       setAccountFlag(client, this.#internal, ASF_REQUIRE_AUTH, value),
-    )
-  }
-
-  /**
-   * Permanently allow this wallet to claw back its own IOUs
-   * (`asfAllowTrustlineClawback`). Once set, this flag cannot be cleared.
-   *
-   * MPT note: clawback for an MPT is gated by the immutable `allowClawback`
-   * flag of the MPTokenIssuance. Pass `allowClawback: true` to
-   * {@link Wallet.createToken} instead.
-   */
-  async allowClawback(options: NetworkOptions = {}): Promise<{ hash: string }> {
-    return this.#submit(options, (client) =>
-      setAccountFlag(client, this.#internal, ASF_ALLOW_TRUSTLINE_CLAWBACK, true),
     )
   }
 
@@ -442,69 +414,6 @@ export class Wallet {
   }
 
   /**
-   * As issuer, freeze a specific holder. For an IOU this is a `TrustSet`
-   * carrying `tfSetFreeze`. For an MPT this is an `MPTokenIssuanceSet`
-   * carrying the `Holder` field and `tfMPTLock`.
-   *
-   * MPT precondition: the issuance must have been created with
-   * `allowLock: true`. Otherwise this throws `MPT_LOCK_NOT_ALLOWED` -- the
-   * flag is immutable so the only fix is to mint a new issuance.
-   */
-  async freeze(
-    holder: string,
-    token: Token,
-    options: NetworkOptions = {},
-  ): Promise<{ hash: string }> {
-    if (isMPT(token)) {
-      return this.#submit(options, (client) =>
-        setMPTHolderLock(client, this.#internal, holder, token, true),
-      )
-    }
-    return this.#submit(options, (client) =>
-      setIssuerFreeze(client, this.#internal, holder, token, true),
-    )
-  }
-
-  /** As issuer, unfreeze a holder previously frozen via {@link Wallet.freeze}. */
-  async unfreeze(
-    holder: string,
-    token: Token,
-    options: NetworkOptions = {},
-  ): Promise<{ hash: string }> {
-    if (isMPT(token)) {
-      return this.#submit(options, (client) =>
-        setMPTHolderLock(client, this.#internal, holder, token, false),
-      )
-    }
-    return this.#submit(options, (client) =>
-      setIssuerFreeze(client, this.#internal, holder, token, false),
-    )
-  }
-
-  /**
-   * As issuer, pull `amount` of the token back from `from`.
-   *
-   * IOU precondition: {@link Wallet.allowClawback} must have been called.
-   * MPT precondition: the issuance must have been created with
-   * `allowClawback: true`. Otherwise this throws `MPT_CLAWBACK_NOT_ALLOWED`.
-   */
-  async clawback(
-    from: string,
-    amount: string,
-    token: Token,
-    options: NetworkOptions = {},
-  ): Promise<{ hash: string }> {
-    if (isMPT(token)) {
-      return this.#submit(options, (client) =>
-        clawbackMPT(client, this.#internal, from, amount, token),
-      )
-    }
-    return this.#submit(options, (client) =>
-      clawbackTokens(client, this.#internal, from, amount, token),
-    )
-  }
-
-  /**
    * As issuer, credit `to` with `amount` of `token`. The recipient must have
    * already accepted the token via {@link Wallet.acceptToken} -- XRPL
    * requires the holder to consent before a balance can land on their
@@ -536,33 +445,11 @@ export class Wallet {
    * handle plus the submission hash.
    *
    * Most flags are **immutable** once the issuance is created -- pick
-   * `allowLock`, `allowClawback`, `allowTransfer`, `allowEscrow`,
-   * `allowTrade`, `requireAuthorization` carefully.
+   * `allowTransfer`, `allowEscrow`, `allowTrade`, `requireAuthorization`
+   * carefully.
    */
   async createToken(options: CreateTokenOptions & NetworkOptions = {}): Promise<CreateTokenResult> {
     return this.#submit(options, (client) => createMPTIssuance(client, this.#internal, options))
-  }
-
-  /**
-   * Destroy an MPT issuance owned by this wallet. Refuses if there is any
-   * outstanding supply -- claw back or burn first.
-   */
-  async destroyToken(mpt: MPToken, options: NetworkOptions = {}): Promise<{ hash: string }> {
-    return this.#submit(options, (client) => destroyMPTIssuance(client, this.#internal, mpt))
-  }
-
-  /**
-   * Lock the entire issuance: every holder is frozen at once until
-   * {@link Wallet.unlockToken}. Requires the issuance to have been created
-   * with `allowLock: true`.
-   */
-  async lockToken(mpt: MPToken, options: NetworkOptions = {}): Promise<{ hash: string }> {
-    return this.#submit(options, (client) => setMPTIssuanceLock(client, this.#internal, mpt, true))
-  }
-
-  /** Inverse of {@link Wallet.lockToken}. */
-  async unlockToken(mpt: MPToken, options: NetworkOptions = {}): Promise<{ hash: string }> {
-    return this.#submit(options, (client) => setMPTIssuanceLock(client, this.#internal, mpt, false))
   }
 
   /** List every MPT issuance this wallet has created. */

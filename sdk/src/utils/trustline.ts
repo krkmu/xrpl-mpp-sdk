@@ -27,19 +27,11 @@ const LSF_DEFAULT_RIPPLE = 0x00800000
 const TF_SET_F_AUTH = 0x00010000
 /** Holder marks this trustline non-rippling (recommended for plain holders). */
 const TF_SET_NO_RIPPLE = 0x00020000
-/** Holder clears the no-ripple bit. */
-const TF_CLEAR_NO_RIPPLE = 0x00040000
-/** Set freeze on this trustline. */
-const TF_SET_FREEZE = 0x00100000
-/** Clear freeze on this trustline. */
-const TF_CLEAR_FREEZE = 0x00200000
 
 // === AccountSet flag values (used in SetFlag / ClearFlag) ===
 
 export const ASF_REQUIRE_AUTH = 2
 export const ASF_DEFAULT_RIPPLE = 8
-/** Once set, cannot be cleared. */
-export const ASF_ALLOW_TRUSTLINE_CLAWBACK = 16
 /**
  * Required on the issuer for the `TokenEscrow` amendment to allow holders
  * to escrow IOUs of this issuer. Without it, an `EscrowCreate` carrying an
@@ -272,30 +264,6 @@ export async function listTrustlines(client: Client, account: string): Promise<T
   }
 }
 
-/** Toggle the no-ripple flag on a holder trustline. */
-export async function setTrustlineNoRipple(
-  client: Client,
-  wallet: XrplWallet,
-  currency: IssuedCurrency,
-  noRipple: boolean,
-): Promise<{ hash: string }> {
-  const existing = await readTrustline(client, wallet.classicAddress, currency)
-  if (!existing) {
-    throw new Error(
-      `[MISSING_TRUSTLINE] Cannot toggle no-ripple: no trustline for ${currency.currency} ` +
-        `from issuer ${currency.issuer} on account ${wallet.classicAddress}.`,
-    )
-  }
-  return submitTrustSetAdmin(client, wallet, {
-    LimitAmount: {
-      currency: currency.currency,
-      issuer: currency.issuer,
-      value: existing.limit,
-    },
-    Flags: noRipple ? TF_SET_NO_RIPPLE : TF_CLEAR_NO_RIPPLE,
-  })
-}
-
 // ---------------------------------------------------------------------------
 // Issuer operations
 // ---------------------------------------------------------------------------
@@ -324,64 +292,6 @@ export async function authorizeTrustline(
     },
     Flags: TF_SET_F_AUTH,
   })
-}
-
-/** Set or clear the freeze flag on the issuer side of a trustline. */
-export async function setIssuerFreeze(
-  client: Client,
-  issuer: XrplWallet,
-  holder: string,
-  currency: IssuedCurrency,
-  frozen: boolean,
-): Promise<{ hash: string }> {
-  if (currency.issuer !== issuer.classicAddress) {
-    throw new Error(
-      `[xrpl-mpp-sdk] setIssuerFreeze: wallet (${issuer.classicAddress}) does not match ` +
-        `currency issuer (${currency.issuer}).`,
-    )
-  }
-  return submitTrustSetAdmin(client, issuer, {
-    LimitAmount: {
-      currency: currency.currency,
-      issuer: holder,
-      value: '0',
-    },
-    Flags: frozen ? TF_SET_FREEZE : TF_CLEAR_FREEZE,
-  })
-}
-
-/**
- * Pull tokens back from a holder. Requires `asfAllowTrustlineClawback` set on
- * the issuer (one-way, see `setAccountFlag`).
- */
-export async function clawbackTokens(
-  client: Client,
-  issuer: XrplWallet,
-  from: string,
-  amount: string,
-  currency: IssuedCurrency,
-): Promise<{ hash: string }> {
-  if (currency.issuer !== issuer.classicAddress) {
-    throw new Error(
-      `[xrpl-mpp-sdk] clawbackTokens: wallet (${issuer.classicAddress}) does not match ` +
-        `currency issuer (${currency.issuer}).`,
-    )
-  }
-  const tx = {
-    TransactionType: 'Clawback' as const,
-    Account: issuer.classicAddress,
-    Amount: {
-      currency: currency.currency,
-      issuer: from,
-      value: amount,
-    },
-  }
-  const result = await client.submitAndWait(tx, { wallet: issuer })
-  const meta = result.result.meta as any
-  if (meta?.TransactionResult !== 'tesSUCCESS') {
-    throw new Error(`[CLAWBACK_FAILED] Clawback failed: ${meta?.TransactionResult ?? 'unknown'}`)
-  }
-  return { hash: result.result.hash }
 }
 
 /** Issuance Payment: issuer credits `to` with `amount` of their own IOU. */
@@ -420,9 +330,6 @@ export async function issuePayment(
 
 /**
  * Toggle an AccountRoot flag (asfDefaultRipple, asfRequireAuth, ...).
- *
- * `asfAllowTrustlineClawback` is irreversible per protocol -- passing
- * `enable: false` for that flag throws.
  */
 export async function setAccountFlag(
   client: Client,
@@ -430,11 +337,6 @@ export async function setAccountFlag(
   asfFlag: number,
   enable: boolean,
 ): Promise<{ hash: string }> {
-  if (asfFlag === ASF_ALLOW_TRUSTLINE_CLAWBACK && !enable) {
-    throw new Error(
-      '[xrpl-mpp-sdk] asfAllowTrustlineClawback cannot be cleared once set (XRPL protocol rule).',
-    )
-  }
   const tx: any = {
     TransactionType: 'AccountSet',
     Account: wallet.classicAddress,
@@ -566,7 +468,7 @@ async function readTrustline(
 
 /**
  * Submit a TrustSet whose payload is a `LimitAmount` + `Flags` admin pair.
- * Used for noRipple toggle, issuer auth, and freeze.
+ * Used for issuer-side authorize on a holder trustline.
  */
 async function submitTrustSetAdmin(
   client: Client,

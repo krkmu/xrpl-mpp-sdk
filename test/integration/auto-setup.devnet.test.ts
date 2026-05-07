@@ -1,7 +1,7 @@
 import { Credential, Store } from 'mppx'
 import { describe, expect, it } from 'vitest'
 import { charge as clientCharge } from '../../sdk/src/client/Charge.js'
-import { charge as serverCharge, prepareRecipient } from '../../sdk/src/server/Charge.js'
+import { prepareRecipient, charge as serverCharge } from '../../sdk/src/server/Charge.js'
 import { Wallet } from '../../sdk/src/utils/wallet.js'
 
 /**

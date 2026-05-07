@@ -6,7 +6,6 @@ _reference/
 !**/.env.example
 .DS_Store
 *.log
-coverage/
 CLAUDE.md
 /AUDIT.md
 /REVIEW.md

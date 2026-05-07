@@ -1,9 +1,9 @@
 import { Credential, Store } from 'mppx'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import type { Client, Wallet } from 'xrpl'
 import { charge as clientCharge } from '../../sdk/src/client/Charge.js'
 import { charge as serverCharge } from '../../sdk/src/server/Charge.js'
-import { connectDevnet, createFundedWallet, devnetSource } from './devnet-helpers.ts'
+import type { Wallet } from '../../sdk/src/utils/wallet.js'
+import { createFundedWallet, devnetSource } from './devnet-helpers.ts'
 
 /**
  * Real devnet charge end-to-end test. Funds two ephemeral wallets, builds a
@@ -16,20 +16,15 @@ import { connectDevnet, createFundedWallet, devnetSource } from './devnet-helper
  * descriptive error rather than silently skipping.
  */
 describe('integration: XRP charge (pull mode) on devnet', () => {
-  let client: Client
   let payer: Wallet
   let recipient: Wallet
 
   beforeAll(async () => {
-    client = await connectDevnet()
-    ;[payer, recipient] = await Promise.all([
-      createFundedWallet(client),
-      createFundedWallet(client),
-    ])
+    ;[payer, recipient] = await Promise.all([createFundedWallet(), createFundedWallet()])
   })
 
   afterAll(async () => {
-    await client?.disconnect()
+    // Wallet helpers manage their own short-lived clients; nothing to close.
   })
 
   it('client creates a Payment credential, server verifies and settles on-chain', async () => {
@@ -46,13 +41,13 @@ describe('integration: XRP charge (pull mode) on devnet', () => {
       request: {
         amount: amountDrops,
         currency: 'XRP',
-        recipient: recipient.classicAddress,
+        recipient: recipient.address,
         methodDetails: { network: 'devnet' as const },
       },
     }
 
     const clientMethod = clientCharge({
-      seed: payer.seed!,
+      wallet: payer,
       network: 'devnet',
       preflight: true,
     })
@@ -70,7 +65,7 @@ describe('integration: XRP charge (pull mode) on devnet', () => {
     expect(credential.source).toBe(devnetSource(payer))
 
     const serverMethod = serverCharge({
-      recipient: recipient.classicAddress,
+      recipient: recipient.address,
       network: 'devnet',
       store: Store.memory(),
     })

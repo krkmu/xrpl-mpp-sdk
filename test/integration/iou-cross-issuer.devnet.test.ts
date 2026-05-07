@@ -1,8 +1,9 @@
 import { Credential, Store } from 'mppx'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import type { Client, Wallet } from 'xrpl'
+import type { Client } from 'xrpl'
 import { charge as clientCharge } from '../../sdk/src/client/Charge.js'
 import { charge as serverCharge } from '../../sdk/src/server/Charge.js'
+import type { Wallet } from '../../sdk/src/utils/wallet.js'
 import { connectDevnet, createFundedWallet } from './devnet-helpers.ts'
 
 /**
@@ -24,6 +25,10 @@ import { connectDevnet, createFundedWallet } from './devnet-helpers.ts'
  *   5. Recipient is credited with the requested USD.B amount.
  */
 describe('integration: cross-issuer IOU payment on devnet', () => {
+  // Long-lived client kept for the orderbook step (`OfferCreate`) and the
+  // closing balance probe via `account_lines`. Everything trustline / payment
+  // -related goes through the SDK Wallet API; only DEX primitives still need
+  // raw xrpl access because the SDK does not expose them.
   let client: Client
   let issuerA: Wallet
   let issuerB: Wallet
@@ -31,56 +36,9 @@ describe('integration: cross-issuer IOU payment on devnet', () => {
   let sender: Wallet
   let recipient: Wallet
 
-  // Helper: enable DefaultRipple on an issuer.
-  async function enableDefaultRipple(wallet: Wallet) {
-    const tx = {
-      TransactionType: 'AccountSet' as const,
-      Account: wallet.classicAddress,
-      SetFlag: 8, // asfDefaultRipple
-    }
-    const r = await client.submitAndWait(tx, { wallet })
-    const meta = r.result.meta as any
-    if (meta?.TransactionResult !== 'tesSUCCESS') {
-      throw new Error(`AccountSet failed: ${meta?.TransactionResult}`)
-    }
-  }
-
-  // Helper: create a trustline.
-  async function trustSet(holder: Wallet, currency: string, issuer: string, limit: string) {
-    const tx = {
-      TransactionType: 'TrustSet' as const,
-      Account: holder.classicAddress,
-      LimitAmount: { currency, issuer, value: limit },
-    }
-    const r = await client.submitAndWait(tx, { wallet: holder })
-    const meta = r.result.meta as any
-    if (meta?.TransactionResult !== 'tesSUCCESS') {
-      throw new Error(`TrustSet failed: ${meta?.TransactionResult}`)
-    }
-  }
-
-  // Helper: send IOU from `from` to `to`.
-  async function sendIou(
-    from: Wallet,
-    to: string,
-    currency: string,
-    issuer: string,
-    value: string,
-  ) {
-    const tx = {
-      TransactionType: 'Payment' as const,
-      Account: from.classicAddress,
-      Destination: to,
-      Amount: { currency, issuer, value },
-    }
-    const r = await client.submitAndWait(tx, { wallet: from })
-    const meta = r.result.meta as any
-    if (meta?.TransactionResult !== 'tesSUCCESS') {
-      throw new Error(`Payment failed: ${meta?.TransactionResult}`)
-    }
-  }
-
-  // Helper: post an OfferCreate from market maker bridging USD.A <-> USD.B
+  // Helper: post an OfferCreate from market maker bridging USD.A <-> USD.B.
+  // OfferCreate / DEX primitives are the one piece the SDK does not abstract,
+  // so this single helper still has to drop down to raw xrpl.
   async function placeBridgeOffer(
     maker: Wallet,
     takerGets: { currency: string; issuer: string; value: string },
@@ -88,11 +46,11 @@ describe('integration: cross-issuer IOU payment on devnet', () => {
   ) {
     const tx = {
       TransactionType: 'OfferCreate' as const,
-      Account: maker.classicAddress,
+      Account: maker.address,
       TakerGets: takerGets,
       TakerPays: takerPays,
     }
-    const r = await client.submitAndWait(tx, { wallet: maker })
+    const r = await client.submitAndWait(tx, { wallet: maker._xrplWallet })
     const meta = r.result.meta as any
     if (meta?.TransactionResult !== 'tesSUCCESS') {
       throw new Error(`OfferCreate failed: ${meta?.TransactionResult}`)
@@ -102,47 +60,49 @@ describe('integration: cross-issuer IOU payment on devnet', () => {
   beforeAll(async () => {
     client = await connectDevnet()
     ;[issuerA, issuerB, mm, sender, recipient] = await Promise.all([
-      createFundedWallet(client),
-      createFundedWallet(client),
-      createFundedWallet(client),
-      createFundedWallet(client),
-      createFundedWallet(client),
+      createFundedWallet(),
+      createFundedWallet(),
+      createFundedWallet(),
+      createFundedWallet(),
+      createFundedWallet(),
     ])
 
-    // Issuers need DefaultRipple so their trustlines route.
-    await enableDefaultRipple(issuerA)
-    await enableDefaultRipple(issuerB)
+    const usdA = { currency: 'USD', issuer: issuerA.address }
+    const usdB = { currency: 'USD', issuer: issuerB.address }
 
-    // Market maker also needs DefaultRipple so its USD.A and USD.B trustlines
-    // can serve as a bridge for the orderbook crossing. Without this, MM's
-    // trustlines have no_ripple set on the MM side and the cross-issuer path
-    // dries on submit (tecPATH_DRY).
-    await enableDefaultRipple(mm)
+    // Issuers need DefaultRipple so their trustlines route. Market maker
+    // also needs DefaultRipple so its USD.A and USD.B trustlines can serve
+    // as a bridge for the orderbook crossing -- without it the cross-issuer
+    // path dries on submit (tecPATH_DRY).
+    await Promise.all([
+      issuerA.enableTransfers({ network: 'devnet' }),
+      issuerB.enableTransfers({ network: 'devnet' }),
+      mm.enableTransfers({ network: 'devnet' }),
+    ])
 
-    // Market maker trusts both issuers up to 10_000.
-    await trustSet(mm, 'USD', issuerA.classicAddress, '10000')
-    await trustSet(mm, 'USD', issuerB.classicAddress, '10000')
-
-    // Recipient only trusts issuerB.
-    await trustSet(recipient, 'USD', issuerB.classicAddress, '10000')
-
-    // Sender only trusts issuerA.
-    await trustSet(sender, 'USD', issuerA.classicAddress, '10000')
+    // Trustlines: MM trusts both issuers, sender trusts USD.A only,
+    // recipient trusts USD.B only.
+    await Promise.all([
+      mm.acceptToken(usdA, { network: 'devnet', limit: '10000' }),
+      mm.acceptToken(usdB, { network: 'devnet', limit: '10000' }),
+      sender.acceptToken(usdA, { network: 'devnet', limit: '10000' }),
+      recipient.acceptToken(usdB, { network: 'devnet', limit: '10000' }),
+    ])
 
     // Issuers fund the market maker on each side so it can settle the bridge.
-    // 5000 USD.A and 5000 USD.B to mm.
-    await sendIou(issuerA, mm.classicAddress, 'USD', issuerA.classicAddress, '5000')
-    await sendIou(issuerB, mm.classicAddress, 'USD', issuerB.classicAddress, '5000')
-
     // Sender starts with 200 USD.A.
-    await sendIou(issuerA, sender.classicAddress, 'USD', issuerA.classicAddress, '200')
+    await Promise.all([
+      issuerA.issue(mm.address, '5000', usdA, { network: 'devnet' }),
+      issuerB.issue(mm.address, '5000', usdB, { network: 'devnet' }),
+      issuerA.issue(sender.address, '200', usdA, { network: 'devnet' }),
+    ])
 
     // Market maker posts an offer: takes USD.A, pays USD.B. Parity (1:1) for
     // the test, so realised slippage stays well within the default 50 bps.
     await placeBridgeOffer(
       mm,
-      { currency: 'USD', issuer: issuerB.classicAddress, value: '500' }, // taker gets USD.B
-      { currency: 'USD', issuer: issuerA.classicAddress, value: '500' }, // taker pays USD.A
+      { currency: 'USD', issuer: issuerB.address, value: '500' }, // taker gets USD.B
+      { currency: 'USD', issuer: issuerA.address, value: '500' }, // taker pays USD.A
     )
   }, 360_000)
 
@@ -159,15 +119,15 @@ describe('integration: cross-issuer IOU payment on devnet', () => {
       createdAt: new Date().toISOString(),
       request: {
         amount: '10', // 10 USD.B delivered to recipient
-        currency: JSON.stringify({ currency: 'USD', issuer: issuerB.classicAddress }),
-        recipient: recipient.classicAddress,
+        currency: JSON.stringify({ currency: 'USD', issuer: issuerB.address }),
+        recipient: recipient.address,
         methodDetails: { network: 'devnet' as const },
       },
     }
 
     const sourceAmountSnapshot: { value?: string; currency?: string } = {}
     const cm = clientCharge({
-      seed: sender.seed!,
+      wallet: sender,
       network: 'devnet',
       preflight: true,
       slippageBps: 50,
@@ -186,8 +146,8 @@ describe('integration: cross-issuer IOU payment on devnet', () => {
     const cred = Credential.deserialize(credentialBlob)
 
     const sm = serverCharge({
-      recipient: recipient.classicAddress,
-      currency: { currency: 'USD', issuer: issuerB.classicAddress },
+      recipient: recipient.address,
+      currency: { currency: 'USD', issuer: issuerB.address },
       network: 'devnet',
       store: Store.memory(),
     })
@@ -203,13 +163,11 @@ describe('integration: cross-issuer IOU payment on devnet', () => {
     expect(sourceAmountSnapshot.currency).toBe('USD')
 
     // Recipient now holds at least 10 USD.B from issuerB.
-    const lines = await client.request({
-      command: 'account_lines',
-      account: recipient.classicAddress,
-      peer: issuerB.classicAddress,
-    })
-    const usdLine = (lines.result.lines as any[]).find((l) => l.currency === 'USD')
-    expect(usdLine).toBeDefined()
-    expect(Number(usdLine.balance)).toBeGreaterThanOrEqual(10)
+    const usdLine = await recipient.holdsToken(
+      { currency: 'USD', issuer: issuerB.address },
+      { network: 'devnet' },
+    )
+    expect(usdLine).not.toBeNull()
+    expect(Number(usdLine?.balance ?? '0')).toBeGreaterThanOrEqual(10)
   }, 360_000)
 })

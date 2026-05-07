@@ -1,9 +1,9 @@
 import { Credential, Store } from 'mppx'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import type { Client, Wallet } from 'xrpl'
 import { charge as clientCharge } from '../../sdk/src/client/Charge.js'
 import { charge as serverCharge } from '../../sdk/src/server/Charge.js'
-import { connectDevnet, createFundedWallet, devnetSource } from './devnet-helpers.ts'
+import type { Wallet } from '../../sdk/src/utils/wallet.js'
+import { createFundedWallet, devnetSource } from './devnet-helpers.ts'
 
 /**
  * Push-mode end-to-end on devnet.
@@ -28,20 +28,15 @@ import { connectDevnet, createFundedWallet, devnetSource } from './devnet-helper
  * tests.
  */
 describe('integration: XRP charge (push mode) on devnet', () => {
-  let client: Client
   let payer: Wallet
   let recipient: Wallet
 
   beforeAll(async () => {
-    client = await connectDevnet()
-    ;[payer, recipient] = await Promise.all([
-      createFundedWallet(client),
-      createFundedWallet(client),
-    ])
+    ;[payer, recipient] = await Promise.all([createFundedWallet(), createFundedWallet()])
   })
 
   afterAll(async () => {
-    await client?.disconnect()
+    // Wallet helpers manage their own short-lived clients; nothing to close.
   })
 
   it('client signs+submits, server looks up the on-chain tx and emits a receipt', async () => {
@@ -56,13 +51,13 @@ describe('integration: XRP charge (push mode) on devnet', () => {
       request: {
         amount: amountDrops,
         currency: 'XRP',
-        recipient: recipient.classicAddress,
+        recipient: recipient.address,
         methodDetails: { network: 'devnet' as const },
       },
     }
 
     const clientMethod = clientCharge({
-      seed: payer.seed!,
+      wallet: payer,
       mode: 'push',
       network: 'devnet',
       preflight: true,
@@ -88,7 +83,7 @@ describe('integration: XRP charge (push mode) on devnet', () => {
     // Shared store so we can also exercise replay protection below.
     const store = Store.memory()
     const serverMethod = serverCharge({
-      recipient: recipient.classicAddress,
+      recipient: recipient.address,
       network: 'devnet',
       store,
     })

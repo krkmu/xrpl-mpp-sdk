@@ -12,12 +12,9 @@
  *
  * MPT-specific terminology mapping (XRPL -> SDK intent):
  * - `MPTokenIssuanceCreate` -> `createToken`
- * - `MPTokenIssuanceDestroy` -> `destroyToken`
  * - `MPTokenAuthorize` (holder, no flags) -> `acceptToken`
  * - `MPTokenAuthorize` (holder, tfMPTUnauthorize) -> `refuseToken`
  * - `MPTokenAuthorize` (issuer, with `Holder`) -> `authorize`
- * - `MPTokenIssuanceSet` (with `Holder`) -> `freeze` / `unfreeze`
- * - `MPTokenIssuanceSet` (no `Holder`) -> `lockToken` / `unlockToken`
  */
 
 import type { Client, Wallet as XrplWallet } from 'xrpl'
@@ -44,10 +41,6 @@ const TF_MPT_CAN_CLAWBACK = 0x00000040
 
 /** MPTokenAuthorize transaction flags. */
 const TF_MPT_UNAUTHORIZE = 0x00000001
-
-/** MPTokenIssuanceSet transaction flags. */
-const TF_MPT_LOCK = 0x00000001
-const TF_MPT_UNLOCK = 0x00000002
 
 /** Ledger flags on the MPTokenIssuance entry. */
 const LSF_ISSUANCE_LOCKED = 0x00000001
@@ -274,36 +267,6 @@ export async function createMPTIssuance(
   return { mpt: { mpt_issuance_id: mptIssuanceId }, hash }
 }
 
-/** Submit `MPTokenIssuanceDestroy`. Refuses if outstanding supply is non-zero. */
-export async function destroyMPTIssuance(
-  client: Client,
-  issuer: XrplWallet,
-  mpt: MPToken,
-): Promise<{ hash: string }> {
-  const issuance = await readIssuance(client, mpt.mpt_issuance_id)
-  if (!issuance) {
-    throw new Error(
-      `[MPT_ISSUANCE_NOT_FOUND] MPTokenIssuance ${mpt.mpt_issuance_id} does not exist.`,
-    )
-  }
-  assertIsIssuer(issuer, issuance.Issuer, 'destroyToken')
-
-  if (issuance.OutstandingAmount && issuance.OutstandingAmount !== '0') {
-    throw new Error(
-      `[MPT_HAS_BALANCE] MPTokenIssuance ${mpt.mpt_issuance_id} still has ` +
-        `${issuance.OutstandingAmount} units in circulation. Claw back or burn ` +
-        'them before destroying the issuance.',
-    )
-  }
-
-  const tx: any = {
-    TransactionType: 'MPTokenIssuanceDestroy',
-    Account: issuer.classicAddress,
-    MPTokenIssuanceID: mpt.mpt_issuance_id,
-  }
-  return { hash: await submitOrThrow(client, issuer, tx, 'SUBMISSION_FAILED') }
-}
-
 /** List every MPT issuance this account has created (issuer side). */
 export async function listMPTIssuances(client: Client, issuer: string): Promise<MPTIssuanceInfo[]> {
   const objects = await accountObjects(client, issuer, 'mpt_issuance')
@@ -334,69 +297,6 @@ export async function authorizeMPTHolder(
   return { hash: await submitOrThrow(client, issuer, tx, 'MPT_AUTHORIZE_FAILED') }
 }
 
-/** Set or clear the per-holder lock flag (issuer-side freeze of one holder). */
-export async function setMPTHolderLock(
-  client: Client,
-  issuer: XrplWallet,
-  holder: string,
-  mpt: MPToken,
-  locked: boolean,
-): Promise<{ hash: string }> {
-  const issuance = await readIssuance(client, mpt.mpt_issuance_id)
-  if (!issuance) {
-    throw new Error(
-      `[MPT_ISSUANCE_NOT_FOUND] MPTokenIssuance ${mpt.mpt_issuance_id} does not exist.`,
-    )
-  }
-  assertIsIssuer(issuer, issuance.Issuer, locked ? 'freeze' : 'unfreeze')
-  if ((issuance.Flags & LSF_ISSUANCE_CAN_LOCK) === 0) {
-    throw new Error(
-      `[MPT_LOCK_NOT_ALLOWED] MPTokenIssuance ${mpt.mpt_issuance_id} was not created ` +
-        'with `allowLock: true` -- locking holders is permanently disabled. ' +
-        'Mint a new issuance with `allowLock: true` if you need this capability.',
-    )
-  }
-
-  const tx: any = {
-    TransactionType: 'MPTokenIssuanceSet',
-    Account: issuer.classicAddress,
-    MPTokenIssuanceID: mpt.mpt_issuance_id,
-    Holder: holder,
-    Flags: locked ? TF_MPT_LOCK : TF_MPT_UNLOCK,
-  }
-  return { hash: await submitOrThrow(client, issuer, tx, 'SUBMISSION_FAILED') }
-}
-
-/** Set or clear the global lock flag on the issuance (freeze every holder at once). */
-export async function setMPTIssuanceLock(
-  client: Client,
-  issuer: XrplWallet,
-  mpt: MPToken,
-  locked: boolean,
-): Promise<{ hash: string }> {
-  const issuance = await readIssuance(client, mpt.mpt_issuance_id)
-  if (!issuance) {
-    throw new Error(
-      `[MPT_ISSUANCE_NOT_FOUND] MPTokenIssuance ${mpt.mpt_issuance_id} does not exist.`,
-    )
-  }
-  assertIsIssuer(issuer, issuance.Issuer, locked ? 'lockToken' : 'unlockToken')
-  if ((issuance.Flags & LSF_ISSUANCE_CAN_LOCK) === 0) {
-    throw new Error(
-      `[MPT_LOCK_NOT_ALLOWED] MPTokenIssuance ${mpt.mpt_issuance_id} was not created ` +
-        'with `allowLock: true` -- locking is permanently disabled.',
-    )
-  }
-
-  const tx: any = {
-    TransactionType: 'MPTokenIssuanceSet',
-    Account: issuer.classicAddress,
-    MPTokenIssuanceID: mpt.mpt_issuance_id,
-    Flags: locked ? TF_MPT_LOCK : TF_MPT_UNLOCK,
-  }
-  return { hash: await submitOrThrow(client, issuer, tx, 'SUBMISSION_FAILED') }
-}
-
 /** Issuer Payment crediting `to` with `amount` MPT units. */
 export async function issueMPTPayment(
   client: Client,
@@ -420,38 +320,6 @@ export async function issueMPTPayment(
     Amount: { mpt_issuance_id: mpt.mpt_issuance_id, value: amount },
   }
   return { hash: await submitOrThrow(client, issuer, tx, 'SUBMISSION_FAILED') }
-}
-
-/** Issuer-side claw back of MPT units from a holder. */
-export async function clawbackMPT(
-  client: Client,
-  issuer: XrplWallet,
-  from: string,
-  amount: string,
-  mpt: MPToken,
-): Promise<{ hash: string }> {
-  const issuance = await readIssuance(client, mpt.mpt_issuance_id)
-  if (!issuance) {
-    throw new Error(
-      `[MPT_ISSUANCE_NOT_FOUND] MPTokenIssuance ${mpt.mpt_issuance_id} does not exist.`,
-    )
-  }
-  assertIsIssuer(issuer, issuance.Issuer, 'clawback')
-  if ((issuance.Flags & LSF_ISSUANCE_CAN_CLAWBACK) === 0) {
-    throw new Error(
-      `[MPT_CLAWBACK_NOT_ALLOWED] MPTokenIssuance ${mpt.mpt_issuance_id} was not created ` +
-        'with `allowClawback: true` -- claw back is permanently disabled. ' +
-        'Mint a new issuance with `allowClawback: true` if you need this capability.',
-    )
-  }
-
-  const tx: any = {
-    TransactionType: 'Clawback',
-    Account: issuer.classicAddress,
-    Holder: from,
-    Amount: { mpt_issuance_id: mpt.mpt_issuance_id, value: amount },
-  }
-  return { hash: await submitOrThrow(client, issuer, tx, 'CLAWBACK_FAILED') }
 }
 
 // ---------------------------------------------------------------------------

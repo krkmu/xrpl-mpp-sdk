@@ -1,9 +1,9 @@
 import { Credential, Store } from 'mppx'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { type Client, dropsToXrp, signPaymentChannelClaim, type Wallet } from 'xrpl'
 import { openChannel } from '../../sdk/src/channel/client/Channel.js'
 import { close, channel as serverChannel } from '../../sdk/src/channel/server/Channel.js'
-import { connectDevnet, createFundedWallet, devnetSource } from './devnet-helpers.ts'
+import type { Wallet } from '../../sdk/src/utils/wallet.js'
+import { createFundedWallet, devnetSource } from './devnet-helpers.ts'
 
 /**
  * Channel lifecycle on devnet:
@@ -15,26 +15,21 @@ import { connectDevnet, createFundedWallet, devnetSource } from './devnet-helper
  *    latest cumulative amount + signature.
  */
 describe('integration: PayChannel lifecycle on devnet', () => {
-  let client: Client
   let funder: Wallet
   let receiver: Wallet
 
   beforeAll(async () => {
-    client = await connectDevnet()
-    ;[funder, receiver] = await Promise.all([
-      createFundedWallet(client),
-      createFundedWallet(client),
-    ])
+    ;[funder, receiver] = await Promise.all([createFundedWallet(), createFundedWallet()])
   })
 
   afterAll(async () => {
-    await client?.disconnect()
+    // Wallet helpers manage their own short-lived clients; nothing to close.
   })
 
   it('opens channel, accepts 3 vouchers, closes with cumulative on-chain', async () => {
     const { channelId, txHash: openTx } = await openChannel({
-      seed: funder.seed!,
-      destination: receiver.classicAddress,
+      wallet: funder,
+      destination: receiver.address,
       amount: '5000000',
       settleDelay: 60,
       network: 'devnet',
@@ -53,7 +48,7 @@ describe('integration: PayChannel lifecycle on devnet', () => {
     let prev = '0'
     let lastSig = ''
     for (const cum of ['100000', '200000', '300000']) {
-      const sig = signPaymentChannelClaim(channelId, dropsToXrp(cum).toString(), funder.privateKey)
+      const sig = funder.signChannelClaim(channelId, cum)
       const challenge = {
         id: `int-ch-${cum}-${Date.now()}`,
         realm: 'integration-test',
@@ -63,7 +58,7 @@ describe('integration: PayChannel lifecycle on devnet', () => {
         request: {
           amount: (BigInt(cum) - BigInt(prev)).toString(),
           channelId,
-          recipient: receiver.classicAddress,
+          recipient: receiver.address,
           methodDetails: { network: 'devnet' as const, cumulativeAmount: prev },
         },
       }
@@ -83,7 +78,7 @@ describe('integration: PayChannel lifecycle on devnet', () => {
 
     // Receiver closes the channel by redeeming the latest cumulative claim.
     const { txHash: closeTx } = await close({
-      seed: receiver.seed!,
+      wallet: receiver,
       channelId,
       amount: prev,
       signature: lastSig,

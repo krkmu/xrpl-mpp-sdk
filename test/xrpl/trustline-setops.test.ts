@@ -7,16 +7,13 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Wallet as XrplWallet } from 'xrpl'
 import {
-  ASF_ALLOW_TRUSTLINE_CLAWBACK,
   ASF_DEFAULT_RIPPLE,
   authorizeTrustline,
-  clawbackTokens,
   getTrustline,
   issuePayment,
   listTrustlines,
   removeTrustline,
   setAccountFlag,
-  setIssuerFreeze,
   setTrustline,
 } from '../../sdk/src/utils/trustline.js'
 
@@ -28,8 +25,6 @@ const LSF_DEFAULT_RIPPLE = 0x00800000
 const LSF_REQUIRE_AUTH = 0x00040000
 
 const TF_SET_F_AUTH = 0x00010000
-const TF_SET_FREEZE = 0x00100000
-const TF_CLEAR_FREEZE = 0x00200000
 
 function mockClient(handlers: {
   accountLines?: (params: any) => any
@@ -316,10 +311,10 @@ describe('read helpers', () => {
 })
 
 // ============================================================================
-// authorizeTrustline / setIssuerFreeze
+// authorizeTrustline (issuer-side, tfSetfAuth)
 // ============================================================================
 
-describe('issuer-side admin TrustSets', () => {
+describe('issuer-side authorize TrustSet', () => {
   it('authorizeTrustline submits a TrustSet with tfSetfAuth on the issuer side', async () => {
     const issuer = XrplWallet.fromSeed('sEd7rBGm5kxzauRTAV2hbsNz7N45X91') // arbitrary seed
     const currency = { currency: 'USD', issuer: issuer.classicAddress }
@@ -341,26 +336,10 @@ describe('issuer-side admin TrustSets', () => {
     )
     expect(client.submitAndWait).not.toHaveBeenCalled()
   })
-
-  it('setIssuerFreeze with frozen=true sets tfSetFreeze', async () => {
-    const issuer = XrplWallet.fromSeed('sEd7rBGm5kxzauRTAV2hbsNz7N45X91')
-    const currency = { currency: 'USD', issuer: issuer.classicAddress }
-    const client = mockClient({})
-    await setIssuerFreeze(client, issuer, HOLDER, currency, true)
-    expect(client.submitAndWait.mock.calls[0][0].Flags).toBe(TF_SET_FREEZE)
-  })
-
-  it('setIssuerFreeze with frozen=false sets tfClearFreeze', async () => {
-    const issuer = XrplWallet.fromSeed('sEd7rBGm5kxzauRTAV2hbsNz7N45X91')
-    const currency = { currency: 'USD', issuer: issuer.classicAddress }
-    const client = mockClient({})
-    await setIssuerFreeze(client, issuer, HOLDER, currency, false)
-    expect(client.submitAndWait.mock.calls[0][0].Flags).toBe(TF_CLEAR_FREEZE)
-  })
 })
 
 // ============================================================================
-// clawbackTokens / issuePayment
+// issuePayment
 // ============================================================================
 
 describe('issuer-side payments', () => {
@@ -380,16 +359,6 @@ describe('issuer-side payments', () => {
     })
   })
 
-  it('clawbackTokens builds a Clawback with Amount.issuer = holder', async () => {
-    const issuer = XrplWallet.fromSeed('sEd7rBGm5kxzauRTAV2hbsNz7N45X91')
-    const currency = { currency: 'USD', issuer: issuer.classicAddress }
-    const client = mockClient({})
-    await clawbackTokens(client, issuer, HOLDER, '12.5', currency)
-    const tx = client.submitAndWait.mock.calls[0][0]
-    expect(tx.TransactionType).toBe('Clawback')
-    expect(tx.Amount).toEqual({ currency: 'USD', issuer: HOLDER, value: '12.5' })
-  })
-
   it('issuePayment rejects when the wallet is not the currency issuer', async () => {
     const wallet = XrplWallet.generate()
     const client = mockClient({})
@@ -400,7 +369,7 @@ describe('issuer-side payments', () => {
 })
 
 // ============================================================================
-// setAccountFlag (DefaultRipple, AllowClawback, ...)
+// setAccountFlag (DefaultRipple)
 // ============================================================================
 
 describe('setAccountFlag', () => {
@@ -421,14 +390,5 @@ describe('setAccountFlag', () => {
     const tx = client.submitAndWait.mock.calls[0][0]
     expect(tx.ClearFlag).toBe(ASF_DEFAULT_RIPPLE)
     expect(tx.SetFlag).toBeUndefined()
-  })
-
-  it('refuses to clear the irreversible asfAllowTrustlineClawback flag', async () => {
-    const wallet = XrplWallet.generate()
-    const client = mockClient({})
-    await expect(
-      setAccountFlag(client, wallet, ASF_ALLOW_TRUSTLINE_CLAWBACK, false),
-    ).rejects.toThrow(/cannot be cleared/)
-    expect(client.submitAndWait).not.toHaveBeenCalled()
   })
 })

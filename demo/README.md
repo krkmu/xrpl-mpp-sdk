@@ -16,12 +16,14 @@ All demos run on XRPL testnet. Zero environment variables -- every script genera
 | `xrp-server.ts` | Two-terminal | Server: 402-gated resource, charges 1 XRP |
 | `xrp-client.ts` | Two-terminal | Client: pays 1 XRP, prints receipt + explorer link |
 | `iou-charge.ts` | All-in-one | Issuer enables transfers, server + client accept the token, issuer credits client, charge runs |
+| `iou-allowlist.ts` | All-in-one | Issuer flips RequireAuth, holders accept (`pending_authorization`), issuer authorizes, charge runs |
 | `iou-cross-issuer.ts` | All-in-one | 5 wallets, USD.A <-> USD.B bridge via market maker, cross-issuer path-finding |
 | `mpt-charge.ts` | All-in-one | Creates MPT issuance, authorizes holders, issues tokens, runs charge |
 | `channel-server.ts` | Two-terminal | Server: verifies off-chain PayChannel claims (0.1 XRP each) |
 | `channel-client.ts` | Two-terminal | Client: opens channel, 5 paid requests, closes channel |
+| `channel-fund.ts` | All-in-one | Open tiny channel, exhaust it, top up via `PaymentChannelFund`, recover, close |
 | `escrow-lifecycle.ts` | All-in-one | 3 escrow scenarios: time-locked, crypto-condition, cancellable |
-| `error-showcase.ts` | All-in-one | 13 error cases with fail-fix-validate pattern |
+| `error-showcase.ts` | All-in-one | 16 error cases with fail-fix-validate pattern |
 
 ## XRP Charge
 
@@ -43,6 +45,27 @@ npx tsx demo/iou-charge.ts
 
 Funds 3 wallets (issuer, server, client). Issuer enables transfers (`enableTransfers`). Server and client accept USD (`acceptToken`). Issuer credits client with 1000 USD (`issue`). Starts MPP server on :3001. Client pays 10 USD. Zero `xrpl` import in the demo -- everything goes through the Wallet API.
 
+## IOU allowlist (RequireAuth)
+
+```bash
+npx tsx demo/iou-allowlist.ts
+```
+
+Funds 3 wallets and walks the issuer-controlled allowlist flow end-to-end:
+
+1. Issuer enables `DefaultRipple` and `RequireAuth` (must precede any
+   trustline).
+2. Server and client `acceptToken(USD)` -- both lines land at
+   `pending_authorization`. The line exists but cannot hold a balance.
+3. Issuer attempts to credit the client BEFORE authorizing -- ledger
+   answers `tecNO_AUTH`, surfaced by the SDK as a typed
+   `TRUSTLINE_NOT_AUTHORIZED`.
+4. Issuer `authorize`s both holders (TrustSet `tfSetfAuth`). The line
+   flips from `authorized: false` to `authorized: true`.
+5. Issuer credits client + the regular MPP charge flow runs (10 USD).
+
+Zero `xrpl` import. Mirrors `mpt-charge.ts` for the IOU path.
+
 ## MPT Charge
 
 ```bash
@@ -62,6 +85,35 @@ npx tsx demo/channel-client.ts
 ```
 
 Server funds a wallet, exposes /info, /setup, /resource, /summary. Client funds a wallet, opens a 10 XRP channel (PaymentChannelCreate), configures the server, makes 5 paid requests (cumulative 100k, 200k, 300k, 400k, 500k drops), closes the channel (PaymentChannelClaim tfClose). 2 on-chain txs, 5 off-chain claims. Prints explorer links for create + close.
+
+## PayChannel fund / exhaustion / recovery
+
+```bash
+npx tsx demo/channel-fund.ts
+```
+
+All-in-one demo of the top-up lifecycle. Funds 2 wallets, opens a tiny
+200,000-drop channel, makes 4 successful paid requests (cumulatives 50k
+to 200k -- the last matches the deposit exactly and is still accepted),
+then deliberately tries a 5th claim of 250k drops. The server detects
+that the cumulative now exceeds the on-chain deposit and surfaces a
+typed `CHANNEL_EXHAUSTED`. The funder calls `wallet.fundChannel(...)`
+to add 500,000 drops via `PaymentChannelFund`; the server's metadata
+cache auto-refreshes when the next claim's cumulative exceeds the cached
+deposit, so the top-up is detected without any manual cache busting.
+Two more paid requests succeed, then the channel is closed on-chain.
+
+| # | What it shows |
+|---|---|
+| Open  | `PaymentChannelCreate` with reserve preflight |
+| Claim | Off-chain voucher signing + cumulative tracking |
+| Limit | `cumulative > deposit` -> typed `CHANNEL_EXHAUSTED` |
+| Fund  | `PaymentChannelFund` via `fundChannel` (no new channelId) |
+| Recover | Rejected claim retried successfully after top-up |
+| Close | `PaymentChannelClaim tfClose` with the latest signature |
+
+3 on-chain txs (open + fund + close), 6 off-chain claims (5 distinct
+vouchers + 1 retry).
 
 ## Escrow Lifecycle
 
@@ -89,7 +141,7 @@ scenario 3, scenario 2 has no time gate).
 npx tsx demo/error-showcase.ts
 ```
 
-Funds 10+ wallets and runs 13 cases sequentially:
+Funds 10+ wallets and runs 16 cases sequentially:
 
 | # | Case | Error triggered | Fix applied |
 |---|---|---|---|
@@ -106,6 +158,9 @@ Funds 10+ wallets and runs 13 cases sequentially:
 | 11 | OVERPAY | Claim > channel deposit | Correct amount |
 | 12 | SERVER_REDEEM | Client disappears, server redeems stored claim on-chain | Server calls close() with stored signature |
 | 13 | FINALIZED_CHANNEL | Credential on closed channel | Rejected with CHANNEL_CLOSED |
+| 14 | INSUFFICIENT_RESERVE | Channel deposit too large for free balance | Top-up via faucet |
+| 15 | PARTIAL_PAYMENT_REJECTED | Hand-crafted Payment with `tfPartialPayment` flag | Sign without the flag (standard SDK path) |
+| 16 | DESTINATION_TAG_MISMATCH | Server requires a tag, client signs without | Sign with the matching `DestinationTag` |
 
 ## Streaming (offline)
 

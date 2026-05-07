@@ -7,9 +7,11 @@
  * Run: npx tsx demo/error-showcase.ts
  */
 import { Credential, Store } from 'mppx'
+import { Client } from 'xrpl'
 import { openChannel } from '../sdk/src/channel/client/Channel.js'
 import { close, channel as serverChannel } from '../sdk/src/channel/server/Channel.js'
 import { charge as clientCharge } from '../sdk/src/client/Charge.js'
+import { XRPL_RPC_URLS } from '../sdk/src/constants.js'
 import { fromDrops } from '../sdk/src/Methods.js'
 import { charge as serverCharge } from '../sdk/src/server/Charge.js'
 import { Wallet } from '../sdk/src/utils/wallet.js'
@@ -17,8 +19,12 @@ import * as log from './log.js'
 
 const NETWORK = 'testnet'
 
+/** tfPartialPayment flag bit. Used in the PARTIAL_PAYMENT_REJECTED case to
+ * forge a tx the SDK should refuse on the server side. */
+const TF_PARTIAL_PAYMENT = 0x00020000
+
 let caseNum = 0
-const total = 13
+const total = 16
 
 function header(name: string) {
   caseNum++
@@ -813,8 +819,205 @@ async function main() {
     }
   }
 
+  // ---- CASE 14 ----
+  header('INSUFFICIENT_RESERVE')
+  {
+    log.loading('Funding a fresh wallet via faucet (~100 XRP)...')
+    const reserveTester = await Wallet.fromFaucet({ network: NETWORK })
+    const initialBalance = await reserveTester.getXrpBalance({ network: NETWORK })
+    log.info(`Tester balance: ${fromDrops(initialBalance)} XRP`)
+
+    // Try to open a channel that locks more XRP than the wallet has free
+    // after the base + owner reserve. The SDK runs an owner-reserve preflight
+    // inside `openChannel` and surfaces a typed INSUFFICIENT_RESERVE before
+    // the tx is even signed.
+    const oversizedDeposit = '99000000'
+    log.loading(
+      `Attempting to open a PayChannel locking ${fromDrops(oversizedDeposit)} XRP (would leave the wallet under the reserve floor)...`,
+    )
+    try {
+      await openChannel({
+        wallet: reserveTester,
+        destination: recipientWallet.address,
+        amount: oversizedDeposit,
+        settleDelay: 60,
+        network: NETWORK,
+      })
+      log.error('Expected INSUFFICIENT_RESERVE but the channel opened anyway.')
+    } catch (err: any) {
+      log.error(err.message.slice(0, 220))
+    }
+
+    log.fix('Top up the wallet via the faucet to cover the deposit + owner reserve...')
+    await reserveTester.fundFromFaucet({ network: NETWORK })
+    const toppedBalance = await reserveTester.getXrpBalance({ network: NETWORK })
+    log.info(`Tester balance now: ${fromDrops(toppedBalance)} XRP`)
+
+    log.loading('Retrying the channel open with the same deposit...')
+    try {
+      const { channelId, txHash } = await openChannel({
+        wallet: reserveTester,
+        destination: recipientWallet.address,
+        amount: oversizedDeposit,
+        settleDelay: 60,
+        network: NETWORK,
+      })
+      log.success(`Channel opened: ${channelId}`)
+      log.tx(txHash, log.explorerLink(txHash))
+    } catch (err: any) {
+      log.error(`Retry failed: ${err.message.slice(0, 200)}`)
+    }
+  }
+
+  // ---- CASE 15 ----
+  header('PARTIAL_PAYMENT_REJECTED')
+  {
+    // The SDK's high-level Wallet API never sets tfPartialPayment, so we have
+    // to drop down to xrpl.js to simulate a malicious client that hand-crafts
+    // a Payment with the flag set. This is the only place in `error-showcase`
+    // that imports `Client` from xrpl, and it does so on purpose: it exists to
+    // prove that the *server* defends against this attack regardless of how
+    // the client built the tx.
+    log.loading('Crafting a Payment with tfPartialPayment (simulated malicious client)...')
+    const xrpl = new Client(XRPL_RPC_URLS[NETWORK])
+    await xrpl.connect()
+    let blob: string
+    try {
+      const tx: any = {
+        TransactionType: 'Payment',
+        Account: mainWallet.address,
+        Destination: recipientWallet.address,
+        Amount: '1000000',
+        Flags: TF_PARTIAL_PAYMENT,
+      }
+      const prepared = await xrpl.autofill(tx)
+      const signed = mainWallet._xrplWallet.sign(prepared)
+      blob = signed.tx_blob
+    } finally {
+      await xrpl.disconnect()
+    }
+
+    const store = Store.memory()
+    const srv = serverCharge({ recipient: recipientWallet.address, network: NETWORK, store })
+
+    const ch = {
+      id: `partial-${Date.now()}`,
+      realm: 'error-showcase',
+      method: 'xrpl' as const,
+      intent: 'charge' as const,
+      request: {
+        amount: '1000000',
+        currency: 'XRP',
+        recipient: recipientWallet.address,
+        methodDetails: { network: NETWORK, reference: crypto.randomUUID() },
+      },
+    }
+    const partialCred = Credential.from({
+      challenge: ch as any,
+      payload: { type: 'transaction', blob },
+      source: `did:pkh:xrpl:${NETWORK}:${mainWallet.address}`,
+    })
+
+    log.loading('Server verifies the malicious credential (must reject)...')
+    try {
+      await srv.verify({ credential: partialCred as any, request: ch.request })
+      log.error('Server unexpectedly accepted a tfPartialPayment credential.')
+    } catch (err: any) {
+      log.error(err.message.slice(0, 200))
+    }
+
+    log.fix('Client signs WITHOUT tfPartialPayment (the standard SDK path)...')
+    log.loading('Retrying via the regular charge flow...')
+    try {
+      const { hash } = await runChargeFlow({
+        clientSeed: mainWallet.seed!,
+        recipient: recipientWallet.address,
+        amount: '1000000',
+        currency: 'XRP',
+      })
+      log.success('Standard payment accepted')
+      log.tx(hash, log.explorerLink(hash))
+    } catch (err: any) {
+      log.error(`Retry failed: ${err.message}`)
+    }
+  }
+
+  // ---- CASE 16 ----
+  header('DESTINATION_TAG_MISMATCH')
+  {
+    // The server's challenge requires a specific DestinationTag. The client
+    // signs a Payment without it -- the server's verify catches the mismatch
+    // before submitting and surfaces a typed SUBMISSION_FAILED ('DestinationTag
+    // mismatch ...'). Then we retry with the matching tag and confirm
+    // settlement.
+    const expectedTag = 1234567
+
+    const store = Store.memory()
+    const srv = serverCharge({ recipient: recipientWallet.address, network: NETWORK, store })
+    const cli = clientCharge({ wallet: mainWallet, mode: 'pull', network: NETWORK })
+
+    log.loading(`Server expects DestinationTag=${expectedTag} on the inbound Payment...`)
+    log.loading('Client builds a credential WITHOUT the tag (the request lies about the schema)...')
+    const wrongCh = {
+      id: `tag-bad-${Date.now()}`,
+      realm: 'error-showcase',
+      method: 'xrpl' as const,
+      intent: 'charge' as const,
+      request: {
+        amount: '1000000',
+        currency: 'XRP',
+        recipient: recipientWallet.address,
+        methodDetails: { network: NETWORK, reference: crypto.randomUUID() },
+      },
+    }
+    const wrongCredStr = await cli.createCredential({ challenge: wrongCh })
+    const wrongCred = Credential.deserialize(wrongCredStr)
+
+    try {
+      await srv.verify({
+        credential: wrongCred as any,
+        request: {
+          ...wrongCh.request,
+          methodDetails: { ...wrongCh.request.methodDetails, destinationTag: expectedTag },
+        },
+      })
+      log.error('Server unexpectedly accepted a Payment that lacked the required tag.')
+    } catch (err: any) {
+      log.error(err.message.slice(0, 200))
+    }
+
+    log.fix(`Client now signs WITH DestinationTag=${expectedTag}...`)
+    const okCh = {
+      id: `tag-ok-${Date.now()}`,
+      realm: 'error-showcase',
+      method: 'xrpl' as const,
+      intent: 'charge' as const,
+      request: {
+        amount: '1000000',
+        currency: 'XRP',
+        recipient: recipientWallet.address,
+        methodDetails: {
+          network: NETWORK,
+          reference: crypto.randomUUID(),
+          destinationTag: expectedTag,
+        },
+      },
+    }
+    const okCredStr = await cli.createCredential({ challenge: okCh })
+    const okCred = Credential.deserialize(okCredStr)
+
+    log.loading('Retrying with the matching tag...')
+    try {
+      const receipt = await srv.verify({ credential: okCred as any, request: okCh.request })
+      log.success(`Tagged payment accepted (ref: ${receipt.reference})`)
+      log.tx(receipt.reference, log.explorerLink(receipt.reference))
+    } catch (err: any) {
+      log.error(`Retry failed: ${err.message.slice(0, 200)}`)
+    }
+  }
+
   log.separator()
-  log.box(['All 13 error cases completed'])
+  log.box([`All ${total} error cases completed`])
   process.exit(0)
 }
 

@@ -1,18 +1,18 @@
 import { Credential, Store } from 'mppx'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { dropsToXrp, signPaymentChannelClaim, Wallet } from 'xrpl'
 import {
   type ChannelLookup,
   type PayChannelLedgerEntry,
   channel as serverChannel,
 } from '../../sdk/src/channel/server/Channel.js'
+import { Wallet } from '../../sdk/src/utils/wallet.js'
 
 const NETWORK = 'testnet'
 const CHANNEL_ID = '0'.repeat(64)
 
 function freshChannel(funder: Wallet, recipient: string, amount: string): PayChannelLedgerEntry {
   return {
-    Account: funder.classicAddress,
+    Account: funder.address,
     Destination: recipient,
     Amount: amount,
     Balance: '0',
@@ -28,7 +28,7 @@ function buildVoucher(
   prevCumDrops: string,
   network: string,
 ) {
-  const sig = signPaymentChannelClaim(channelId, dropsToXrp(cumDrops).toString(), funder.privateKey)
+  const sig = funder.signChannelClaim(channelId, cumDrops)
   const delta = (BigInt(cumDrops) - BigInt(prevCumDrops)).toString()
   const challenge = {
     id: `ch-${cumDrops}-${Date.now()}-${Math.random()}`,
@@ -46,7 +46,7 @@ function buildVoucher(
   const cred = Credential.from({
     challenge: challenge as any,
     payload: { action: 'voucher', channelId, amount: cumDrops, signature: sig },
-    source: `did:pkh:xrpl:${network}:${funder.classicAddress}`,
+    source: `did:pkh:xrpl:${network}:${funder.address}`,
   })
   return { challenge, cred }
 }
@@ -115,7 +115,7 @@ describe('channel server -- on-chain verification with injected lookup', () => {
     const recipient = 'rN7bRFgBrNZKoY2uu015bdjah11UbRZY'
     let funded = '500000'
     const lookup: ChannelLookup = vi.fn(async () => ({
-      Account: funder.classicAddress,
+      Account: funder.address,
       Destination: recipient,
       Amount: funded,
       Balance: '0',
@@ -169,7 +169,7 @@ describe('channel server -- on-chain verification with injected lookup', () => {
     const rippleEpoch = 946684800
     const expiredAt = Math.floor(Date.now() / 1000) - 60 - rippleEpoch // 60s ago
     const lookup: ChannelLookup = vi.fn(async () => ({
-      Account: funder.classicAddress,
+      Account: funder.address,
       Destination: recipient,
       Amount: '5000000',
       Balance: '0',
@@ -195,7 +195,7 @@ describe('channel server -- on-chain verification with injected lookup', () => {
     const recipient = 'rN7bRFgBrNZKoY2uu015bdjah11UbRZY'
     const futureCancel = Math.floor(Date.now() / 1000) + 3600
     const lookup: ChannelLookup = vi.fn(async () => ({
-      Account: funder.classicAddress,
+      Account: funder.address,
       Destination: recipient,
       Amount: '5000000',
       Balance: '0',

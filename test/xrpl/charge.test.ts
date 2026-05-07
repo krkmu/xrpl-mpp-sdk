@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { Wallet } from 'xrpl'
 import { fromTecResult, mapTecResult } from '../../sdk/src/errors.js'
 import { charge, fromDrops, toDrops } from '../../sdk/src/Methods.js'
+import { Wallet } from '../../sdk/src/utils/wallet.js'
 
 describe('XRPL Charge', () => {
   describe('toDrops / fromDrops', () => {
@@ -172,14 +172,14 @@ describe('XRPL Charge', () => {
   })
 
   describe('Server seed/recipient validation', () => {
-    it('throws when seed does not match recipient', async () => {
+    it('throws when wallet does not match recipient', async () => {
       const { charge: serverCharge } = await import('../../sdk/src/server/Charge.js')
       const wallet = Wallet.generate()
 
       expect(() =>
         serverCharge({
           recipient: 'rDifferentAddress999999999999999',
-          seed: wallet.seed!,
+          wallet,
           autoTrustline: true,
           network: 'testnet',
           store: { get: async () => null, put: async () => {}, delete: async () => {} } as any,
@@ -187,7 +187,7 @@ describe('XRPL Charge', () => {
       ).toThrow('does not match recipient')
     })
 
-    it('throws when autoTrustline is set without seed', async () => {
+    it('throws when autoTrustline is set without wallet/seed', async () => {
       const { charge: serverCharge } = await import('../../sdk/src/server/Charge.js')
 
       expect(() =>
@@ -200,14 +200,14 @@ describe('XRPL Charge', () => {
       ).toThrow('wallet (or seed) is required')
     })
 
-    it('accepts matching seed and recipient', async () => {
+    it('accepts matching wallet and recipient', async () => {
       const { charge: serverCharge } = await import('../../sdk/src/server/Charge.js')
       const wallet = Wallet.generate()
 
       expect(() =>
         serverCharge({
-          recipient: wallet.classicAddress,
-          seed: wallet.seed!,
+          recipient: wallet.address,
+          wallet,
           autoTrustline: true,
           currency: { currency: 'USD', issuer: 'rIssuer123' },
           network: 'testnet',
