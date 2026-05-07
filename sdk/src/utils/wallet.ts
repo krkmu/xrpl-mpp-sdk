@@ -240,6 +240,33 @@ export class Wallet {
     return signPaymentChannelClaim(channelId, xrp, this.#internal.privateKey)
   }
 
+  /**
+   * Prepare and sign a `PaymentChannelCreate` transaction for use in
+   * the MPP `action: 'open'` flow. Returns the hex-encoded `tx_blob`
+   * (and pre-computed transaction hash) without submitting -- the
+   * server submits the blob when it receives the credential.
+   *
+   * Thin convenience wrapper around `prepareOpenChannelTransaction`
+   * from `xrpl-mpp-sdk/channel/client`.
+   *
+   * Pass `expiresAt` (the credential `challenge.expires` value) to
+   * cap `LastLedgerSequence` so the blob cannot land past challenge
+   * expiry; the server runs the matching gate on receive.
+   */
+  async signOpenChannelTransaction(
+    options: {
+      destination: string
+      amount: string
+      settleDelay: number
+      publicKey?: string
+      cancelAfter?: number
+      expiresAt?: Date | number | string
+    } & NetworkOptions,
+  ): Promise<{ txBlob: string; txHash: string }> {
+    const { prepareOpenChannelTransaction } = await import('../channel/client/Channel.js')
+    return prepareOpenChannelTransaction({ wallet: this, ...options })
+  }
+
   // ===== Holder operations =====
 
   /**

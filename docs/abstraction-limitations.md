@@ -18,40 +18,34 @@ Each entry follows the same shape:
 
 ### 1.1 `ChannelStream` / `ChannelSession` accept a raw `privateKey`, not a `Wallet`
 
-- **Status**: open
+- **Status**: closed.
 - **Scope**: `xrpl-mpp-sdk/channel` -- pay-per-token streaming.
-- **Why it leaks**: the constructors of `ChannelStream` and `ChannelSession`
-  in `sdk/src/channel/stream.ts` were written before the `Wallet` abstraction
-  existed. They take `{ privateKey: string, channelId, dropsPerUnit, ... }`.
-- **What it forces the consumer to do**: nothing strictly -- a consumer with
-  a `Wallet` instance can pass `wallet.privateKey`. It just feels inconsistent
-  vs. the rest of the SDK and exposes a low-level secret on the call site.
-- **Proposed fix**: accept `wallet: Wallet` (preferred) and keep
-  `privateKey: string` as a backward-compatible alternative. The constructor
-  reads `wallet.privateKey` internally.
+- **What changed**: both constructors now accept `{ wallet: Wallet }`
+  (preferred) in addition to `{ privateKey: string }` (kept for backward
+  compatibility). The class stores only the resolved private key
+  internally via the existing `#privateKey` private field; nothing else
+  about the streaming behavior changed. `ChannelStreamSigner` is exported
+  from `xrpl-mpp-sdk/channel` for downstream typing.
+- **Closed by**: `sdk/src/channel/stream.ts`; tests in
+  `test/xrpl/stream.test.ts`.
 
 ### 1.2 No SDK helper to prepare a signed `PaymentChannelCreate` blob for the MPP open flow
 
-- **Status**: open
+- **Status**: closed.
 - **Scope**: PayChannel open-via-MPP (`action: 'open'` credential).
-- **Why it leaks**: the credential payload for `action: 'open'` carries a
-  *client-signed* PaymentChannelCreate blob. To produce that blob, the client
-  needs `xrpl.Client.autofill(...)` followed by `wallet.sign(prepared)`. The
-  SDK does not currently expose a helper for this.
-- **What it forces the consumer to do**:
-  ```ts
-  import { Client, Wallet } from 'xrpl'
-  const xrplClient = new Client('wss://s.altnet.rippletest.net:51233')
-  await xrplClient.connect()
-  const prepared = await xrplClient.autofill({ TransactionType: 'PaymentChannelCreate', ... })
-  const signed = wallet.sign(prepared)
-  await xrplClient.disconnect()
-  // signed.tx_blob -> goes into the open credential payload
-  ```
-  See `examples/channel-open-mpp.ts`.
-- **Proposed fix**: a helper such as `prepareOpenChannelTransaction({ wallet,
-  destination, amount, settleDelay, network, rpcUrl })` that returns
-  `{ txBlob: string }`. Either standalone or as `wallet.signOpenChannel(...)`.
+- **What changed**: `prepareOpenChannelTransaction({ wallet, destination,
+  amount, settleDelay, expiresAt?, ... })` is now exported from
+  `xrpl-mpp-sdk/channel/client`. It runs the same owner-reserve preflight
+  as `openChannel`, autofills the tx, optionally caps `LastLedgerSequence`
+  to `challenge.expires`, signs locally, and returns
+  `{ txBlob, txHash }` -- ready to drop into the open credential. A
+  thin `wallet.signOpenChannelTransaction(...)` method on `Wallet`
+  delegates to the same helper for consumers who prefer the
+  Wallet-first API. `examples/channel-open-mpp.ts` no longer imports
+  from `xrpl` at all.
+- **Closed by**: `sdk/src/channel/client/Channel.ts.prepareOpenChannelTransaction`,
+  `sdk/src/utils/wallet.ts.Wallet.signOpenChannelTransaction`; tests in
+  `test/xrpl/channel-prepare-open.test.ts`.
 
 ### 1.3 `Wallet._xrplWallet` is a public-but-internal back door
 

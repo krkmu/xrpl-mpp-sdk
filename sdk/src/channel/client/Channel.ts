@@ -3,6 +3,7 @@ import { Client, dropsToXrp, signPaymentChannelClaim } from 'xrpl'
 import { z } from 'zod/mini'
 import { type NetworkId, XRPL_RPC_URLS } from '../../constants.js'
 import type { ChannelClientConfig } from '../../types.js'
+import { lastLedgerSequenceFromExpires, readCurrentLedgerIndex } from '../../utils/ledger-time.js'
 import { assertReserveCovers, getReserveState } from '../../utils/reserves.js'
 import { resolveWallet, type Wallet } from '../../utils/wallet.js'
 import { channel as ChannelMethod } from '../Methods.js'
@@ -244,6 +245,136 @@ export async function fundChannel(params: {
     }
 
     return { txHash: result.result.hash }
+  } finally {
+    await client.disconnect()
+  }
+}
+
+/**
+ * Prepare and sign a `PaymentChannelCreate` transaction without
+ * submitting it. Returns the hex-encoded `tx_blob` (and the
+ * pre-computed transaction hash) that callers feed into the MPP
+ * `action: 'open'` credential.
+ *
+ * Why this helper exists: the open-via-MPP flow signs a tx client-side
+ * and ships the blob inside a credential payload -- the server submits
+ * it. Without this helper, integrators have to import `xrpl.Client` and
+ * `xrpl.Wallet` directly to autofill + sign.
+ *
+ * Behavior:
+ * - Validates `amount` (>= 1 drop) and `settleDelay` (>= 0) before
+ *   touching the network -- same checks {@link openChannel} runs.
+ * - Runs an owner-reserve preflight (1 added owner object for the new
+ *   PayChannel). Surfaces `INSUFFICIENT_RESERVE` early.
+ * - When `expiresAt` is set, caps `LastLedgerSequence` so the blob
+ *   cannot land past the expiry. This mirrors what the SDK does on
+ *   the charge path; the server's `doVerifyOpen` runs the matching
+ *   gate on receive. If your challenge has an `expires` field, pass
+ *   it here so the two ends agree.
+ */
+export async function prepareOpenChannelTransaction(params: {
+  /** Funder wallet. Preferred over `seed`. */
+  wallet?: Wallet
+  /** Family seed of the funder. Kept for backward compatibility -- prefer `wallet`. */
+  seed?: string
+  /** Recipient (channel destination). */
+  destination: string
+  /** Amount to fund the channel with, in drops. */
+  amount: string
+  /** Channel settle delay, in seconds. */
+  settleDelay: number
+  /**
+   * Channel public key. Defaults to the funder's wallet public key,
+   * which is what most consumers want -- claims are signed with the
+   * matching private key.
+   */
+  publicKey?: string
+  /** Optional `CancelAfter` (ripple time, seconds). */
+  cancelAfter?: number
+  /**
+   * When set, caps the tx's `LastLedgerSequence` so it expires on-ledger
+   * at or before this moment. Use the `challenge.expires` value here
+   * when going through the MPP open flow.
+   */
+  expiresAt?: Date | number | string
+  network?: NetworkId
+  rpcUrl?: string
+}): Promise<{ txBlob: string; txHash: string }> {
+  const {
+    wallet: walletInput,
+    seed,
+    destination,
+    amount,
+    settleDelay,
+    publicKey,
+    cancelAfter,
+    expiresAt,
+    network = 'testnet',
+    rpcUrl,
+  } = params
+
+  if (BigInt(amount) <= 0n) {
+    throw new Error(
+      `[INVALID_AMOUNT] PaymentChannelCreate amount must be > 0 drops, got ${amount}.`,
+    )
+  }
+  if (settleDelay < 0 || !Number.isFinite(settleDelay)) {
+    throw new Error(
+      `[INVALID_AMOUNT] PaymentChannelCreate settleDelay must be a non-negative integer, got ${settleDelay}.`,
+    )
+  }
+
+  const wallet = resolveWallet({ wallet: walletInput, seed })
+  const xrplWallet = wallet._xrplWallet
+
+  const resolvedRpcUrl = rpcUrl ?? XRPL_RPC_URLS[network]
+  const client = new Client(resolvedRpcUrl)
+  await client.connect()
+
+  try {
+    const state = await getReserveState(client, wallet.address)
+    if (!state) {
+      throw new Error(`[INSUFFICIENT_BALANCE] Account ${wallet.address} is not yet funded.`)
+    }
+    assertReserveCovers({
+      account: wallet.address,
+      state,
+      addedOwnerObjects: 1,
+      paymentDrops: BigInt(amount),
+      kind: 'PaymentChannelCreate',
+    })
+
+    const tx: any = {
+      TransactionType: 'PaymentChannelCreate',
+      Account: wallet.address,
+      Destination: destination,
+      Amount: amount,
+      SettleDelay: settleDelay,
+      PublicKey: publicKey ?? wallet.publicKey,
+    }
+    if (cancelAfter) {
+      tx.CancelAfter = cancelAfter
+    }
+
+    const prepared = await client.autofill(tx)
+
+    if (expiresAt !== undefined) {
+      const expiresIso =
+        expiresAt instanceof Date
+          ? expiresAt.toISOString()
+          : typeof expiresAt === 'number'
+            ? new Date(expiresAt).toISOString()
+            : expiresAt
+      const currentLedgerIndex = await readCurrentLedgerIndex(client)
+      const cap = lastLedgerSequenceFromExpires({ currentLedgerIndex, expiresIso })
+      const autofilled = (prepared as { LastLedgerSequence?: number }).LastLedgerSequence
+      if (autofilled === undefined || cap < autofilled) {
+        ;(prepared as { LastLedgerSequence?: number }).LastLedgerSequence = cap
+      }
+    }
+
+    const signed = xrplWallet.sign(prepared)
+    return { txBlob: signed.tx_blob, txHash: signed.hash }
   } finally {
     await client.disconnect()
   }

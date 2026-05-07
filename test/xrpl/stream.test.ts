@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { dropsToXrp, verifyPaymentChannelClaim, Wallet } from 'xrpl'
+import { dropsToXrp, verifyPaymentChannelClaim, Wallet as XrplWallet } from 'xrpl'
 import { ChannelSession, ChannelStream } from '../../sdk/src/channel/stream.js'
+import { Wallet } from '../../sdk/src/utils/wallet.js'
 
 const CHANNEL_ID = '0'.repeat(64)
 
 describe('ChannelStream', () => {
   it('signs a claim every tick when granularity = 1', () => {
-    const wallet = Wallet.generate()
+    const wallet = XrplWallet.generate()
     const stream = new ChannelStream({
       channelId: CHANNEL_ID,
       privateKey: wallet.privateKey,
@@ -24,7 +25,7 @@ describe('ChannelStream', () => {
   })
 
   it('only signs after granularity boundary is crossed', () => {
-    const wallet = Wallet.generate()
+    const wallet = XrplWallet.generate()
     const stream = new ChannelStream({
       channelId: CHANNEL_ID,
       privateKey: wallet.privateKey,
@@ -48,7 +49,7 @@ describe('ChannelStream', () => {
   })
 
   it('produces signatures verifiable by the funder public key', () => {
-    const wallet = Wallet.generate()
+    const wallet = XrplWallet.generate()
     const stream = new ChannelStream({
       channelId: CHANNEL_ID,
       privateKey: wallet.privateKey,
@@ -67,7 +68,7 @@ describe('ChannelStream', () => {
   })
 
   it('latest() returns the most recent signed claim', () => {
-    const wallet = Wallet.generate()
+    const wallet = XrplWallet.generate()
     const stream = new ChannelStream({
       channelId: CHANNEL_ID,
       privateKey: wallet.privateKey,
@@ -81,7 +82,7 @@ describe('ChannelStream', () => {
   })
 
   it('exposes total units consumed and current amount', () => {
-    const wallet = Wallet.generate()
+    const wallet = XrplWallet.generate()
     const stream = new ChannelStream({
       channelId: CHANNEL_ID,
       privateKey: wallet.privateKey,
@@ -95,7 +96,7 @@ describe('ChannelStream', () => {
 
 describe('ChannelSession', () => {
   it('signs a claim per paid request when granularity = 1', () => {
-    const wallet = Wallet.generate()
+    const wallet = XrplWallet.generate()
     const session = new ChannelSession({
       channelId: CHANNEL_ID,
       privateKey: wallet.privateKey,
@@ -114,7 +115,7 @@ describe('ChannelSession', () => {
   })
 
   it('settle() force-signs the current cumulative even mid-bucket', () => {
-    const wallet = Wallet.generate()
+    const wallet = XrplWallet.generate()
     const session = new ChannelSession({
       channelId: CHANNEL_ID,
       privateKey: wallet.privateKey,
@@ -129,7 +130,7 @@ describe('ChannelSession', () => {
   })
 
   it('latest() reflects the most recent signed claim', () => {
-    const wallet = Wallet.generate()
+    const wallet = XrplWallet.generate()
     const session = new ChannelSession({
       channelId: CHANNEL_ID,
       privateKey: wallet.privateKey,
@@ -138,5 +139,56 @@ describe('ChannelSession', () => {
     expect(session.latest()).toBeNull()
     session.pay()
     expect(session.latest()?.amount).toBe('100')
+  })
+})
+
+describe('ChannelStream / ChannelSession -- Wallet input', () => {
+  it('ChannelStream accepts a Wallet instance instead of a raw privateKey', () => {
+    const sdkWallet = Wallet.generate()
+    const stream = new ChannelStream({
+      channelId: CHANNEL_ID,
+      wallet: sdkWallet,
+      dropsPerUnit: '100',
+    })
+    const claim = stream.tick(1)
+    expect(claim).not.toBeNull()
+    expect(
+      verifyPaymentChannelClaim(
+        CHANNEL_ID,
+        dropsToXrp(claim!.amount).toString(),
+        claim!.signature,
+        sdkWallet.publicKey,
+      ),
+    ).toBe(true)
+  })
+
+  it('ChannelSession accepts a Wallet instance instead of a raw privateKey', () => {
+    const sdkWallet = Wallet.generate()
+    const session = new ChannelSession({
+      channelId: CHANNEL_ID,
+      wallet: sdkWallet,
+      dropsPerRequest: '500',
+    })
+    const claim = session.pay()
+    expect(claim).not.toBeNull()
+    expect(claim!.amount).toBe('500')
+    expect(
+      verifyPaymentChannelClaim(
+        CHANNEL_ID,
+        dropsToXrp(claim!.amount).toString(),
+        claim!.signature,
+        sdkWallet.publicKey,
+      ),
+    ).toBe(true)
+  })
+
+  it('ChannelStream rejects construction without wallet or privateKey', () => {
+    expect(
+      () =>
+        new ChannelStream({
+          channelId: CHANNEL_ID,
+          dropsPerUnit: '100',
+        } as any),
+    ).toThrow(/require a wallet or privateKey/)
   })
 })
