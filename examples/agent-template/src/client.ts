@@ -1,26 +1,35 @@
 /**
- * TS client -- builds a payment intent and calls the agent server.
+ * Low-level paid HTTP client used by the agent's tool.
  *
- * The mppx client patches globalThis.fetch, so the 402 challenge from the
- * server is paid for and retried automatically. We just `fetch()` like usual.
+ * This module knows nothing about LLMs -- it's just `fetch()` against
+ * `POST /linkedin-post`, with the assumption that `Mppx.create({ ... })`
+ * has been called somewhere upstream so the patched `globalThis.fetch`
+ * handles the 402 transparently.
+ *
+ * `attachPayer(wallet, network, opts)` is the one-call wallet bootstrap.
+ * It installs the mppx client middleware that signs an XRPL Payment
+ * whenever the server emits a 402. Any `fetch()` made from this process
+ * afterwards can pay an MPP challenge automatically.
  */
 import { Receipt } from 'mppx'
 import { Mppx } from 'mppx/client'
+import type { ChargeProgressEvent, NetworkId, Wallet } from 'xrpl-mpp-sdk'
 import { charge } from 'xrpl-mpp-sdk/client'
-import { loadConfig, loadWallets } from './env.js'
-import type { PaymentIntent } from './intent.js'
+import type { GeneratedPost } from './server.js'
+import type { PostBrief } from './intent.js'
 
-export type CallAgentArgs = {
+export type CallServiceArgs = {
   serverUrl: string
-  intent: PaymentIntent
-  /** When provided, used as-is. Otherwise the patched fetch is used. */
-  fetchImpl?: typeof fetch
+  brief: PostBrief
 }
 
-export type CallAgentResult = {
+export type CallServiceResult = {
   ok: boolean
   status: number
   body: unknown
+  /** The structured post, when the call succeeded. */
+  post?: GeneratedPost
+  paid?: { amountDrops: string; amountXrp: string; currency: string }
   receipt?: {
     method: string
     reference: string
@@ -28,13 +37,47 @@ export type CallAgentResult = {
   }
 }
 
-/** Make one paid call to /agent/run and return the parsed result + receipt. */
-export async function callAgent(args: CallAgentArgs): Promise<CallAgentResult> {
-  const doFetch = args.fetchImpl ?? fetch
-  const response = await doFetch(`${args.serverUrl}/agent/run`, {
+export type AttachPayerOptions = {
+  /**
+   * Called at every lifecycle stage of a payment (challenge received,
+   * preflight, signing, signed, etc.). Useful for surface-level logging
+   * so the demo can show what mppx is doing behind the patched fetch.
+   */
+  onPaymentProgress?: (event: ChargeProgressEvent) => void
+}
+
+/**
+ * Install the mppx client middleware so subsequent `fetch()` calls in this
+ * process automatically pay any XRPL `charge` 402 challenge they receive.
+ *
+ * Pull mode = the client signs a Payment and ships the *signed blob* via
+ * the credential; the server submits the tx on-chain. Pull keeps the
+ * round-trip latency at one ledger close (~4s on testnet) without needing
+ * the client to talk directly to rippled.
+ */
+export function attachPayer(
+  wallet: Wallet,
+  network: NetworkId,
+  options: AttachPayerOptions = {},
+): void {
+  Mppx.create({
+    methods: [
+      charge({
+        wallet,
+        mode: 'pull',
+        network,
+        ...(options.onPaymentProgress && { onProgress: options.onPaymentProgress }),
+      }),
+    ],
+  })
+}
+
+/** Call POST /linkedin-post with a brief. mppx pays the 402 transparently. */
+export async function callPostService(args: CallServiceArgs): Promise<CallServiceResult> {
+  const response = await fetch(`${args.serverUrl}/linkedin-post`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(args.intent),
+    body: JSON.stringify(args.brief),
   })
 
   const text = await response.text()
@@ -44,22 +87,25 @@ export async function callAgent(args: CallAgentArgs): Promise<CallAgentResult> {
     return { ok: false, status: response.status, body }
   }
 
-  const receiptHeader = response.headers.get('Payment-Receipt')
-  if (!receiptHeader) {
-    return { ok: true, status: response.status, body }
+  const out: CallServiceResult = { ok: true, status: response.status, body }
+  if (body && typeof body === 'object') {
+    const b = body as { post?: GeneratedPost; paid?: CallServiceResult['paid'] }
+    if (b.post) out.post = b.post
+    if (b.paid) out.paid = b.paid
   }
 
-  const receipt = Receipt.deserialize(receiptHeader)
-  return {
-    ok: true,
-    status: response.status,
-    body,
-    receipt: {
+  try {
+    const receipt = Receipt.fromResponse(response)
+    out.receipt = {
       method: receipt.method,
       reference: receipt.reference,
       explorerUrl: explorerUrl(receipt.reference),
-    },
+    }
+  } catch {
+    // No Payment-Receipt header -- not fatal, we just lose the explorer link.
   }
+
+  return out
 }
 
 function safeJson(text: string): unknown {
@@ -70,7 +116,7 @@ function safeJson(text: string): unknown {
   }
 }
 
-function explorerUrl(txHash: string, network = 'testnet'): string {
+export function explorerUrl(txHash: string, network: NetworkId = 'testnet'): string {
   const host =
     network === 'mainnet'
       ? 'https://livenet.xrpl.org'
@@ -78,56 +124,4 @@ function explorerUrl(txHash: string, network = 'testnet'): string {
         ? 'https://devnet.xrpl.org'
         : 'https://testnet.xrpl.org'
   return `${host}/transactions/${txHash}`
-}
-
-// ---------------------------------------------------------------------------
-// CLI entry: `tsx src/client.ts`
-// ---------------------------------------------------------------------------
-
-async function main(): Promise<void> {
-  const config = loadConfig()
-  const { payer } = await loadWallets('payer', config.network)
-  if (!payer) throw new Error('Failed to load payer wallet')
-
-  console.log(`[agent-template] payer:    ${payer.address}`)
-  console.log(`[agent-template] server:   ${config.serverUrl}`)
-  console.log(`[agent-template] network:  ${config.network}`)
-
-  // Patches globalThis.fetch -- 402s are now handled automatically.
-  Mppx.create({
-    methods: [charge({ wallet: payer, mode: 'pull', network: config.network })],
-  })
-
-  const intent: PaymentIntent = {
-    prompt:
-      process.argv.slice(2).join(' ').trim() ||
-      'Write a one-sentence summary of the XRPL Machine Payments Protocol.',
-    model: 'mock-small',
-    maxTokens: 64,
-  }
-
-  console.log(`\n[agent-template] sending intent: ${JSON.stringify(intent)}`)
-  console.log('[agent-template] (fetch will pay any 402 challenge automatically)\n')
-
-  const result = await callAgent({ serverUrl: config.serverUrl, intent })
-
-  console.log(`--- response (${result.status}) ---`)
-  console.log(JSON.stringify(result.body, null, 2))
-
-  if (result.receipt) {
-    console.log('\n--- receipt ---')
-    console.log(`method:    ${result.receipt.method}`)
-    console.log(`reference: ${result.receipt.reference}`)
-    console.log(`explorer:  ${result.receipt.explorerUrl}`)
-  }
-
-  process.exit(result.ok ? 0 : 1)
-}
-
-const isMain = import.meta.url === `file://${process.argv[1]}`
-if (isMain) {
-  main().catch((err) => {
-    console.error('[agent-template] fatal:', err)
-    process.exit(1)
-  })
 }

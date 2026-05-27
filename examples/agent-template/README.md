@@ -1,43 +1,74 @@
-# XRPL MPP — AI Agent Template
+# XRPL MPP -- AI Agent Template
 
-A minimal end-to-end template that mirrors how an AI agent integrator
-would consume `xrpl-mpp-sdk`.
+A minimal but **real-life** end-to-end template that mirrors how an AI
+agent integrator would consume `xrpl-mpp-sdk`. The agent is a real
+Claude model (Haiku 4.5 by default) with tool-use, and the marketplace
+it calls is another Claude instance running behind an Express server.
+The payment is a real XRPL Payment on testnet -- no mocks anywhere on
+the payment side.
 
 ```
-+-----------------+   POST /agent/run    +-----------------+
-|                 |  { prompt, model,    |                 |
-|                 |    maxTokens }       |                 |
-|   AI client     | -------------------> |   Agent server  |
-|   (TS, holds    |                      |   (Express,     |
-|    payer seed)  | <- 402 challenge --- |    holds        |
-|                 |                      |    recipient    |
-|                 |   sign Payment tx    |    seed)        |
-|                 | -------------------> |                 |
-|                 |   200 + result       |                 |
-|                 |   + Payment-Receipt  |                 |
-|                 | <------------------- |                 |
-+-----------------+                      +-----------------+
-                                                 |
-                                                 |  validate intent
-                                                 |  verify payment on XRPL
-                                                 |  run agent (mock LLM)
-                                                 v
-                                         +---------------+
-                                         |  XRPL testnet |
-                                         +---------------+
++-------------------------+                    +-------------------------+
+|                         |                    |                         |
+|     AI agent process    |                    |     Express server      |
+|                         |                    |                         |
+|  - Claude (tool-use)    |  POST              |  - holds recipient      |
+|  - holds payer wallet   |  /linkedin-post    |    wallet               |
+|  - mppx patches fetch() |  +brief JSON       |  - mppx-gated endpoint  |
+|                         | -----------------> |  - calls Claude to      |
+|                         |                    |    draft the post       |
+|                         | <- 402 challenge - |                         |
+|                         |    (price in XRP)  |                         |
+|                         |                    |                         |
+|                         | sign Payment tx -> |                         |
+|                         |    (charge, pull   |                         |
+|                         |    mode -- server  |                         |
+|                         |    submits to      |                         |
+|                         |    XRPL)           |                         |
+|                         |                    |                         |
+|                         | <- 200 + post +    |                         |
+|                         |    Payment-Receipt |                         |
++-------------------------+                    +-------------------------+
+       |                                                |
+       |                                                |
+       |       both sides talk to XRPL TESTNET          |
+       v                                                v
+                  +-----------------------+
+                  |  XRPL testnet (real)  |
+                  +-----------------------+
 ```
 
 ## What's inside
 
-- **Express server** holding a recipient wallet, exposing
-  - `GET  /info`        — public price/recipient discovery
-  - `POST /agent/run`   — payment-gated agent endpoint
-- **TypeScript client** that builds an intent, calls the server,
-  pays the 402 challenge, and prints the receipt
-- **Env-based wallet management** (with a strict "do not do this in
-  production" note)
-- **One end-to-end flow**: intent → validate → 402 challenge →
-  on-chain XRPL Payment → agent execution → receipt
+- **Express marketplace server** (`src/server.ts`)
+  - holds the recipient wallet (paid on every call)
+  - `GET /info` -- public price + recipient discovery
+  - `POST /linkedin-post` -- payment-gated, calls Claude server-side
+- **Real AI agent** (`src/agent.ts`)
+  - Claude Haiku 4.5 (overridable) with **one tool**, `generate_linkedin_post`
+  - the tool is wired to the paid `/linkedin-post` endpoint
+  - holds the payer wallet, signs the Payment tx that pays the 402
+- **Low-level paid HTTP helper** (`src/client.ts`)
+  - `attachPayer(wallet, network)` installs mppx's fetch middleware
+  - `callPostService({ brief })` is what the agent's tool actually calls
+- **Env-based wallet management** (`src/env.ts`) with a strict
+  "do not do this in production" note
+- **One end-to-end flow** (`src/run-demo.ts`)
+  - user request -> Claude reasons -> tool call -> 402 -> XRPL Payment
+  - -> Claude (server) drafts the post -> 200 + receipt -> agent presents it
+
+## Setup (once)
+
+You need an Anthropic API key. New accounts get $5 of trial credit which
+is enough for hundreds of Haiku runs of this demo.
+
+1. Get a key at <https://console.anthropic.com>
+2. Wire it locally:
+   ```bash
+   cp examples/agent-template/.env.example examples/agent-template/.env
+   # then edit .env and paste your sk-ant-api03-... key
+   ```
+   `.env` is git-ignored.
 
 ## Run it (one command)
 
@@ -49,24 +80,39 @@ pnpm agent-template
 
 That single command:
 
-1. funds two ephemeral testnet wallets via the faucet,
-2. boots the Express server on `http://localhost:3000`,
-3. runs the TS client against it,
-4. prints the agent result, the receipt, and an explorer link,
-5. shuts the server down and exits.
+1. spawns `src/server.ts` as a CHILD PROCESS -- it auto-funds the
+   recipient wallet on the faucet (or reuses `RECIPIENT_SEED`),
+   boots Express on `http://localhost:3000`, and prints its banner;
+2. auto-funds the agent's payer wallet (or reuses `PAYER_SEED`);
+3. runs the Claude agent **in the parent process** with a real
+   "write me a LinkedIn post" user request;
+4. the agent decides to call its tool, mppx pays the 402 transparently
+   on testnet, the server submits the tx, polls until validated, then
+   calls Anthropic and returns the post;
+5. prints the agent's final message, the generated post, the on-chain
+   receipt(s), and an explorer link;
+6. kills the server subprocess and exits.
 
-If you set `RECIPIENT_SEED` and/or `PAYER_SEED` in
-`examples/agent-template/.env`, those wallets are used instead — no
-faucet calls.
+Server and agent run in **two separate Node processes** on purpose --
+that's the real deployment shape (independent organizations, independent
+keys) and it avoids cross-contamination of `mppx`'s patched
+`globalThis.fetch` between client and server.
 
-## Run server and client separately
+You should see a real transaction hash you can click on, like:
+
+```
+https://testnet.xrpl.org/transactions/E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+## Run server and agent separately
 
 ```bash
-# terminal 1 — server (boots on :3000)
-pnpm tsx examples/agent-template/src/server.ts
+# terminal 1 -- server (boots on :3000)
+pnpm agent-template:server
 
-# terminal 2 — client (sends an intent, prints receipt)
-pnpm tsx examples/agent-template/src/client.ts
+# terminal 2 -- agent (sends a request, prints receipts)
+pnpm agent-template:agent \
+  "Write a LinkedIn post about our SDK release for MPP."
 ```
 
 ## Use as a starter (copy out of the repo)
@@ -75,10 +121,16 @@ pnpm tsx examples/agent-template/src/client.ts
 cp -r examples/agent-template ~/my-xrpl-agent
 cd ~/my-xrpl-agent
 pnpm install
-cp .env.example .env   # then fill it in
-pnpm dev:server        # one terminal
-pnpm dev:client        # another terminal
+cp .env.example .env   # then fill in ANTHROPIC_API_KEY (and seeds if reusing wallets)
+pnpm dev:server        # one terminal -- boots the marketplace
+pnpm dev:agent         # another terminal -- runs the agent once and exits
+# (or: pnpm start  -- spawns the server + runs the agent in one go)
 ```
+
+Before publishing the standalone copy, delete the `baseUrl` / `paths`
+keys in `tsconfig.json` (they're monorepo-only) and keep
+`"xrpl-mpp-sdk"` in `package.json` resolving to the published npm
+version instead of the local `file:../..`.
 
 ## Wallet management
 
@@ -86,11 +138,14 @@ pnpm dev:client        # another terminal
 
 | Variable          | Purpose                                                |
 | ----------------- | ------------------------------------------------------ |
-| `RECIPIENT_SEED`  | Server wallet (receives XRP). Optional on testnet.     |
-| `PAYER_SEED`      | Client wallet (sends XRP). Optional on testnet.        |
-| `XRPL_NETWORK`    | `testnet` (default), `devnet`, or `mainnet`.           |
-| `PORT`            | Server port. Default `3000`.                           |
-| `AGENT_PRICE_DROPS_PER_1K_TOKENS` | Pricing knob. Default `100000` (0.1 XRP). |
+| `ANTHROPIC_API_KEY`               | **Required.** Used by BOTH agent + server. |
+| `ANTHROPIC_MODEL`                 | Optional. Default `claude-haiku-4-5`. |
+| `RECIPIENT_SEED`                  | Server wallet (receives XRP). Optional on testnet. |
+| `PAYER_SEED`                      | Agent wallet (sends XRP). Optional on testnet. |
+| `XRPL_NETWORK`                    | `testnet` (default), `devnet`, or `mainnet`. |
+| `PORT`                            | Server port. Default `3000`. |
+| `AGENT_PRICE_DROPS_PER_1K_TOKENS` | Pricing knob. Default `1000000` (1 XRP). |
+| `MPP_SECRET_KEY`                  | Server-side mppx secret. Default fine for testnet only. |
 
 > **Do NOT do this in production.**
 >
@@ -99,42 +154,63 @@ pnpm dev:client        # another terminal
 >
 > For production:
 > - Use a KMS / HSM / cloud secret manager (AWS KMS, GCP KMS, HashiCorp
->   Vault, Azure Key Vault, ...) and inject signing capability — never
->   the seed itself — into the process.
+>   Vault, Azure Key Vault, ...) and inject signing capability -- never
+>   the seed itself -- into the process.
 > - Or run the wallet in a separate signer service the agent talks to
 >   over an authenticated channel.
 > - Keep the recipient (server) wallet hot only for the funds it needs
 >   to settle protocol-level operations; sweep balances to cold storage
 >   on a schedule.
 > - Rate-limit and authenticate the agent endpoint at the application
->   layer — payment is not a substitute for authn/authz when the same
+>   layer -- payment is not a substitute for authn/authz when the same
 >   payer should be allowed multiple uses.
+> - Move `ANTHROPIC_API_KEY` into a secret manager too; do not bake it
+>   into the process env at build time.
 
 ## Files
 
 ```
 examples/agent-template/
-├── README.md           — this file
-├── package.json        — standalone deps (so the folder can be lifted out)
+├── README.md           -- this file
+├── package.json        -- standalone deps (so the folder can be lifted out)
 ├── tsconfig.json
 ├── .env.example
 ├── .gitignore
 └── src/
-    ├── env.ts          — wallet + config loading
-    ├── intent.ts       — Zod schema for the payment intent + pricing
-    ├── agent.ts        — mock LLM "agent" (replace with your real one)
-    ├── server.ts       — Express + MPP charge endpoint
-    ├── client.ts       — TS client paying the intent
-    └── run-demo.ts     — one-command orchestrator (server + client)
+    ├── env.ts          -- wallet + config loading
+    ├── intent.ts       -- Zod schema for the PostBrief + pricing
+    ├── server.ts       -- Express + MPP charge + Claude-backed post generation
+    ├── client.ts       -- low-level paid HTTP helper used by the agent's tool
+    ├── agent.ts        -- Claude agent with tool-use (the integrator's code)
+    └── run-demo.ts     -- one-command orchestrator (server + agent in one process)
 ```
 
 ## What you replace to make it real
 
-1. `src/agent.ts` — swap the mock `runAgent()` for your real LLM /
-   tool / data call.
-2. `src/intent.ts` — adjust the `PaymentIntent` schema and `priceOf()`
-   to match what you actually charge for.
-3. `src/env.ts` — replace `loadWallets()` with a KMS-backed signer
+1. `src/intent.ts` -- swap `PostBrief` and `priceOf()` for whatever
+   product/service your marketplace actually sells.
+2. `src/server.ts` -- replace `generatePost()` with your own
+   server-side workload (LLM call, retrieval pipeline, on-chain
+   action, data API, ...).
+3. `src/agent.ts` -- redefine `LINKEDIN_TOOL` for your real tool
+   suite. The agent loop, the wallet wiring, and the 402 handling
+   are general and stay the same.
+4. `src/env.ts` -- replace `loadWallets()` with a KMS-backed signer
    before deploying anywhere that touches mainnet.
-4. Add authentication, rate-limiting, observability, and an MPP
-   `Store` backed by a real database (`Store.memory()` is process-local).
+5. Add authentication, rate-limiting, observability, and an MPP
+   `Store` backed by a real database (`Store.memory()` is
+   process-local).
+
+## Why this template matters
+
+A normal HTTP API charges its callers via API keys + monthly invoices.
+That works fine when the caller is a human-administered service signed
+up to a stripe account. It breaks down when the caller is an
+**autonomous AI agent** that:
+
+- discovers the API at runtime,
+- pays per call from a wallet **it controls**,
+- needs a cryptographic receipt to reconcile its spend.
+
+That is exactly what this template demonstrates end-to-end, with real
+on-chain payments, on real testnet, with a real LLM driving the agent.

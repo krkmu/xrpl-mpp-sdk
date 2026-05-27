@@ -12,11 +12,19 @@
  *    - Inject SIGNING CAPABILITY into the process, never the seed itself.
  *    - Sweep recipient balances to cold storage on a schedule.
  *    - Add authn/authz at the application layer; payment is not auth.
+ *    - Move ANTHROPIC_API_KEY into a secret manager (AWS Secrets Manager,
+ *      GCP Secret Manager, Vault, ...) and inject only at boot.
  * ===========================================================================
  */
-import 'dotenv/config'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import dotenv from 'dotenv'
 import type { NetworkId } from 'xrpl-mpp-sdk'
 import { Wallet } from 'xrpl-mpp-sdk'
+
+// Load .env from this folder regardless of where the script was launched.
+const HERE = dirname(fileURLToPath(import.meta.url))
+dotenv.config({ path: resolve(HERE, '..', '.env') })
 
 const VALID_NETWORKS: readonly NetworkId[] = ['testnet', 'devnet', 'mainnet'] as const
 
@@ -26,9 +34,16 @@ export type Config = {
   serverUrl: string
   pricePer1kTokensDrops: bigint
   mppSecretKey: string
+  anthropicModel: string
+  anthropicApiKey: string | undefined
 }
 
-export function loadConfig(): Config {
+export type LoadConfigOptions = {
+  /** Throw if ANTHROPIC_API_KEY is missing or still the placeholder value. */
+  requireAnthropic?: boolean
+}
+
+export function loadConfig(options: LoadConfigOptions = {}): Config {
   const network = (process.env.XRPL_NETWORK ?? 'testnet') as NetworkId
   if (!VALID_NETWORKS.includes(network)) {
     throw new Error(`XRPL_NETWORK must be one of ${VALID_NETWORKS.join(', ')}, got "${network}".`)
@@ -41,7 +56,7 @@ export function loadConfig(): Config {
 
   const serverUrl = process.env.SERVER_URL ?? `http://localhost:${port}`
 
-  const priceRaw = process.env.AGENT_PRICE_DROPS_PER_1K_TOKENS ?? '100000'
+  const priceRaw = process.env.AGENT_PRICE_DROPS_PER_1K_TOKENS ?? '1000000'
   let pricePer1kTokensDrops: bigint
   try {
     pricePer1kTokensDrops = BigInt(priceRaw)
@@ -60,7 +75,28 @@ export function loadConfig(): Config {
     )
   }
 
-  return { network, port, serverUrl, pricePer1kTokensDrops, mppSecretKey }
+  const anthropicModel = process.env.ANTHROPIC_MODEL ?? 'claude-haiku-4-5'
+  const anthropicApiKey = process.env.ANTHROPIC_API_KEY
+  if (
+    options.requireAnthropic &&
+    (!anthropicApiKey || anthropicApiKey.startsWith('sk-ant-api03-...'))
+  ) {
+    throw new Error(
+      'ANTHROPIC_API_KEY is missing or still the placeholder. Copy ' +
+        'examples/agent-template/.env.example to .env and paste your key from ' +
+        'https://console.anthropic.com (free $5 trial credit on signup).',
+    )
+  }
+
+  return {
+    network,
+    port,
+    serverUrl,
+    pricePer1kTokensDrops,
+    mppSecretKey,
+    anthropicModel,
+    anthropicApiKey,
+  }
 }
 
 /**
@@ -69,7 +105,7 @@ export function loadConfig(): Config {
  *
  * `which` selects which sides we actually need:
  *   - 'recipient' for the server process
- *   - 'payer'     for the client process
+ *   - 'payer'     for the agent process
  *   - 'both'      for the run-demo orchestrator
  */
 export async function loadWallets(

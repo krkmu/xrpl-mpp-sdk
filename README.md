@@ -542,8 +542,8 @@ All errors extend mppx's `PaymentError` base class and serialize to RFC 9457 Pro
 | `XRPL_EXPLORER_URLS.mainnet` | `https://xrpl.org/transactions/` |
 | `XRPL_EXPLORER_URLS.testnet` | `https://testnet.xrpl.org/transactions/` |
 | `XRPL_EXPLORER_URLS.devnet`  | `https://devnet.xrpl.org/transactions/` |
-| `RLUSD_MAINNET` | `{ currency: 'RLUSD', issuer: 'rMxWzrBMyeKR9oJfYBrhAEGsxwsdLFSfim' }` |
-| `RLUSD_TESTNET` | `{ currency: 'RLUSD', issuer: 'rQhWct2fTR9z7bBQaflfqMEr2u8avFFpKH' }` |
+| `RLUSD_MAINNET` | `{ currency: '524C555344...0000' (hex `RLUSD`), issuer: 'rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De' }` |
+| `RLUSD_TESTNET` | `{ currency: '524C555344...0000' (hex `RLUSD`), issuer: 'rQhWct2fv4Vc4KRjRgMrxa8xPN9Zx9iLKV' }` |
 | `XRP_DECIMALS` | `6` |
 | `BASE_RESERVE_DROPS` | `'1000000'` (1 XRP, current mainnet) |
 | `OWNER_RESERVE_DROPS` | `'200000'` (0.2 XRP, current mainnet) |

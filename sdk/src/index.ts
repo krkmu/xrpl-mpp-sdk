@@ -34,6 +34,7 @@ export type {
   ChannelClientConfig,
   ChannelServerConfig,
   ChargeClientConfig,
+  ChargeProgressEvent,
   ChargeServerConfig,
   CreateEscrowOptions,
   CreateEscrowResult,

@@ -44,7 +44,7 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "agent-template": "tsx --tsconfig examples/agent-template/tsconfig.json examples/agent-template/src/run-demo.ts",
     "agent-template:server": "tsx --tsconfig examples/agent-template/tsconfig.json examples/agent-template/src/server.ts",
-    "agent-template:client": "tsx --tsconfig examples/agent-template/tsconfig.json examples/agent-template/src/client.ts"
+    "agent-template:agent": "tsx --tsconfig examples/agent-template/tsconfig.json examples/agent-template/src/agent.ts"
   },
   "peerDependencies": {
     "mppx": ">=0.4.0",

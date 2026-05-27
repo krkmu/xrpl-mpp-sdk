@@ -28,6 +28,7 @@ All demos run on XRPL testnet. Zero environment variables -- every script genera
 | `llm-marketplace/channel/{server,client}.ts` | Two-terminal | Real Anthropic Claude over MPP `channel`: 3 prompts amortised on a single PayChannel (open + N off-chain vouchers + close), eager 5 XRP deposit |
 | `llm-marketplace/channel-fund/{server,client}.ts` | Two-terminal | Real Anthropic Claude over MPP `channel`: same 3 prompts, but the client opens with a tiny 5 000-drop deposit and tops up just-in-time via `PaymentChannelFund` on `CHANNEL_EXHAUSTED` |
 | `weather-api/{server,client}.ts` | Two-terminal | Premium HTTP API with no API key: each `/forecast` call is gated by HTTP 402 and billed as one on-chain IOU Payment in the API's own token (`WTH`). Prepaid-credits model, on-chain |
+| `weather-api-rlusd/{server,client}.ts` | Two-terminal | Same flow as `weather-api/`, but billed in **real testnet RLUSD** (Ripple's USD-pegged stablecoin). Payer wallet loaded from `.env` because we cannot faucet RLUSD -- production shape of the IOU charge model |
 | `escrow-lifecycle.ts` | All-in-one | 3 escrow scenarios: time-locked, crypto-condition, cancellable |
 | `error-showcase.ts` | All-in-one | 16 error cases with fail-fix-validate pattern |
 
@@ -263,6 +264,43 @@ is `tesSUCCESS`.
 No environment variables, no external services -- everything runs on
 testnet wallets faucet-funded at boot. Full walkthrough:
 `demo/weather-api/README.md`.
+
+## Weather API -- pay per call in real testnet RLUSD
+
+```bash
+# One-time setup -- bring a testnet seed that already holds RLUSD
+cp demo/weather-api-rlusd/.env.example demo/weather-api-rlusd/.env
+# edit .env and set PAYER_SEED (get a pre-funded seed from https://tryrlusd.com)
+
+# Terminal 1 -- the weather API (PORT 3010)
+npx tsx demo/weather-api-rlusd/server.ts
+
+# Terminal 2 -- a consumer, pays per call in RLUSD
+npx tsx demo/weather-api-rlusd/client.ts
+```
+
+Same wire flow as `weather-api/` but billed in **real testnet RLUSD**
+(Ripple's USD-pegged stablecoin) instead of a self-minted `WTH` IOU.
+This is the production shape of the IOU charge model: the marketplace
+accepts a widely-held stablecoin (`RLUSD_TESTNET` / `RLUSD_MAINNET`
+from `xrpl-mpp-sdk`) and never has to operate its own treasury -- no
+issuer wallet, no `enableTransfers`, no `/faucet-iou` endpoint to
+mint demo credits.
+
+The payer wallet is loaded from `.env` (`PAYER_SEED`) because Ripple
+does not expose a programmatic faucet for RLUSD; the address must
+already hold some testnet RLUSD (free from https://tryrlusd.com) plus
+a small XRP balance for the trustline reserve and per-tx fees.
+
+| # | What it shows |
+|---|---|
+| Setup     | Recipient opens (or confirms) a trustline to Ripple's RLUSD testnet issuer; the payer's trustline + balance are pre-funded out of band |
+| Bootstrap | Client loads `PAYER_SEED` from `.env`, sanity-checks RLUSD balance, aborts early with a pointer to https://tryrlusd.com if zero |
+| Pay       | Per call: mppx auto-signs an RLUSD Payment of 0.1 RLUSD, server polls until validated, returns the forecast JSON |
+| Settle    | Per-call breakdown: tx hashes, on-chain RLUSD balance before/after the run |
+
+Full walkthrough including mainnet migration path:
+`demo/weather-api-rlusd/README.md`.
 
 ## Escrow Lifecycle
 
