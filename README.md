@@ -102,20 +102,118 @@ pnpm build
 
 ## AI agent template
 
-A minimal end-to-end starter (Express server + TS client) for AI agent
-integrators lives at [`examples/agent-template`](examples/agent-template).
-After `pnpm install`, run the full demo with one command:
+A minimal but **real-life** end-to-end starter for AI agent integrators lives
+at [`examples/agent-template`](examples/agent-template). It demonstrates an
+autonomous agent (Claude with tool-use) that **discovers, pays, and consumes a
+paid HTTP API** -- no API keys, no monthly invoices, no Stripe -- just a
+per-call XRPL Payment settled through the MPP HTTP 402 flow.
+
+```
++---------------------------+                  +---------------------------+
+|      AI agent process     |                  |      Express server       |
+|                           |                  |                           |
+|  - Claude (tool-use)      |   POST           |  - holds recipient wallet |
+|  - holds payer wallet     |   /linkedin-post |  - mppx-gated endpoint    |
+|  - mppx patches fetch()   | ---------------> |  - calls Claude to draft  |
+|                           | <- 402 (price) - |    the post once paid     |
+|                           | -- sign tx ----> |                           |
+|                           | <- 200 + post +  |                           |
+|                           |    receipt ----- |                           |
++---------------------------+                  +---------------------------+
+              \                                            /
+               \           XRPL testnet (real chain)      /
+                +------------------------------------------+
+```
+
+### What's wired up
+
+- **Express marketplace server** ([`src/server.ts`](examples/agent-template/src/server.ts))
+  -- holds the recipient wallet, exposes a free `GET /info` for price discovery
+  and a paid `POST /linkedin-post` endpoint gated by mppx + the
+  `xrpl-mpp-sdk` charge method. The server-side workload is itself a Claude
+  call that drafts the post once payment is validated on-chain.
+- **AI agent process** ([`src/agent.ts`](examples/agent-template/src/agent.ts))
+  -- a real Claude model (Haiku 4.5 by default) with one tool,
+  `generate_linkedin_post`. Holds the payer wallet and signs the XRPL Payment
+  transparently when the server replies `402`.
+- **Paid fetch helper** ([`src/client.ts`](examples/agent-template/src/client.ts))
+  -- installs mppx's fetch middleware so the agent's tool just calls `fetch()`
+  and the 402 handshake is handled under the hood.
+- **One-command orchestrator** ([`src/run-demo.ts`](examples/agent-template/src/run-demo.ts))
+  -- spawns the server as a child process, funds ephemeral testnet wallets,
+  runs the agent once with a hard-coded prompt, prints the receipt + explorer
+  link, and exits cleanly.
+
+### Prerequisites
+
+You need an Anthropic API key (new accounts get $5 of trial credit, more than
+enough for hundreds of Haiku runs of this demo):
+
+```bash
+pnpm install
+cp examples/agent-template/.env.example examples/agent-template/.env
+# then edit examples/agent-template/.env and paste your sk-ant-api03-... key
+```
+
+Everything else (wallets, network, pricing) has sensible testnet defaults --
+ephemeral wallets are auto-funded via the faucet on each run unless you pin
+seeds in `.env`.
+
+### Option A -- run everything in one command
 
 ```bash
 pnpm agent-template
 ```
 
-It funds two ephemeral testnet wallets, boots an Express MPP server on
-`:3000`, sends a payment intent from the TS client, pays the 402
-challenge on XRPL, prints the receipt + explorer link, and exits. See
-[`examples/agent-template/README.md`](examples/agent-template/README.md)
-for env-based wallet management, production caveats, and how to lift
-the folder out as a standalone starter.
+That single command:
+
+1. spawns `src/server.ts` as a **child process** -- it auto-funds the
+   recipient wallet, boots Express on `http://localhost:3000`, and waits for
+   incoming requests;
+2. auto-funds the agent's payer wallet;
+3. runs the Claude agent with a hard-coded "write me a LinkedIn post" request;
+4. the agent decides on its own to call its tool, mppx pays the 402
+   transparently on testnet, the server submits the tx, polls until validated,
+   then calls Anthropic and returns the post;
+5. prints the agent's final message, the generated post, and the on-chain
+   receipt(s) with explorer link(s);
+6. kills the server subprocess and exits.
+
+Use this when you just want to see the full happy path once.
+
+### Option B -- run server and agent in two terminals
+
+This mirrors the real deployment shape (two independent processes, two
+independent organisations) and lets you fire repeated paid calls against a
+long-running server:
+
+```bash
+# terminal 1 -- boots the marketplace on :3000, holds the recipient wallet
+pnpm agent-template:server
+```
+
+Wait for the `listening on http://localhost:3000` banner, then in another
+terminal:
+
+```bash
+# terminal 2 -- run the agent once with your own prompt
+pnpm agent-template:agent \
+  "Write a LinkedIn post about our SDK release for MPP."
+```
+
+The agent prompt is taken from CLI args (everything after the script name is
+joined and sent to Claude). The server keeps running between invocations, so
+you can repeat the second command as many times as you like and watch each
+XRPL Payment accumulate on the explorer.
+
+> Server and agent run in two **separate Node processes** on purpose -- that's
+> the real deployment shape, and it avoids cross-contamination of mppx's
+> patched `globalThis.fetch` between client and server sides.
+
+See [`examples/agent-template/README.md`](examples/agent-template/README.md)
+for the detailed architecture diagram, env-based wallet management, production
+caveats (KMS-backed signing, rate-limiting, persistent replay store), and how
+to lift the folder out of the monorepo as a standalone starter project.
 
 ## Quick start
 
