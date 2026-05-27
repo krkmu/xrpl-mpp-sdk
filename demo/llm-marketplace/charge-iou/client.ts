@@ -1,0 +1,244 @@
+/**
+ * LLM Marketplace -- Charge mode (IOU) -- Client
+ *
+ * Fires ONE /complete request to the marketplace, billed in an XRPL
+ * issued currency (IOU) instead of native XRP. mppx's patched fetch
+ * handles the 402: signs an IOU Payment tx, the server submits it to
+ * XRPL, validates, and returns an SSE token stream we render live.
+ *
+ * The marketplace mints its own test IOU with the 3-char code `USD`
+ * (XRPL native IOU codes are 3 ASCII chars; longer codes such as real
+ * `RLUSD` require the 40-char hex-encoded format). On mainnet, point
+ * the recipient's trustline at any production issuer instead -- the
+ * client code path is identical.
+ *
+ * Bootstrap (one-time, before the paid call):
+ *   1. Fund a fresh wallet via the XRPL testnet faucet (XRP for the
+ *      trustline reserve and tx fees -- not what we're paying *with*).
+ *   2. GET /info to discover marketplace address, currency, model, pricing.
+ *   3. Open a trustline to the test USD issuer (acceptToken / TrustSet).
+ *   4. POST /faucet-usd to receive the demo allowance (10 USD).
+ *      Demo-only bootstrap; in production this would be a paid top-up
+ *      (card payment, DEX swap, fiat on-ramp) targeting a real
+ *      USD-pegged issuer such as Ripple's RLUSD.
+ *
+ * Then POST /complete with { prompt, maxTokens }; mppx intercepts the
+ * 402 transparently and pays the quote in USD before the SSE stream
+ * starts.
+ *
+ * Run: npx tsx demo/llm-marketplace/charge-iou/client.ts
+ *      (after `npx tsx demo/llm-marketplace/charge-iou/server.ts`)
+ */
+import { Receipt } from 'mppx'
+import { Mppx } from 'mppx/client'
+import { charge } from '../../../sdk/src/client/Charge.js'
+import { Wallet } from '../../../sdk/src/utils/wallet.js'
+import * as log from '../../log.js'
+
+const PORT = 3008
+const BASE = `http://localhost:${PORT}`
+const NETWORK = 'testnet' as const
+const rawFetch = globalThis.fetch
+
+// Edit the prompt + budget to taste. maxTokens is the worst-case the client
+// is willing to pay for; the actual Anthropic generation will usually be less.
+const PROMPT = 'Explain what the Machine Payments Protocol does in one short paragraph.'
+const MAX_TOKENS = 120
+
+type DoneEvent = {
+  input_tokens: number
+  output_tokens: number
+  actual_cost: string
+  paid: string
+  overpayment: string
+  currency: string
+}
+
+type Info = {
+  issuer: string
+  recipient: string
+  network: string
+  currency: { currency: string; issuer: string }
+  model: string
+  pricing: { usdPerInputToken: number; usdPerOutputToken: number }
+  faucetAllowanceUsd: string
+  payerTrustlineLimitUsd: string
+}
+
+/** Parse text/event-stream chunks and yield { event, data } objects. */
+async function* readSseEvents(
+  body: ReadableStream<Uint8Array>,
+): AsyncGenerator<{ event: string; data: any }> {
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    let sep = buffer.indexOf('\n\n')
+    while (sep !== -1) {
+      const raw = buffer.slice(0, sep)
+      buffer = buffer.slice(sep + 2)
+      sep = buffer.indexOf('\n\n')
+
+      let event = 'message'
+      let data = ''
+      for (const line of raw.split('\n')) {
+        if (line.startsWith('event:')) event = line.slice(6).trim()
+        else if (line.startsWith('data:')) data = line.slice(5).trim()
+      }
+      if (data) yield { event, data: JSON.parse(data) }
+    }
+  }
+}
+
+async function fetchInfo(): Promise<Info> {
+  const res = await rawFetch(`${BASE}/info`)
+  if (!res.ok) throw new Error(`/info failed: ${res.status}`)
+  return (await res.json()) as Info
+}
+
+async function fetchFaucetUsd(holder: string): Promise<{ txHash: string }> {
+  const res = await rawFetch(`${BASE}/faucet-usd`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ holder }),
+  })
+  if (!res.ok) throw new Error(`/faucet-usd failed: ${res.status} ${await res.text()}`)
+  const json = (await res.json()) as { txHash: string }
+  return { txHash: json.txHash }
+}
+
+async function main() {
+  log.box(['XRPL MPP -- LLM Marketplace (charge client, IOU billing)'])
+  log.separator()
+
+  log.loading('Funding payer wallet via testnet faucet...')
+  const wallet = await Wallet.fromFaucet({ network: NETWORK })
+  log.wallet('Payer', wallet.address)
+  log.separator()
+
+  log.loading(`Discovering marketplace at ${BASE}/info ...`)
+  const info = await fetchInfo()
+  log.wallet('Marketplace issuer', info.issuer)
+  log.wallet('Marketplace recipient', info.recipient)
+  log.info(
+    `Currency: ${info.currency.currency} ` +
+      `(issuer ${info.currency.issuer.slice(0, 6)}...${info.currency.issuer.slice(-4)})`,
+  )
+  log.info(`Model: ${info.model}`)
+  log.info(
+    `Pricing: ${info.pricing.usdPerInputToken} ${info.currency.currency}/in, ` +
+      `${info.pricing.usdPerOutputToken} ${info.currency.currency}/out`,
+  )
+  log.separator()
+
+  // TrustSet from the payer toward the issuer. Without this the payer
+  // cannot hold or transfer USD, and the very first 402 fails at
+  // preflight with PAYMENT_PATH_FAILED.
+  log.loading(
+    `Opening trustline: payer accepts up to ${info.payerTrustlineLimitUsd} ${info.currency.currency}...`,
+  )
+  const accept = await wallet.acceptToken(info.currency, {
+    network: NETWORK,
+    limit: info.payerTrustlineLimitUsd,
+  })
+  if ('hash' in accept && accept.hash) {
+    log.tx(accept.hash, log.explorerLink(accept.hash))
+  }
+  log.success(`Trustline status: ${accept.status}`)
+  log.separator()
+
+  log.loading(
+    `Requesting demo allowance from /faucet-usd (${info.faucetAllowanceUsd} ${info.currency.currency})...`,
+  )
+  const faucetIou = await fetchFaucetUsd(wallet.address)
+  log.tx(faucetIou.txHash, log.explorerLink(faucetIou.txHash))
+  log.success(`Payer credited with ${info.faucetAllowanceUsd} ${info.currency.currency}`)
+  log.separator()
+
+  // Patch fetch so the next /complete call auto-handles the USD 402.
+  Mppx.create({
+    methods: [charge({ wallet, mode: 'pull', network: NETWORK })],
+  })
+
+  log.info(`Prompt: "${PROMPT}"`)
+  log.info(`maxTokens: ${MAX_TOKENS}`)
+  log.loading('Sending POST /complete -- mppx will auto-handle the 402...')
+  log.separator()
+
+  const response = await fetch(`${BASE}/complete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt: PROMPT, maxTokens: MAX_TOKENS }),
+  })
+
+  if (!response.ok) {
+    log.error(`Request failed: ${response.status} ${await response.text()}`)
+    process.exit(1)
+  }
+
+  if (!response.body) {
+    log.error('No response body')
+    process.exit(1)
+  }
+
+  log.success('Payment settled on-chain')
+  try {
+    const receipt = Receipt.fromResponse(response)
+    log.tx(receipt.reference, log.explorerLink(receipt.reference))
+  } catch {
+    // No Payment-Receipt header -- still safe to continue, we just lose the link.
+  }
+
+  log.info('Streaming Anthropic tokens:')
+  log.separator()
+  process.stdout.write('   ')
+
+  let done: DoneEvent | null = null
+  for await (const evt of readSseEvents(response.body)) {
+    if (evt.event === 'token') {
+      process.stdout.write(evt.data.value)
+    } else if (evt.event === 'done') {
+      done = evt.data as DoneEvent
+    } else if (evt.event === 'error') {
+      process.stdout.write('\n')
+      log.error(`Server stream error: ${evt.data.message}`)
+      process.exit(1)
+    }
+  }
+  process.stdout.write('\n')
+  log.separator()
+
+  if (!done) {
+    log.error('Stream ended without a done event')
+    process.exit(1)
+  }
+
+  const paid = Number(done.paid)
+  const overpayment = Number(done.overpayment)
+  const overpayPct = paid > 0 ? ((overpayment / paid) * 100).toFixed(1) : '0.0'
+  const remaining = Number(info.faucetAllowanceUsd) - paid
+
+  log.box([
+    'Settlement -- charge in IOU',
+    '',
+    `Anthropic usage:   ${done.input_tokens} input + ${done.output_tokens} output tokens`,
+    `Real cost:         ${done.actual_cost} ${done.currency}`,
+    `Paid (quote):      ${done.paid} ${done.currency} (worst case before generation)`,
+    `Overpayment:       ${done.overpayment} ${done.currency} (${overpayPct}%)`,
+    `Remaining balance: ${remaining} ${done.currency} (of ${info.faucetAllowanceUsd} faucet)`,
+    '',
+    'Charge mode: 1 on-chain IOU Payment tx settled the whole call,',
+    'denominated in an XRPL issued currency instead of native XRP.',
+  ])
+
+  process.exit(0)
+}
+
+main().catch((err) => {
+  log.error(`Fatal: ${err.message}`)
+  process.exit(1)
+})

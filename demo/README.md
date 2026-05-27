@@ -22,6 +22,12 @@ All demos run on XRPL testnet. Zero environment variables -- every script genera
 | `channel-server.ts` | Two-terminal | Server: verifies off-chain PayChannel claims (0.1 XRP each) |
 | `channel-client.ts` | Two-terminal | Client: opens channel, 5 paid requests, closes channel |
 | `channel-fund.ts` | All-in-one | Open tiny channel, exhaust it, top up via `PaymentChannelFund`, recover, close |
+| `llm-marketplace/charge/{server,client}.ts` | Two-terminal | Real Anthropic Claude over MPP `charge`: 1 prompt = 1 on-chain Payment in **native XRP**, SSE token stream back |
+| `llm-marketplace/charge-iou/{server,client}.ts` | Two-terminal | Same as `charge/`, but billed in an **IOU** (test `USD` here; swap in any production issuer such as Ripple's RLUSD) |
+| `llm-marketplace/charge-mpt/{server,client}.ts` | Two-terminal | Same as `charge/`, but billed in an **MPT** (`CRED`, allowlisted compute credits) |
+| `llm-marketplace/channel/{server,client}.ts` | Two-terminal | Real Anthropic Claude over MPP `channel`: 3 prompts amortised on a single PayChannel (open + N off-chain vouchers + close), eager 5 XRP deposit |
+| `llm-marketplace/channel-fund/{server,client}.ts` | Two-terminal | Real Anthropic Claude over MPP `channel`: same 3 prompts, but the client opens with a tiny 5 000-drop deposit and tops up just-in-time via `PaymentChannelFund` on `CHANNEL_EXHAUSTED` |
+| `weather-api/{server,client}.ts` | Two-terminal | Premium HTTP API with no API key: each `/forecast` call is gated by HTTP 402 and billed as one on-chain IOU Payment in the API's own token (`WTH`). Prepaid-credits model, on-chain |
 | `escrow-lifecycle.ts` | All-in-one | 3 escrow scenarios: time-locked, crypto-condition, cancellable |
 | `error-showcase.ts` | All-in-one | 16 error cases with fail-fix-validate pattern |
 
@@ -114,6 +120,149 @@ Two more paid requests succeed, then the channel is closed on-chain.
 
 3 on-chain txs (open + fund + close), 6 off-chain claims (5 distinct
 vouchers + 1 retry).
+
+## LLM Marketplace -- real Claude over MPP (use case)
+
+```bash
+# One-time setup
+cp demo/llm-marketplace/.env.example demo/llm-marketplace/.env
+# edit .env and paste your Anthropic API key (free $5 credit at console.anthropic.com)
+
+# Terminal 1 -- billed in native XRP
+npx tsx demo/llm-marketplace/charge/server.ts
+
+# Terminal 2
+npx tsx demo/llm-marketplace/charge/client.ts
+```
+
+A real-world workflow: an AI agent pays an LLM marketplace for inference,
+on the XRP Ledger, via the MPP HTTP 402 flow. The server actually calls
+Anthropic Claude (Haiku 4.5 by default) and bills you in drops on testnet.
+
+| # | What it shows |
+|---|---|
+| Quote    | Server estimates input tokens locally, quotes `est × 10 + maxTokens × 50` drops |
+| 402      | Standard MPP challenge for the quoted amount |
+| Pay      | mppx signs an XRPL `Payment` tx, server submits to testnet, polls until validated |
+| Stream   | Server calls `anthropic.messages.stream(...)`, forwards each delta as SSE `event: token` |
+| Settle   | Server emits `event: done` with real `input_tokens` + `output_tokens` from Anthropic, real cost in drops vs the worst-case quote |
+
+One on-chain Payment per prompt. Everything except the drop pricing
+ratio is real. Two sibling variants bill the same flow in different
+asset types: `charge-iou/` (XRPL issued currency, e.g. a USD-pegged
+stablecoin) and `charge-mpt/` (Multi-Purpose Token credits, allowlisted).
+See `demo/llm-marketplace/README.md` for the full walkthrough, setup,
+and what's planned for the streaming PayChannel variant
+(`channel-stream/`).
+
+## LLM Marketplace -- channel mode (3 prompts, 1 PayChannel)
+
+```bash
+# (uses the same .env as charge/)
+
+# Terminal 1
+npx tsx demo/llm-marketplace/channel/server.ts
+
+# Terminal 2 -- runs 3 prompts back-to-back
+npx tsx demo/llm-marketplace/channel/client.ts
+```
+
+Same marketplace, same SSE token stream, but billed via a single PayChannel
+instead of one Payment per prompt. The client pre-signs a
+`PaymentChannelCreate` blob; the server submits it on-chain (server-managed
+open) and returns the `channelId` via the `Payment-Receipt` header. Each
+`POST /complete` then triggers a 402 (`xrpl/channel`, `action: voucher`):
+mppx auto-signs a cumulative `PaymentChannelClaim` for
+`prev_cumulative + worst_case_quote`, the server verifies it off-chain --
+**no transaction** -- and streams Anthropic tokens back. After the third
+prompt, the client closes the channel with the latest cumulative.
+
+| # | What it shows |
+|---|---|
+| Open    | Client signs `PaymentChannelCreate`, server submits via MPP `action: 'open'`, channelId returned in the receipt header |
+| Voucher | 3 sequential prompts, each settled by an off-chain claim signature (no on-chain tx) |
+| Stream  | Same SSE `event: token` cadence as charge mode, real Anthropic generation |
+| Settle  | Server emits per-call `event: done` with real cost, voucher overpayment, and running cumulative |
+| Close   | One on-chain `PaymentChannelClaim tfClose` redeems and finalises the channel |
+
+Net result: **2 on-chain txs for 3 prompts** (vs 3 in charge mode), constant
+regardless of N. The settlement summary on the client prints per-call
+breakdown plus voucher cumulative vs real Anthropic cost.
+
+## LLM Marketplace -- channel + just-in-time fund (capital-efficient)
+
+```bash
+# (uses the same .env as charge/)
+
+# Terminal 1
+npx tsx demo/llm-marketplace/channel-fund/server.ts
+
+# Terminal 2 -- 3 prompts, lazy-fund the channel as needed
+npx tsx demo/llm-marketplace/channel-fund/client.ts
+```
+
+Same wire protocol as `channel/`, but the client opens the channel with
+a deliberately tiny **5 000-drop deposit** (just enough for prompt 1's
+worst case). When prompts 2 and 3 try to commit a cumulative larger than
+the on-chain deposit, the server's `xrpl/channel` verify throws
+`AmountExceedsDepositError`; mppx catches that and re-issues the challenge
+as a fresh **HTTP 402** whose body is a Problem Details document with
+`type: ".../amount-exceeds-deposit"`. The client peeks at the body, sees
+that type, submits a `PaymentChannelFund` (one on-chain tx) and retries
+`fetch('/complete', ...)`. mppx re-runs the credential dance, the server's
+metadata cache auto-refreshes when needed, and the same voucher signature
+is accepted on the second attempt.
+
+| # | What it shows |
+|---|---|
+| Lazy open  | `PaymentChannelCreate` with a deposit sized for the first prompt only |
+| Voucher    | Same off-chain claim flow as `channel/` |
+| Exhaust    | Verify throws `AmountExceedsDepositError`; mppx surfaces it as a 402 with Problem Details `type: ".../amount-exceeds-deposit"` |
+| Top-up     | `PaymentChannelFund` adds the per-call worst-case quote to the channel's on-chain `Amount` |
+| Retry      | Same `/complete` request succeeds on second try -- same channelId, same signing key |
+| Close      | Same as `channel/`: client closes with the latest cumulative |
+
+Trade-off vs `channel/`: more on-chain transactions (open + N funds +
+close) in exchange for a much smaller peak locked deposit
+(~22 000 drops vs 5 000 000 drops for the same 3 prompts). Useful when
+the agent doesn't know its total spend up front, or when capital
+efficiency matters more than transaction-fee minimisation.
+
+## Weather API -- no API key, pay per call in the API's own token
+
+```bash
+# Terminal 1 -- the weather API (PORT 3007)
+npx tsx demo/weather-api/server.ts
+
+# Terminal 2 -- a consumer, pays per call in WTH
+npx tsx demo/weather-api/client.ts
+```
+
+A premium HTTP API that replaces `Authorization: Bearer sk-...` + monthly
+invoice with `HTTP 402 -> on-chain micropayment -> 200`. The credit unit
+is the marketplace's own trustlined IOU (`WTH`), not XRP -- the same
+prepaid-credits model OpenAI / Stripe / Twilio already use, but with the
+ledger moved on-chain.
+
+The server holds two XRPL accounts: an **issuer** (treasury, mints `WTH`)
+and a **recipient** (revenue collector, holds a trustline to the issuer).
+The client funds a payer wallet from the faucet, opens its own trustline
+to the issuer, claims a demo allowance via `/faucet-iou`, then calls
+`POST /forecast` once per city in its `CITIES` array. mppx silently
+handles every 402: signs an IOU `Payment` of 1 WTH from payer to
+recipient, submits it via the server, retries the request once the tx
+is `tesSUCCESS`.
+
+| # | What it shows |
+|---|---|
+| Setup     | Issuer enables `asfDefaultRipple`, recipient opens trustline to issuer (required by the client-side path resolver before the first 402) |
+| Bootstrap | Client TrustSet + `/faucet-iou` (demo mints 10 WTH; production would be a paid top-up) |
+| Pay       | Per call: mppx auto-signs an IOU Payment of 1 WTH, server polls until validated, returns the forecast JSON |
+| Settle    | Per-call breakdown: tx hashes, WTH spent vs initial allowance |
+
+No environment variables, no external services -- everything runs on
+testnet wallets faucet-funded at boot. Full walkthrough:
+`demo/weather-api/README.md`.
 
 ## Escrow Lifecycle
 
