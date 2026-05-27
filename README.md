@@ -313,7 +313,7 @@ const response = await fetch('https://api.example.com/resource')
 
 | Path | Exports |
 |---|---|
-| `xrpl-mpp-sdk` | Methods, ChannelMethods, constants, toDrops, fromDrops, error helpers, types, generatePreimageCondition |
+| `xrpl-mpp-sdk` | Methods, ChannelMethods, Wallet (high-level wallet API), constants (RPC/faucet/explorer URLs, `XRP`, `XRPL_NETWORK_IDS`, `XRP_DECIMALS`, `DEFAULT_TIMEOUT`, `BASE_RESERVE_DROPS`, `OWNER_RESERVE_DROPS`, `RLUSD_MAINNET`, `RLUSD_TESTNET`), toDrops, fromDrops, error helpers, types (incl. `NetworkId`, wallet/trustline option types), generatePreimageCondition |
 | `xrpl-mpp-sdk/client` | charge, xrpl, Mppx |
 | `xrpl-mpp-sdk/server` | charge, xrpl, Mppx, Store, Expires |
 | `xrpl-mpp-sdk/channel` | channel (schema), ChannelStream, ChannelSession |
@@ -658,11 +658,21 @@ Every demo is self-contained: zero env vars, ephemeral wallets funded automatica
 |---|---|---|
 | Charge an API in **native XRP** | `npx tsx demo/xrp-server.ts` + `npx tsx demo/xrp-client.ts` (two terminals) | testnet |
 | Charge an API in a **fiat-backed token / stablecoin** (auto-trustline) | `npx tsx demo/iou-charge.ts` | testnet |
+| Charge with an **allowlisted IOU** (`RequireAuth`, issuer-controlled allowlist) | `npx tsx demo/iou-allowlist.ts` | testnet |
 | Charge across two **different stablecoin issuers** (auto path-find + slippage) | `npx tsx demo/iou-cross-issuer.ts` | devnet |
 | Charge with a **permissioned / allowlisted token** (MPT) | `npx tsx demo/mpt-charge.ts` | testnet |
 | Stream **off-chain micropayments** (PayChannel: open, claim N times, close) | `npx tsx demo/channel-server.ts` + `npx tsx demo/channel-client.ts` (two terminals) | testnet |
+| **Top up / recover** an exhausted PayChannel (open + `PaymentChannelFund` + close) | `npx tsx demo/channel-fund.ts` | testnet |
+| Pay a **real Claude LLM** per prompt in **native XRP** (SSE token stream back) | `npx tsx demo/llm-marketplace/charge/server.ts` + `npx tsx demo/llm-marketplace/charge/client.ts` (two terminals) | testnet |
+| Pay a **real Claude LLM** per prompt in an **IOU** (test `USD`, swap in any issuer) | `npx tsx demo/llm-marketplace/charge-iou/server.ts` + `npx tsx demo/llm-marketplace/charge-iou/client.ts` (two terminals) | testnet |
+| Pay a **real Claude LLM** per prompt in **MPT credits** (`CRED`, allowlisted) | `npx tsx demo/llm-marketplace/charge-mpt/server.ts` + `npx tsx demo/llm-marketplace/charge-mpt/client.ts` (two terminals) | testnet |
+| Bill **N Claude prompts on one PayChannel** (2 on-chain txs total, eager deposit) | `npx tsx demo/llm-marketplace/channel/server.ts` + `npx tsx demo/llm-marketplace/channel/client.ts` (two terminals) | testnet |
+| Bill **N Claude prompts on one PayChannel** with **just-in-time `PaymentChannelFund`** | `npx tsx demo/llm-marketplace/channel-fund/server.ts` + `npx tsx demo/llm-marketplace/channel-fund/client.ts` (two terminals) | testnet |
+| Run a **paid HTTP API** (no API keys) billed in the API's own IOU (`WTH`) | `npx tsx demo/weather-api/server.ts` + `npx tsx demo/weather-api/client.ts` (two terminals) | testnet |
+| Run a **paid HTTP API** billed in **real testnet RLUSD** (Ripple's stablecoin) | `npx tsx demo/weather-api-rlusd/server.ts` + `npx tsx demo/weather-api-rlusd/client.ts` (two terminals) | testnet |
+| See a **full Claude agent with tool-use** paying an MPP-gated endpoint end-to-end | `pnpm agent-template` (one command) -- see [`examples/agent-template`](examples/agent-template) | testnet |
 | Lock funds in **escrow** (time-lock, crypto-condition, cancellable refund) | `npx tsx demo/escrow-lifecycle.ts` | testnet |
-| See **every failure mode** and how the SDK surfaces it (13 cases, fail-fix-validate) | `npx tsx demo/error-showcase.ts` | testnet |
+| See **every failure mode** and how the SDK surfaces it (16 cases, fail-fix-validate) | `npx tsx demo/error-showcase.ts` | testnet |
 | Simulate **pay-per-token LLM streaming** (offline, no network) | `npx tsx examples/stream-llm.ts` | none |
 
 Each script generates fresh wallets via faucet, prints colored progress and explorer links, and exits cleanly. Nothing to clean up.
@@ -682,12 +692,14 @@ xrpl-mpp-sdk/
     utils/
       currency.ts            # parseCurrency, buildAmount, isXrp/isIOU/isMPT
       did.ts                 # classicAddressFromDID, classicAddressFromPublicKey (source binding)
+      escrow.ts              # createEscrow / finishEscrow / cancelEscrow + PREIMAGE-SHA-256 helper
+      ledger-time.ts         # ripple-time <-> Date / ms / ISO conversions (escrow + channel timings)
+      mpt.ts                 # ensureMPTHolding, lsfMPTRequireAuth detection
       paths.ts               # resolveIouPaymentExtras (ripple_path_find + SendMax + slippage)
       reserves.ts            # getReserveState, assertReserveCovers (owner-reserve preflight)
       trustline.ts           # ensureTrustline, checkRippling, freeze + RequireAuth detection
-      mpt.ts                 # ensureMPTHolding, lsfMPTRequireAuth detection
-      escrow.ts              # createEscrow / finishEscrow / cancelEscrow + PREIMAGE-SHA-256 helper
       validation.ts          # runPreflight, assertIssuerHealth (rippling, global freeze, RequireAuth)
+      wallet.ts              # High-level Wallet API: fromSeed / fromFaucet, escrow + IOU + MPT + channel ops
     client/
       Charge.ts              # Client charge: preflight, IOU path resolve, sign, push/pull
       Methods.ts             # xrpl.charge() convenience wrapper
@@ -714,22 +726,37 @@ xrpl-mpp-sdk/
     xrpl/                    # Charge, channel, paths, reserves, trustline freeze, MPT auth, stream, dual-curve
     integration/             # Devnet end-to-end (gated)
       devnet-helpers.ts
-      charge.devnet.test.ts
+      auto-setup.devnet.test.ts
       channel.devnet.test.ts
-      iou-cross-issuer.devnet.test.ts
+      charge.devnet.test.ts
+      charge-push.devnet.test.ts
       escrow.devnet.test.ts
+      iou-cross-issuer.devnet.test.ts
+      mpt-lifecycle.devnet.test.ts
     utils/test-helpers.ts
   demo/
     log.ts                   # Shared styled terminal output utility
     xrp-server.ts            # XRP charge server (two-terminal)
     xrp-client.ts            # XRP charge client (two-terminal)
     iou-charge.ts            # Same-issuer IOU charge all-in-one
+    iou-allowlist.ts         # IOU + RequireAuth (issuer-controlled allowlist) all-in-one
     iou-cross-issuer.ts      # Cross-issuer IOU charge (devnet, all-in-one)
     mpt-charge.ts            # MPT charge all-in-one
     channel-server.ts        # PayChannel server (two-terminal)
     channel-client.ts        # PayChannel client (two-terminal)
+    channel-server-open.ts   # PayChannel server demonstrating MPP-managed channel open
+    channel-fund.ts          # PayChannel top-up lifecycle: open + claim + fund + recover + close (all-in-one)
     escrow-lifecycle.ts      # Escrow lifecycle: time-locked, crypto-condition, cancellable
-    error-showcase.ts        # 13 error cases, fail-fix-validate
+    error-showcase.ts        # 16 error cases, fail-fix-validate
+    llm-marketplace/         # Real Anthropic Claude over MPP -- five paid-LLM patterns
+      charge/                #   one prompt = one on-chain Payment, native XRP
+      charge-iou/            #   one prompt = one on-chain Payment, IOU (test USD; swap any issuer)
+      charge-mpt/            #   one prompt = one on-chain Payment, MPT credits (allowlisted)
+      channel/               #   N prompts amortised on a single PayChannel (eager deposit)
+      channel-fund/          #   N prompts on a PayChannel + just-in-time PaymentChannelFund
+      shared/anthropic.ts    #   shared Anthropic client, pricing constants, streaming helpers
+    weather-api/             # Paid HTTP API (no API key), per-call billing in the API's own IOU (WTH)
+    weather-api-rlusd/       # Paid HTTP API, per-call billing in real testnet RLUSD (production shape)
   examples/
     server.ts                # Minimal charge server (env var config)
     client.ts                # Minimal charge client (env var config)
@@ -737,14 +764,13 @@ xrpl-mpp-sdk/
     channel-client.ts        # Minimal channel client (env var config)
     stream-llm.ts            # Pay-per-token streaming simulation (offline)
     channel-open-mpp.ts      # Channel open via MPP 402 flow (concept example)
+    agent-template/          # Real-life starter: Claude agent (tool-use) paying a Claude-backed MPP service
+      src/                   #   server.ts + agent.ts + client.ts + run-demo.ts + env.ts + intent.ts + log.ts
+      package.json           #   standalone deps (folder can be lifted out of the monorepo)
+      .env.example
   vitest.config.ts            # Unit suite + coverage threshold (80% on core modules)
   vitest.integration.config.ts # Devnet integration suite (single-fork, no coverage)
   .github/workflows/ci.yml    # Two jobs: unit (every push/PR) + integration (gated)
-  docs/
-    audit.md                 # Module-by-module gap analysis and PR sequence
-    open-flow-check.md       # Channel open placeholder-signature analysis
-    security-pass.md         # Targeted private-key-handling review
-    session-report.md        # Per-session change log
 ```
 
 ## Development

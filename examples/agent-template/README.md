@@ -144,6 +144,7 @@ version instead of the local `file:../..`.
 | `PAYER_SEED`                      | Agent wallet (sends XRP). Optional on testnet. |
 | `XRPL_NETWORK`                    | `testnet` (default), `devnet`, or `mainnet`. |
 | `PORT`                            | Server port. Default `3000`. |
+| `SERVER_URL`                      | Base URL the agent calls. Default `http://localhost:${PORT}`. Override when the server runs on a different host. |
 | `AGENT_PRICE_DROPS_PER_1K_TOKENS` | Pricing knob. Default `1000000` (1 XRP). |
 | `MPP_SECRET_KEY`                  | Server-side mppx secret. Default fine for testnet only. |
 
@@ -179,6 +180,7 @@ examples/agent-template/
 └── src/
     ├── env.ts          -- wallet + config loading
     ├── intent.ts       -- Zod schema for the PostBrief + pricing
+    ├── log.ts          -- shared styled terminal output (used by server, agent, and run-demo)
     ├── server.ts       -- Express + MPP charge + Claude-backed post generation
     ├── client.ts       -- low-level paid HTTP helper used by the agent's tool
     ├── agent.ts        -- Claude agent with tool-use (the integrator's code)
