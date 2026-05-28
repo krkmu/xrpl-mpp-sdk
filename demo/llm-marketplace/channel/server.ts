@@ -153,7 +153,28 @@ async function main() {
           return
         }
 
-        const channelMethod = channel({ publicKey, network: NETWORK, store })
+        // Passing `wallet` enables MPP-spec server-initiated close: a
+        // background sweeper submits a PaymentChannelClaim with the
+        // latest voucher whenever the channel goes idle (default 30s),
+        // then marks it finalized in the store so no further voucher is
+        // accepted. See https://mpp.dev/payment-methods/tempo/session
+        // for the spec ("Either party can close the channel. The server
+        // calls close() ... with the highest voucher").
+        const channelMethod = channel({
+          publicKey,
+          network: NETWORK,
+          store,
+          wallet,
+          autoClose: {
+            onClose: ({ channelId: cid, cumulative, txHash }) => {
+              log.success(
+                `Auto-closed channel ${cid.slice(0, 16)}... -- ` +
+                  `claimed cumulative ${cumulative} drops`,
+              )
+              log.tx(txHash, log.explorerLink(txHash))
+            },
+          },
+        })
         mppx = Mppx.create({ secretKey: 'llm-channel-demo', methods: [channelMethod] })
 
         // Open challenge: amount '0' because the client commits no value at

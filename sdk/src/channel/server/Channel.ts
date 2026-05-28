@@ -51,6 +51,9 @@ export function channel(parameters: channel.Parameters) {
     channelMetadataTtlMs = 60_000,
     channelLookup,
     onDisputeDetected,
+    wallet: walletInput,
+    seed: walletSeed,
+    autoClose,
   } = parameters
 
   if (!store && requireStore) {
@@ -62,10 +65,49 @@ export function channel(parameters: channel.Parameters) {
 
   const rpcUrl = customRpcUrl ?? XRPL_RPC_URLS[network]
 
+  // Resolve auto-close: defaults to ON when a recipient wallet was provided.
+  // The MPP spec (https://mpp.dev/payment-methods/tempo/session,
+  // /stellar/session) lets either party close the session. On XRPL the
+  // server-side "close" is a `PaymentChannelClaim` without `tfClose`
+  // followed by a `finalized` mark in the store -- this prevents further
+  // voucher acceptance, matching the spec's session-close semantics.
+  const recipientWallet =
+    walletInput || walletSeed ? resolveWallet({ wallet: walletInput, seed: walletSeed }) : null
+  const autoCloseConfig = resolveAutoCloseConfig(autoClose, recipientWallet !== null)
+
+  if (autoCloseConfig && !recipientWallet) {
+    throw new Error(
+      '[xrpl-mpp-sdk] autoClose requires a recipient `wallet` (or `seed`) so the SDK ' +
+        'can sign the on-chain `PaymentChannelClaim` that finalizes the channel.',
+    )
+  }
+  if (autoCloseConfig && !store) {
+    throw new Error('[xrpl-mpp-sdk] autoClose requires a `store` to read the latest voucher from.')
+  }
+
+  // Channel IDs we have personally opened and not yet finalized. Used by the
+  // auto-close sweeper; populated in doVerifyOpen success path. In-process
+  // only -- distributed deployments should run their own sweeper backed by
+  // a shared registry. Map value is the funder publicKey, needed to build
+  // the `PaymentChannelClaim` transaction.
+  const activeChannels = new Map<string, string>()
+
+  let stopSweeper: (() => void) | null = null
+  if (autoCloseConfig && recipientWallet && store) {
+    stopSweeper = startAutoCloseSweeper({
+      wallet: recipientWallet,
+      store,
+      network,
+      rpcUrl,
+      activeChannels,
+      config: autoCloseConfig,
+    })
+  }
+
   // Serialise verify calls so per-channel monotonicity checks don't race.
   let verifyLock: Promise<unknown> = Promise.resolve()
 
-  return Method.toServer(ChannelMethod, {
+  const method = Method.toServer(ChannelMethod, {
     async request({ request }) {
       // Surface the current cumulative so clients know where to resume.
       let cumulativeAmount = '0'
@@ -95,6 +137,14 @@ export function channel(parameters: channel.Parameters) {
       return result
     },
   })
+
+  // Attach a `dispose()` so callers can stop the background sweeper
+  // explicitly (e.g. on graceful shutdown). The setInterval is unref'd
+  // already, so this is only required for hot-reload / test cleanup.
+  ;(method as channel.MethodWithDispose).dispose = () => {
+    stopSweeper?.()
+  }
+  return method as channel.MethodWithDispose
 
   async function doVerify(credential: any): Promise<Receipt.Receipt> {
     const { challenge } = credential
@@ -225,6 +275,16 @@ export function channel(parameters: channel.Parameters) {
         signature,
         timestamp: Date.now(),
       })
+    }
+
+    // Also register the channel for the auto-close sweeper here, not only
+    // in doVerifyOpen. Some integrations (and our own integration tests)
+    // open the channel out-of-band via `openChannel()` and only ever go
+    // through the voucher path -- they never trigger doVerifyOpen. Without
+    // this branch, the sweeper would never see those channels and the
+    // server-side close would silently no-op.
+    if (!activeChannels.has(channelId)) {
+      activeChannels.set(channelId, publicKey)
     }
 
     return Receipt.from({
@@ -395,6 +455,10 @@ export function channel(parameters: channel.Parameters) {
           timestamp: Date.now(),
         })
       }
+
+      // Register the channel with the auto-close sweeper. The funder publicKey
+      // is required to build the `PaymentChannelClaim` tx at close time.
+      activeChannels.set(channelId, publicKey)
 
       return Receipt.from({
         method: 'xrpl',
@@ -567,6 +631,71 @@ export declare namespace channel {
     channelLookup?: ChannelLookup
     /** Called when a unilateral close is detected on-chain (CancelAfter set). */
     onDisputeDetected?: (state: ChannelDisputeState) => void
+    /**
+     * Recipient (channel destination) wallet. Required to enable
+     * server-side {@link channel.AutoCloseConfig | auto-close}: the
+     * SDK signs an on-chain `PaymentChannelClaim` with the latest
+     * voucher whenever a channel goes idle, then marks it finalized
+     * in the store so subsequent vouchers are rejected.
+     *
+     * Aligns the SDK with the MPP spec's session-close semantics
+     * (see https://mpp.dev/payment-methods/tempo/session and
+     * /stellar/session): "Either party can close the channel. The
+     * server calls close() ... with the highest voucher".
+     */
+    wallet?: Wallet
+    /**
+     * Recipient family seed. Alternative to {@link wallet}.
+     */
+    seed?: string
+    /**
+     * Server-side auto-close behavior.
+     *
+     * - `true` (or omitted when a {@link wallet} is provided):
+     *   start a background sweeper with default settings.
+     * - `false`: disable auto-close entirely.
+     * - Object: enable with custom settings.
+     *
+     * When enabled, the sweeper periodically scans channels opened
+     * through this method instance. For each channel that has been
+     * idle (no new voucher) for {@link AutoCloseConfig.idleMs}, it
+     * submits a `PaymentChannelClaim` for the latest cumulative voucher
+     * and marks the channel finalized.
+     *
+     * **XRPL caveat:** the destination cannot set `tfClose`. The claim
+     * recovers the server's earned amount and stops voucher acceptance,
+     * but the on-chain channel object remains until the funder closes
+     * it (with `tfClose`) or `CancelAfter` is reached. Set
+     * `cancelAfter` at channel creation as a defense-in-depth so the
+     * channel cannot leak indefinitely.
+     */
+    autoClose?: boolean | AutoCloseConfig
+  }
+
+  /** Configuration for the server-side auto-close sweeper. */
+  export type AutoCloseConfig = {
+    /**
+     * Wait this long with no new voucher activity before closing a
+     * channel. Set high enough to avoid closing in the middle of a
+     * conversation; low enough to recover funds quickly on disconnect.
+     * @default 30000 (30s)
+     */
+    idleMs?: number
+    /**
+     * How often the sweeper scans active channels.
+     * @default 10000 (10s)
+     */
+    sweepIntervalMs?: number
+    /** Called after a successful auto-close. */
+    onClose?: (info: { channelId: string; cumulative: string; txHash: string }) => void
+    /** Called when an auto-close attempt fails. Defaults to `console.warn`. */
+    onError?: (err: { channelId: string; error: Error }) => void
+  }
+
+  /** Return type of {@link channel} with the optional `dispose()` handle. */
+  export type MethodWithDispose = ReturnType<typeof Method.toServer<typeof ChannelMethod>> & {
+    /** Stop the auto-close sweeper. No-op if auto-close was disabled. */
+    dispose: () => void
   }
 }
 
@@ -650,6 +779,197 @@ export async function close(params: {
   } finally {
     await client.disconnect()
   }
+}
+
+/**
+ * Server-side "close" of a PayChannel using the latest voucher in the store.
+ *
+ * Implements the server-initiated session-close pattern from the MPP spec
+ * (see https://mpp.dev/payment-methods/tempo/session and
+ * https://mpp.dev/payment-methods/stellar/session): the server reads the
+ * highest cumulative voucher it has persisted and submits a single on-chain
+ * transaction to settle.
+ *
+ * **XRPL specifics** (vs. Tempo/Stellar smart-contract close):
+ * - The destination of an XRPL `PayChannel` cannot set `tfClose`. This
+ *   function therefore submits a `PaymentChannelClaim` *without* `tfClose`,
+ *   which transfers the cumulative amount to the destination but leaves
+ *   the channel object in the ledger.
+ * - The session is nevertheless "closed" from the MPP perspective: the
+ *   channel is marked `finalized` in the store, so any further voucher
+ *   credential is rejected with `CHANNEL_CLOSED`.
+ * - To actually delete the channel and refund the unspent deposit to the
+ *   funder, the funder must submit `tfClose` (which starts the
+ *   `SettleDelay`) or `CancelAfter` must be reached. Setting
+ *   `cancelAfter` at channel creation is recommended as defense-in-depth.
+ *
+ * Returns `null` (no on-chain submission) when there is nothing to claim:
+ * the channel is already finalized, no voucher has been received, or the
+ * recorded cumulative was already redeemed.
+ */
+export async function closeFromStore(params: {
+  /** Recipient wallet. Preferred over `seed`. */
+  wallet?: Wallet
+  /** Recipient family seed. Kept for backward compatibility -- prefer `wallet`. */
+  seed?: string
+  /** Channel to close. */
+  channelId: string
+  /** Funder publicKey (taken from the original `PaymentChannelCreate`). */
+  channelPublicKey: string
+  /** Store the voucher was persisted to. */
+  store: Store.Store
+  network?: NetworkId
+  rpcUrl?: string
+}): Promise<{ txHash: string; cumulative: string } | null> {
+  const {
+    wallet: walletInput,
+    seed,
+    channelId,
+    channelPublicKey,
+    store,
+    network = 'testnet',
+    rpcUrl,
+  } = params
+
+  const wallet = resolveWallet({ wallet: walletInput, seed })
+
+  const finalized = await store.get(`xrpl:channel:finalized:${channelId}`)
+  if (finalized) return null
+
+  const state = (await store.get(`xrpl:channel:${channelId}`)) as {
+    cumulative: string
+    signature: string
+  } | null
+  if (!state || !state.signature || BigInt(state.cumulative) === 0n) return null
+
+  const redeemed = (await store.get(`xrpl:channel:redeemed:${channelId}`)) as {
+    cumulative: string
+  } | null
+  if (redeemed && BigInt(redeemed.cumulative) >= BigInt(state.cumulative)) return null
+
+  const result = await close({
+    wallet,
+    channelId,
+    amount: state.cumulative,
+    signature: state.signature,
+    channelPublicKey,
+    network,
+    rpcUrl,
+    store,
+  })
+
+  await store.put(`xrpl:channel:redeemed:${channelId}`, {
+    cumulative: state.cumulative,
+    txHash: result.txHash,
+    timestamp: Date.now(),
+  })
+
+  return { txHash: result.txHash, cumulative: state.cumulative }
+}
+
+/**
+ * Resolve auto-close configuration. Returns `null` when disabled.
+ *
+ * Default is "auto-enable when a wallet was provided": this gives the
+ * advertised "user doesn't need to wire anything" UX. Pass `false`
+ * explicitly to opt out.
+ */
+function resolveAutoCloseConfig(
+  input: boolean | channel.AutoCloseConfig | undefined,
+  hasWallet: boolean,
+): Required<channel.AutoCloseConfig> | null {
+  if (input === false) return null
+  if (input === undefined && !hasWallet) return null
+  const cfg = typeof input === 'object' ? input : {}
+  return {
+    idleMs: cfg.idleMs ?? 30_000,
+    sweepIntervalMs: cfg.sweepIntervalMs ?? 10_000,
+    onClose: cfg.onClose ?? (() => {}),
+    onError:
+      cfg.onError ??
+      ((err) => {
+        console.warn(
+          `[xrpl-mpp-sdk] auto-close failed for channel ${err.channelId}: ${err.error.message}`,
+        )
+      }),
+  }
+}
+
+/**
+ * Background scanner that closes idle channels via {@link closeFromStore}.
+ *
+ * - One scan every `sweepIntervalMs`. Re-entrant scans are guarded by a
+ *   `busy` flag so a slow on-chain submit can't pile up overlapping sweeps.
+ * - `setInterval` is unref'd, so the sweeper alone never keeps the
+ *   Node process alive.
+ * - Errors per channel are isolated: a failing close on one channel does
+ *   not stop the loop nor affect other channels.
+ */
+function startAutoCloseSweeper(args: {
+  wallet: Wallet
+  store: Store.Store
+  network: NetworkId
+  rpcUrl: string
+  activeChannels: Map<string, string>
+  config: Required<channel.AutoCloseConfig>
+}): () => void {
+  const { wallet, store, network, rpcUrl, activeChannels, config } = args
+  let busy = false
+  const interval = setInterval(async () => {
+    if (busy) return
+    busy = true
+    try {
+      for (const [channelId, channelPublicKey] of Array.from(activeChannels.entries())) {
+        try {
+          const finalized = await store.get(`xrpl:channel:finalized:${channelId}`)
+          if (finalized) {
+            activeChannels.delete(channelId)
+            continue
+          }
+          const state = (await store.get(`xrpl:channel:${channelId}`)) as {
+            cumulative: string
+            signature: string
+            timestamp?: number
+          } | null
+          if (!state || !state.signature || BigInt(state.cumulative) === 0n) continue
+          const age = Date.now() - (state.timestamp ?? 0)
+          if (age < config.idleMs) continue
+
+          const redeemed = (await store.get(`xrpl:channel:redeemed:${channelId}`)) as {
+            cumulative: string
+          } | null
+          if (redeemed && BigInt(redeemed.cumulative) >= BigInt(state.cumulative)) {
+            activeChannels.delete(channelId)
+            continue
+          }
+
+          const result = await closeFromStore({
+            wallet,
+            channelId,
+            channelPublicKey,
+            store,
+            network,
+            rpcUrl,
+          })
+          if (result) {
+            config.onClose({ channelId, ...result })
+            activeChannels.delete(channelId)
+          }
+        } catch (error: unknown) {
+          const wrapped = error instanceof Error ? error : new Error(String(error))
+          config.onError({ channelId, error: wrapped })
+        }
+      }
+    } finally {
+      busy = false
+    }
+  }, config.sweepIntervalMs)
+
+  // Don't keep the event loop alive solely for the sweeper -- the user's
+  // HTTP server is what should hold the process open.
+  interval.unref?.()
+
+  return () => clearInterval(interval)
 }
 
 /**

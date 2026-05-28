@@ -24,6 +24,7 @@
  */
 import { Receipt } from 'mppx'
 import { Mppx } from 'mppx/client'
+import { unixTimeToRippleTime } from 'xrpl'
 import {
   channel,
   fundChannel,
@@ -46,6 +47,12 @@ const rawFetch = globalThis.fetch
  */
 const INITIAL_DEPOSIT_DROPS = '5000'
 const SETTLE_DELAY_SECONDS = 3600
+// Hard on-chain expiration. Defense-in-depth so the channel cannot leak
+// forever if both the funder process AND the server's auto-close fail
+// to fire. Once CancelAfter is reached, anyone can submit a
+// PaymentChannelClaim that destroys the channel and refunds the unspent
+// deposit to the funder.
+const CANCEL_AFTER_SECONDS = 24 * 60 * 60
 
 /** Bounds the retry loop so a misconfigured server can't loop the demo forever. */
 const MAX_FUND_RETRIES_PER_PROMPT = 3
@@ -309,13 +316,15 @@ async function main() {
   // Tiny initial deposit. Just enough for prompt 1's worst-case quote;
   // prompts 2 and 3 will exhaust the channel and trigger top-ups below.
   log.loading(
-    `Preparing PaymentChannelCreate (DELIBERATELY small: ${INITIAL_DEPOSIT_DROPS} drops, ${SETTLE_DELAY_SECONDS}s settle delay)...`,
+    `Preparing PaymentChannelCreate (DELIBERATELY small: ${INITIAL_DEPOSIT_DROPS} drops, ${SETTLE_DELAY_SECONDS}s settle delay, ${CANCEL_AFTER_SECONDS / 3600}h CancelAfter)...`,
   )
+  const cancelAfterRipple = unixTimeToRippleTime(Date.now() + CANCEL_AFTER_SECONDS * 1000)
   const { txBlob, txHash: preparedHash } = await prepareOpenChannelTransaction({
     wallet,
     destination: info.address,
     amount: INITIAL_DEPOSIT_DROPS,
     settleDelay: SETTLE_DELAY_SECONDS,
+    cancelAfter: cancelAfterRipple,
     network: NETWORK,
   })
   log.success('Open tx signed (not submitted)')

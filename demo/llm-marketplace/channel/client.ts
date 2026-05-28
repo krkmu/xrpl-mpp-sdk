@@ -31,6 +31,7 @@
  */
 import { Receipt } from 'mppx'
 import { Mppx } from 'mppx/client'
+import { unixTimeToRippleTime } from 'xrpl'
 import { channel, prepareOpenChannelTransaction } from '../../../sdk/src/channel/client/Channel.js'
 import { close } from '../../../sdk/src/channel/server/Channel.js'
 import { Wallet } from '../../../sdk/src/utils/wallet.js'
@@ -46,6 +47,12 @@ const rawFetch = globalThis.fetch
 // is refunded on-chain at close.
 const CHANNEL_AMOUNT_DROPS = '5000000'
 const SETTLE_DELAY_SECONDS = 3600
+// Hard on-chain expiration. Defense-in-depth so the channel cannot leak
+// forever if both the funder process AND the server's auto-close fail
+// to fire (e.g. both crash without persisting the latest voucher). Once
+// CancelAfter is reached, anyone can submit a PaymentChannelClaim that
+// destroys the channel and refunds the unspent deposit to the funder.
+const CANCEL_AFTER_SECONDS = 24 * 60 * 60
 
 /**
  * Three prompts of intentionally varied shape:
@@ -214,13 +221,15 @@ async function main() {
   // Pre-sign the PaymentChannelCreate blob locally. The server will be the
   // one that submits it -- this is the "server-managed open" pattern.
   log.loading(
-    `Preparing PaymentChannelCreate (${(Number(CHANNEL_AMOUNT_DROPS) / 1_000_000).toFixed(1)} XRP, ${SETTLE_DELAY_SECONDS}s settle delay)...`,
+    `Preparing PaymentChannelCreate (${(Number(CHANNEL_AMOUNT_DROPS) / 1_000_000).toFixed(1)} XRP, ${SETTLE_DELAY_SECONDS}s settle delay, ${CANCEL_AFTER_SECONDS / 3600}h CancelAfter)...`,
   )
+  const cancelAfterRipple = unixTimeToRippleTime(Date.now() + CANCEL_AFTER_SECONDS * 1000)
   const { txBlob, txHash: preparedHash } = await prepareOpenChannelTransaction({
     wallet,
     destination: info.address,
     amount: CHANNEL_AMOUNT_DROPS,
     settleDelay: SETTLE_DELAY_SECONDS,
+    cancelAfter: cancelAfterRipple,
     network: NETWORK,
   })
   log.success('Open tx signed (not submitted)')

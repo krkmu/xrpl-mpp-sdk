@@ -5,6 +5,7 @@ export {
   type ChannelLookup,
   channel,
   close,
+  closeFromStore,
   type PayChannelLedgerEntry,
 } from './Channel.js'
 export { xrpl } from './Methods.js'
