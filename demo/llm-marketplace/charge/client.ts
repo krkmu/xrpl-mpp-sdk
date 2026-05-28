@@ -1,10 +1,12 @@
 /**
  * LLM Marketplace -- Charge mode (native XRP) -- Client
  *
- * Fires ONE /complete request to the marketplace. mppx's patched fetch handles
- * the 402: signs a Payment tx, the server submits it to XRPL, validates, and
- * returns an SSE token stream. We parse the stream live and render tokens as
- * they arrive (no client-side sleep -- this is the real Anthropic cadence).
+ * The client knows NOTHING about the price or the currency before the 402:
+ * it just POSTs /complete with `{ prompt, maxTokens }`. The marketplace
+ * decides the quote and ships it inside the 402 challenge; mppx parses it
+ * and we surface the (amount, currency) pair via the `onProgress` hook before
+ * the payment is signed. Same pattern as a fiat checkout reading the
+ * "amount due" off a Stripe-style invoice rather than computing it locally.
  *
  * Run: npx tsx demo/llm-marketplace/charge/client.ts
  *      (after `npx tsx demo/llm-marketplace/charge/server.ts`)
@@ -14,15 +16,18 @@ import { Mppx } from 'mppx/client'
 import { charge } from '../../../sdk/src/client/Charge.js'
 import { Wallet } from '../../../sdk/src/utils/wallet.js'
 import * as log from '../../log.js'
+import { formatAmount } from '../shared/format.js'
 
 const PORT = 3003
 const BASE = `http://localhost:${PORT}`
-const rawFetch = globalThis.fetch
 
-// Edit the prompt + budget to taste. maxTokens is the worst-case the client
-// is willing to pay for; the actual Anthropic generation will usually be less.
+// The only two things the client decides up-front: what to ask, and the
+// worst-case output budget it's willing to authorise. Everything monetary
+// (unit price, currency, total quote) flows from the 402.
 const PROMPT = 'Explain what the Machine Payments Protocol does in one short paragraph.'
 const MAX_TOKENS = 120
+
+type Quote = { recipient: string; amount: string; currency: string }
 
 type DoneEvent = {
   input_tokens: number
@@ -70,24 +75,38 @@ async function main() {
   log.wallet('Payer', wallet.address)
   log.separator()
 
-  log.loading(`Discovering marketplace at ${BASE}/info ...`)
-  const info = (await (await rawFetch(`${BASE}/info`)).json()) as {
-    address: string
-    model: string
-    pricing: { dropsPerInputToken: number; dropsPerOutputToken: number }
-  }
-  log.wallet('Marketplace', info.address)
-  log.info(`Model: ${info.model}`)
-  log.info(
-    `Pricing: ${info.pricing.dropsPerInputToken} drops/in, ${info.pricing.dropsPerOutputToken} drops/out`,
-  )
-  log.separator()
+  // Capture the 402 quote so we can show "what the marketplace asked for"
+  // before printing the settlement summary. mppx invokes this synchronously
+  // when the challenge is parsed, *before* the Payment is signed.
+  let quote: Quote | null = null
 
-  Mppx.create({ methods: [charge({ wallet, mode: 'pull', network: 'testnet' })] })
+  Mppx.create({
+    methods: [
+      charge({
+        wallet,
+        mode: 'pull',
+        network: 'testnet',
+        onProgress: (evt) => {
+          if (evt.type === 'challenge') {
+            quote = { recipient: evt.recipient, amount: evt.amount, currency: evt.currency }
+            // First time the client knows the price for THIS call. Anything
+            // before this log is pure protocol setup -- no money number was
+            // available client-side.
+            log.challenge(`402 received -- price: ${formatAmount(evt.amount, evt.currency)}`)
+            log.info(`Payable to: ${evt.recipient}`)
+          } else if (evt.type === 'signing') {
+            log.info('Signing the Payment tx with the quoted amount...')
+          } else if (evt.type === 'confirmed') {
+            log.info(`Tx submitted: ${evt.hash}`)
+          }
+        },
+      }),
+    ],
+  })
 
   log.info(`Prompt: "${PROMPT}"`)
   log.info(`maxTokens: ${MAX_TOKENS}`)
-  log.loading('Sending POST /complete -- mppx will auto-handle the 402...')
+  log.loading(`POST ${BASE}/complete -- price + currency will arrive in the 402...`)
   log.separator()
 
   const response = await fetch(`${BASE}/complete`, {
@@ -138,15 +157,22 @@ async function main() {
     process.exit(1)
   }
 
+  // The unit comes from the 402 the client just received, not from a
+  // client-side constant. `<unknown>` is a defensive fallback in case the
+  // onProgress callback never fired (shouldn't happen on a 402 path).
+  const unit = quote?.currency ?? '<unknown>'
+  const overpayPct = done.paid > 0 ? ((done.overpayment / done.paid) * 100).toFixed(1) : '0.0'
+
   log.box([
     'Settlement',
     '',
     `Anthropic usage:  ${done.input_tokens} input + ${done.output_tokens} output tokens`,
-    `Real cost:        ${done.actual_cost} drops (${(done.actual_cost / 1_000_000).toFixed(6)} XRP)`,
-    `Paid (quote):     ${done.paid} drops (worst case before generation)`,
-    `Overpayment:      ${done.overpayment} drops (${((done.overpayment / done.paid) * 100).toFixed(1)}%)`,
+    `Real cost:        ${formatAmount(done.actual_cost, unit)}`,
+    `Paid (quote):     ${formatAmount(done.paid, unit)} (worst case, learned from the 402)`,
+    `Overpayment:      ${formatAmount(done.overpayment, unit)} (${overpayPct}%)`,
     '',
     'Charge mode: 1 on-chain Payment tx settled the whole call.',
+    'Price discovery: the 402 challenge -- no client-side price table.',
   ])
 
   process.exit(0)

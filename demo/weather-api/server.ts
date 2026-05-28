@@ -31,10 +31,14 @@
  * just hold both in one process for an end-to-end demo.
  *
  * Endpoints:
- *   GET  /info        -> { issuer, recipient, currency, pricePerCallWth, ... }
+ *   GET  /info        -> { issuer, recipient, currency, knownCities, ... }  (no pricing)
  *   POST /faucet-iou  -> { holder } -> issues 10 WTH (demo bootstrap;
  *                        in production users would buy credits with a card)
  *   POST /forecast    -> body { city } -> 402 (1 WTH) -> 200 { forecast }
+ *
+ * Price discovery is server-side only: the client has no upfront price
+ * table and `/info` does not advertise per-call pricing. Everything
+ * monetary lives in the 402 challenge.
  *
  * Run: npx tsx demo/weather-api/server.ts
  */
@@ -212,6 +216,11 @@ async function main() {
 
     try {
       if (method === 'GET' && path === '/info') {
+        // Identity + token descriptor only. No per-call price advertised:
+        // the quote lives exclusively in the 402 challenge so the client
+        // never holds a local price table. `currency` is still here
+        // because the payer needs it to open the trustline -- that's
+        // "which token", not "how much".
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(
           JSON.stringify({
@@ -219,7 +228,6 @@ async function main() {
             recipient: recipient.address,
             network: NETWORK,
             currency,
-            pricePerCallWth: PRICE_PER_CALL_WTH,
             faucetAllowanceWth: FAUCET_ALLOWANCE_WTH,
             payerTrustlineLimitWth: PAYER_TRUSTLINE_LIMIT_WTH,
             knownCities: KNOWN_CITIES,
@@ -316,9 +324,12 @@ async function main() {
     log.box([
       'Endpoints:',
       '',
-      'GET  /info        -> issuer, recipient, WTH currency, per-call price, known cities',
+      'GET  /info        -> issuer, recipient, WTH currency, known cities (no pricing)',
       'POST /faucet-iou  -> { holder } -> issues 10 WTH (demo bootstrap)',
       'POST /forecast    -> { city }  -> 402 (1 WTH) -> { forecast }',
+      '',
+      'Per-call price is carried by the 402 challenge -- the client never',
+      'holds a price table.',
       '',
       'Waiting for a client to spend some WTH...',
     ])

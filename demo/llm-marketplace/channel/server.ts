@@ -124,7 +124,10 @@ async function main() {
     const method = req.method ?? 'GET'
 
     try {
-      // ── /info -- price discovery ────────────────────────────────────────
+      // ── /info -- identity probe (no pricing) ────────────────────────────
+      // We do NOT expose per-token rates here. Every per-call quote is
+      // announced inside the 402 challenge on /complete; the client
+      // signs whatever cumulative it has just been asked to commit to.
       if (method === 'GET' && path === '/info') {
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(
@@ -132,10 +135,6 @@ async function main() {
             address: wallet.address,
             model: MODEL,
             network: NETWORK,
-            pricing: {
-              dropsPerInputToken: DROPS_PER_INPUT_TOKEN,
-              dropsPerOutputToken: DROPS_PER_OUTPUT_TOKEN,
-            },
           }),
         )
         return
@@ -370,7 +369,7 @@ async function main() {
     log.box([
       'Endpoints:',
       '',
-      'GET  /info       -> marketplace address, model, drop pricing',
+      'GET  /info       -> marketplace address + model (no pricing -- see 402)',
       'POST /register   -> { publicKey } -> arms the xrpl/channel server method',
       'GET  /open       -> 402 (action: open) -> server submits PaymentChannelCreate',
       'POST /complete   -> 402 (action: voucher) -> SSE token stream',

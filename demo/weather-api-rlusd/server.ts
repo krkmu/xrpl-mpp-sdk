@@ -33,8 +33,12 @@
  *                    endpoint -- the payer brings their own RLUSD.
  *
  * Endpoints:
- *   GET  /info        -> { recipient, currency, pricePerCallRlusd, ... }
+ *   GET  /info        -> { recipient, currency, knownCities, ... }  (no pricing)
  *   POST /forecast    -> body { city } -> 402 (0.1 RLUSD) -> 200 { forecast }
+ *
+ * Price discovery is server-side only: the client has no upfront price
+ * table and `/info` does not advertise per-call pricing. Everything
+ * monetary lives in the 402 challenge.
  *
  * Run: npx tsx demo/weather-api-rlusd/server.ts
  */
@@ -232,6 +236,11 @@ async function main() {
 
     try {
       if (method === 'GET' && path === '/info') {
+        // Identity + token descriptor only. No per-call price advertised:
+        // the quote lives exclusively in the 402 challenge so the client
+        // never holds a local price table. `currency` is still here
+        // because the payer needs it to open the trustline -- that's
+        // "which token", not "how much".
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(
           JSON.stringify({
@@ -239,7 +248,6 @@ async function main() {
             network: NETWORK,
             currency: CURRENCY,
             currencyDisplay: CURRENCY_DISPLAY,
-            pricePerCallRlusd: PRICE_PER_CALL_RLUSD,
             payerTrustlineLimitRlusd: PAYER_TRUSTLINE_LIMIT_RLUSD,
             knownCities: KNOWN_CITIES,
           }),
@@ -257,7 +265,6 @@ async function main() {
           currency: currencyJson,
         })
         const result = await handler(toWebRequest(req, raw))
-
         if (result.status === 402) {
           log.challenge(`Price: ${PRICE_PER_CALL_RLUSD} ${CURRENCY_DISPLAY} (RLUSD Payment tx)`)
           log.response(402, 'challenge sent')
@@ -305,8 +312,11 @@ async function main() {
     log.box([
       'Endpoints:',
       '',
-      'GET  /info      -> recipient, RLUSD currency, per-call price, known cities',
+      'GET  /info      -> recipient, RLUSD currency, known cities (no pricing)',
       'POST /forecast  -> { city } -> 402 (0.1 RLUSD) -> { forecast }',
+      '',
+      'Per-call price is carried by the 402 challenge -- the client never',
+      'holds a price table.',
       '',
       'No /faucet-iou here -- the payer brings their own RLUSD (testnet faucet:',
       'https://tryrlusd.com).',

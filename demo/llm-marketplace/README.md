@@ -38,6 +38,27 @@ output tokens within a single prompt.
 > -- the closest analogue to OpenAI/Stripe prepaid credits with the ledger
 > moved on-chain.
 
+## Price discovery (applies to all demos below)
+
+Across every flavour, the **client holds no local price table**. The
+marketplace's per-token rates live server-side; the client only ever
+learns what a *specific call* costs by reading the 402 challenge it
+just received:
+
+| Demo | Where the per-call price arrives |
+|---|---|
+| `charge/` | 402 on `/complete` -- amount + `"XRP"` currency, surfaced via mppx's `onProgress({ type: 'challenge', ... })` |
+| `charge-iou/` | 402 on `/complete` -- amount + `{currency, issuer}`, surfaced via `onProgress` |
+| `charge-mpt/` | 402 on `/complete` -- amount + `{mpt_issuance_id}`, surfaced via `onProgress` |
+| `channel/` | 402 on each `/complete` carries the cumulative quote; the SSE `done` event echoes `paid` back so the settlement box can render it without a local rate |
+| `channel-fund/` | Same as `channel/` for per-call quotes; the `amount-exceeds-deposit` 402 additionally carries the cumulative + available deposit in its Problem Details body, which the client parses to size each `PaymentChannelFund` -- top-up = `cumulative - available`, with no client-side maths |
+
+`GET /info` is kept as a curl-friendly identity probe (address, model,
+and -- for IOU / MPT -- the *token identifier* needed to open a trustline
+or `MPTokenAuthorize`). It **never** advertises per-token pricing. The
+demos run side-by-side with their pre-refactor versions and the wire
+shape on the 402 itself is unchanged.
+
 ## Setup (once)
 
 1. **Get an Anthropic API key** (free $5 credit for new accounts):
@@ -67,22 +88,29 @@ npx tsx demo/llm-marketplace/charge/client.ts
 
 ### What happens
 
-1. Server funds a recipient wallet via the testnet faucet, exposes
-   `GET /info` (price discovery) and `POST /complete`
-2. Client funds a payer wallet, calls `GET /info`, then `POST /complete`
-   with `{ prompt, maxTokens }`
+1. Server funds a recipient wallet via the testnet faucet and exposes
+   `POST /complete` (the only paid endpoint) plus a trivial `GET /info`
+   probe that returns the marketplace address + model name. **`/info`
+   carries no pricing on purpose: the price is dynamic, per-call, and
+   lives exclusively in the 402 challenge.**
+2. Client funds a payer wallet and POSTs `/complete` with `{ prompt,
+   maxTokens }`. It does **not** call `/info` and holds no client-side
+   price table -- the only two numbers it picks are the prompt and the
+   worst-case output budget it's willing to authorise.
 3. Server quotes worst-case cost in drops:
    `est_input_tokens × 10 + maxTokens × 50` and returns **HTTP 402**
-   with that exact amount as the challenge
-4. mppx auto-handles the 402: signs an XRPL `Payment` transaction
-   for `cost` drops, submits it to testnet via the server (pull mode),
-   server polls until the tx is `tesSUCCESS` validated
+   with that exact amount + the currency (`XRP`) as the challenge
+4. mppx auto-handles the 402: parses the challenge (the client learns
+   amount + currency here, via the `onProgress` hook), signs an XRPL
+   `Payment` transaction for `cost` drops, submits it to testnet via the
+   server (pull mode), server polls until the tx is `tesSUCCESS` validated
 5. Server calls `anthropic.messages.stream(...)` with the real prompt and
    forwards each token delta as an SSE `event: token`
 6. After Anthropic returns final usage, server emits `event: done` with
    `{ input_tokens, output_tokens, actual_cost, paid, overpayment }`
 7. Client renders tokens live as they arrive (at Anthropic's real cadence)
-   then prints a settlement box
+   then prints a settlement box -- using the currency it just learned from
+   the 402, not a hard-coded `"XRP"`
 
 ### What's real, what's mocked
 
@@ -175,7 +203,9 @@ on a single `npx tsx` command with no manual funding step.
 2. **Client bootstrap** (one-time, before the paid call):
    - Fund a fresh payer wallet via the XRP faucet (XRP for the trustline
      reserve and tx fees -- not what we pay *with*).
-   - `GET /info` discovers `{ issuer, recipient, currency, model, pricing }`.
+   - `GET /info` discovers `{ issuer, recipient, currency, model }`. **No
+     pricing here**: per-call cost is learned from the 402 only. The
+     currency identifier is "which token to trust", not a quote.
    - `acceptToken` (TrustSet) toward the issuer so the payer can hold USD.
    - `POST /faucet-usd` -> the issuer mints 10 USD to the payer.
      Demo-only bootstrap; on mainnet replace with a paid top-up flow.
@@ -184,9 +214,12 @@ on a single `npx tsx` command with no manual funding step.
    - Client `POST /complete` with `{ prompt, maxTokens }`.
    - Server quotes worst case in USD
      (`est_input_tokens × 0.0001 + maxTokens × 0.0005`) and returns
-     HTTP 402 with that amount.
-   - mppx intercepts the 402, signs an IOU `Payment` (pull mode), the
-     server submits it to XRPL and polls until `tesSUCCESS`.
+     HTTP 402 with that amount + the IOU `{currency, issuer}` pair as
+     the challenge currency.
+   - mppx intercepts the 402, the client's `onProgress` callback logs
+     the price (first time the client knows what THIS call costs), then
+     mppx signs an IOU `Payment` (pull mode), the server submits it to
+     XRPL and polls until `tesSUCCESS`.
    - Server streams Anthropic tokens via SSE and emits `event: done`
      with real cost vs paid quote -- both in USD.
 
@@ -266,7 +299,9 @@ credits:
 
 2. **Client bootstrap** (one-time, before the paid call):
    - Fund a fresh payer wallet via the XRP faucet.
-   - `GET /info` discovers `{ issuer, recipient, token: { label, mpt_issuance_id }, model, pricing }`.
+   - `GET /info` discovers `{ issuer, recipient, token: { label, mpt_issuance_id }, model }`.
+     **No pricing here**: per-call cost is learned from the 402 only.
+     The MPT identifier is "which token to opt in to", not a quote.
    - `acceptToken(mpt)` -- holder-side `MPTokenAuthorize` (status:
      `pending_authorization`).
    - `POST /faucet-mpt` -- the marketplace authorises us (issuer-side
@@ -277,9 +312,11 @@ credits:
    - Client `POST /complete` with `{ prompt, maxTokens }`.
    - Server quotes worst case in credits
      (`est_input_tokens × 1 + maxTokens × 5`) and returns HTTP 402 with
-     that amount.
-   - mppx intercepts the 402, signs an MPT `Payment` (pull mode), the
-     server submits to XRPL and polls until `tesSUCCESS`.
+     that amount + the MPT `{mpt_issuance_id}` as the challenge currency.
+   - mppx intercepts the 402, the client's `onProgress` callback logs
+     the price (first time the client knows what THIS call costs), then
+     mppx signs an MPT `Payment` (pull mode), the server submits to XRPL
+     and polls until `tesSUCCESS`.
    - Server streams Anthropic tokens via SSE and emits `event: done`
      with real cost vs paid quote -- both in credits.
 
@@ -323,16 +360,19 @@ npx tsx demo/llm-marketplace/channel/client.ts
 
 1. Server funds a recipient wallet on testnet, exposes
    `GET /info`, `POST /register`, `GET /open`, `POST /complete`,
-   `GET /summary`
-2. Client funds a payer wallet, calls `GET /info`, then
-   `POST /register` to share its channel publicKey
+   `GET /summary`. `/info` is an identity probe -- it carries the
+   marketplace address + model but **no per-token rates**.
+2. Client funds a payer wallet, hits `GET /info` (address + model only,
+   no price), then `POST /register` to share its channel publicKey.
+   The 5 XRP funding amount is the client's own risk budget for the run.
 3. Client pre-signs a `PaymentChannelCreate` (5 XRP) **without
    submitting**. `GET /open` triggers a 402; `mppx` ships the signed
    blob inside the credential; the **server** submits it on-chain
    and returns the `channelId` via the `Payment-Receipt` header
 4. For each of the 3 prompts (`POST /complete`):
    - Server quotes worst-case cost in drops
-     (`est_input_tokens × 10 + maxTokens × 50`) and returns **HTTP 402**
+     (`est_input_tokens × 10 + maxTokens × 50`) and returns **HTTP 402**.
+     This is the first moment the client knows what THIS prompt costs.
    - `mppx` reads the running cumulative from the challenge, signs a
      fresh `PaymentChannelClaim` for `prev_cumulative + worst_case_quote`,
      and retries the request **without** an on-chain tx
@@ -340,8 +380,10 @@ npx tsx demo/llm-marketplace/channel/client.ts
      `anthropic.messages.stream(...)`, and forwards each token delta
      as an SSE `event: token`
    - Server emits `event: done` with real `input_tokens`, `output_tokens`,
-     real cost in drops, voucher overpayment for this call, and the
-     latest signed cumulative
+     real cost in drops, the worst-case quote the 402 just demanded
+     (echoed back as `paid`), voucher overpayment, and the latest signed
+     cumulative -- enough for the client to render a settlement summary
+     without ever consulting a local price table
 5. After the third prompt, the client signs the **final** cumulative
    and submits a single on-chain `PaymentChannelClaim tfClose` to
    redeem and close the channel
@@ -400,12 +442,16 @@ The wire protocol is identical -- same `/info`, `/register`, `/open`,
   This is mppx's normal "verify failed -- here is a new challenge" pattern.
 - The client peeks at the body of any 402 it receives. If the `type` field
   matches `amount-exceeds-deposit` (or the `detail` contains
-  `CHANNEL_EXHAUSTED`), it submits a `PaymentChannelFund` on-chain to grow
-  the deposit by the per-call worst-case quote, then retries the same
-  `fetch('/complete', ...)` call. mppx re-runs the credential dance with a
-  fresh challenge ID; the server's metadata cache auto-refreshes when the
-  cumulative exceeds the cached balance, so the top-up is detected without
-  manual cache busting.
+  `CHANNEL_EXHAUSTED`), it extracts the marketplace's quoted cumulative
+  and the current on-chain balance from the Problem Details `detail`,
+  submits a `PaymentChannelFund` for exactly `cumulative - available`
+  drops, then retries the same `fetch('/complete', ...)` call. The
+  client **does not consult a local price table** to size the top-up
+  -- every drop on-chain is justified by a number the marketplace just
+  put in a 402. mppx re-runs the credential dance with a fresh challenge
+  ID; the server's metadata cache auto-refreshes when the cumulative
+  exceeds the cached balance, so the top-up is detected without manual
+  cache busting.
 
 ### Cost shape (typical run, 3 prompts, Haiku 4.5)
 

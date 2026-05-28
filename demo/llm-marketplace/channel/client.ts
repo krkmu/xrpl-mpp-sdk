@@ -19,6 +19,13 @@
  *
  * Net result: 3 LLM calls = 2 on-chain txs (open + close), regardless of N.
  *
+ * Pricing: the client holds **no per-token price table**. Every call's
+ * worst-case quote is announced in the 402 challenge for that /complete
+ * request; the SSE `done` event echoes the same number back as `paid` so
+ * the settlement summary can print it without consulting any local rate.
+ * The channel funding amount (5 XRP) is the client's own risk budget,
+ * not a marketplace price.
+ *
  * Run: npx tsx demo/llm-marketplace/channel/client.ts
  *      (after `npx tsx demo/llm-marketplace/channel/server.ts`)
  */
@@ -28,6 +35,7 @@ import { channel, prepareOpenChannelTransaction } from '../../../sdk/src/channel
 import { close } from '../../../sdk/src/channel/server/Channel.js'
 import { Wallet } from '../../../sdk/src/utils/wallet.js'
 import * as log from '../../log.js'
+import { formatAmount } from '../shared/format.js'
 
 const PORT = 3005
 const BASE = `http://localhost:${PORT}`
@@ -155,10 +163,13 @@ async function streamPrompt(
   }
 
   log.separator()
+  // `done.paid` is the worst-case quote the marketplace announced in the
+  // 402 for THIS call -- the client did not derive it, just paid it.
   log.success(
     `Call #${done.call}: ${done.input_tokens}in + ${done.output_tokens}out -> ` +
-      `real ${done.actual_cost} drops, voucher +${done.paid} (overpay ${done.overpayment}), ` +
-      `cumulative ${done.voucher_cumulative}`,
+      `real ${formatAmount(done.actual_cost, 'XRP')}, ` +
+      `voucher +${formatAmount(done.paid, 'XRP')} (overpay ${formatAmount(done.overpayment, 'XRP')}), ` +
+      `cumulative ${formatAmount(done.voucher_cumulative, 'XRP')}`,
   )
   return done
 }
@@ -178,13 +189,10 @@ async function main() {
     address: string
     model: string
     network: string
-    pricing: { dropsPerInputToken: number; dropsPerOutputToken: number }
   }
   log.wallet('Marketplace', info.address)
   log.info(`Model: ${info.model}`)
-  log.info(
-    `Pricing: ${info.pricing.dropsPerInputToken} drops/in, ${info.pricing.dropsPerOutputToken} drops/out`,
-  )
+  log.info('Per-call price: not advertised here -- will arrive in each /complete 402')
   log.separator()
 
   // Tell the server which key to verify claim signatures against. Without
@@ -247,7 +255,7 @@ async function main() {
   const channelId = refParts[1]
   const openTxHash = refParts[2] ?? ''
   if (!channelId) {
-    log.error(`Could not extract channelId from receipt: ${openReceipt.reference}`)
+    log.error(`Could not extract channelId from receipt: ${openReceipt}`)
     process.exit(1)
   }
   log.success(`Channel opened: ${channelId}`)
@@ -302,12 +310,13 @@ async function main() {
     'Per-call breakdown (drops):',
     ...perCall,
     '',
-    `Voucher cumulative (closed): ${totalPaid} drops (${(totalPaid / 1_000_000).toFixed(6)} XRP)`,
-    `Real Anthropic cost:         ${totalActual} drops (${(totalActual / 1_000_000).toFixed(6)} XRP)`,
-    `Overpayment:                 ${overpayment} drops (${overpayPct.toFixed(1)}%)`,
+    `Voucher cumulative (closed): ${formatAmount(totalPaid, 'XRP')}`,
+    `Real Anthropic cost:         ${formatAmount(totalActual, 'XRP')}`,
+    `Overpayment:                 ${formatAmount(overpayment, 'XRP')} (${overpayPct.toFixed(1)}%)`,
     '',
     `On-chain txs: 2 (open + close) for ${dones.length} prompts`,
     `Same workload in charge mode would have cost ${dones.length} on-chain Payment txs.`,
+    'Price discovery: every per-call quote came from the 402 challenge.',
   ])
 
   process.exit(0)

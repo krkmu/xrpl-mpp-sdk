@@ -10,6 +10,11 @@
  *   5. After Anthropic returns its usage report, emit an `event: done` with the
  *      real cost vs the worst-case quote (overpayment is the cost of pay-up-front)
  *
+ * Price discovery is server-side only: the client has no upfront price table
+ * and no `/info` lookup -- everything monetary lives in the 402 challenge.
+ * `/info` is kept as a curl-friendly probe (marketplace address + model) but
+ * the demo client never calls it.
+ *
  * One LLM call = one on-chain XRPL Payment. No PayChannel here -- see
  * ../channel-stream/ for the per-token streaming variant. See ../charge-iou/
  * and ../charge-mpt/ for the same flow billed in an IOU or MPT.
@@ -114,15 +119,13 @@ async function main() {
 
     try {
       if (method === 'GET' && path === '/info') {
+        // Identity-only probe. No pricing table here on purpose: price is
+        // dynamic per call and lives exclusively in the 402 challenge.
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(
           JSON.stringify({
             address: wallet.address,
             model: MODEL,
-            pricing: {
-              dropsPerInputToken: DROPS_PER_INPUT_TOKEN,
-              dropsPerOutputToken: DROPS_PER_OUTPUT_TOKEN,
-            },
           }),
         )
         return
@@ -145,7 +148,6 @@ async function main() {
           currency: 'XRP',
         })
         const result = await handler(toWebRequest(req, raw))
-
         if (result.status === 402) {
           log.challenge(
             `Quote: ~${inputEstimate}in × ${DROPS_PER_INPUT_TOKEN} + ${maxTokens}out × ${DROPS_PER_OUTPUT_TOKEN} = ${cost} drops`,
@@ -243,7 +245,7 @@ async function main() {
     log.box([
       'Endpoints:',
       '',
-      'GET  /info      -> marketplace address, model, drop pricing',
+      'GET  /info      -> marketplace address + model (no pricing -- see 402)',
       'POST /complete  -> { prompt, maxTokens } -> 402 quote -> SSE token stream',
       '',
       'Waiting for a client...',

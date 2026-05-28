@@ -221,6 +221,10 @@ async function main() {
 
     try {
       if (method === 'GET' && path === '/info') {
+        // Setup-only probe. We expose the MPT *identifier* (issuance id +
+        // human label) because the client needs it to MPTokenAuthorize
+        // before any MPT Payment can clear. That's "which token", not
+        // "what it costs"; per-call price lives exclusively in the 402.
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(
           JSON.stringify({
@@ -229,10 +233,6 @@ async function main() {
             network: NETWORK,
             token: { label: TOKEN_LABEL, ...mpt },
             model: MODEL,
-            pricing: {
-              creditsPerInputToken: CREDITS_PER_INPUT_TOKEN,
-              creditsPerOutputToken: CREDITS_PER_OUTPUT_TOKEN,
-            },
             faucetAllowanceCredits: FAUCET_ALLOWANCE_CREDITS,
           }),
         )
@@ -397,7 +397,7 @@ async function main() {
     log.box([
       'Endpoints:',
       '',
-      'GET  /info        -> issuer, recipient, MPT issuance id, model, credit pricing',
+      'GET  /info        -> issuer, recipient, MPT issuance id, model (no pricing -- see 402)',
       'POST /faucet-mpt  -> { holder } -> issuer authorises holder + issues 10 000 CRED',
       'POST /complete    -> { prompt, maxTokens } -> 402 quote in CRED -> SSE token stream',
       '',

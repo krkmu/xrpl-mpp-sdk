@@ -3,9 +3,16 @@
  *
  * Fires ONE /complete request to the marketplace, billed in a
  * **Multi-Purpose Token (MPT)** called `CRED` (compute credits)
- * instead of native XRP or an IOU. mppx's patched fetch handles the
- * 402: signs an MPT Payment tx, the server submits it to XRPL,
- * validates, and returns an SSE token stream we render live.
+ * instead of native XRP or an IOU. The client holds **no client-side
+ * price table**: the per-call cost (amount + MPT pair) is announced
+ * inside the 402 challenge and surfaced via mppx's `onProgress` hook
+ * the moment the challenge lands. The only number the client picks
+ * is `maxTokens`, the worst-case output budget it's willing to
+ * authorise.
+ *
+ * The /info endpoint still exposes the *MPT identifier* (issuance id
+ * + human label) because the holder must MPTokenAuthorize before any
+ * MPT Payment can clear. That's "which token", not "what it costs".
  *
  * MPT vs IOU on the wire:
  *   - IOU currency : { currency: "USD", issuer: "rIssuer..." }
@@ -15,8 +22,8 @@
  *   1. Fund a fresh wallet via the XRPL testnet faucet (XRP for the
  *      MPToken owner-object reserve and tx fees -- not what we're
  *      paying *with*).
- *   2. GET /info to discover marketplace address, MPT issuance id,
- *      model, pricing, allowance.
+ *   2. GET /info -- discover issuer + recipient + MPT identifier + model.
+ *      Does NOT advertise per-token pricing.
  *   3. acceptToken(mpt) -- holder-side MPTokenAuthorize. Status will
  *      be `pending_authorization` because the issuance requires the
  *      issuer's countersignature (the marketplace's allowlist).
@@ -25,9 +32,9 @@
  *      shot. Demo bootstrap; in production this would be a paid
  *      top-up after KYC / subscription.
  *
- * Then POST /complete with { prompt, maxTokens }; mppx intercepts
- * the 402 transparently and pays the quote in CRED before the SSE
- * stream starts.
+ * Then POST /complete with { prompt, maxTokens }; mppx intercepts the
+ * 402, the `onProgress` hook logs the price the marketplace just
+ * announced, and the MPT Payment is signed for that exact amount.
  *
  * Run: npx tsx demo/llm-marketplace/charge-mpt/client.ts
  *      (after `npx tsx demo/llm-marketplace/charge-mpt/server.ts`)
@@ -37,6 +44,7 @@ import { Mppx } from 'mppx/client'
 import { charge } from '../../../sdk/src/client/Charge.js'
 import { Wallet } from '../../../sdk/src/utils/wallet.js'
 import * as log from '../../log.js'
+import { formatAmount } from '../shared/format.js'
 
 const PORT = 3009
 const BASE = `http://localhost:${PORT}`
@@ -47,6 +55,8 @@ const rawFetch = globalThis.fetch
 // is willing to pay for; the actual Anthropic generation will usually be less.
 const PROMPT = 'Explain what the Machine Payments Protocol does in one short paragraph.'
 const MAX_TOKENS = 120
+
+type Quote = { recipient: string; amount: string; currency: string }
 
 type DoneEvent = {
   input_tokens: number
@@ -63,7 +73,6 @@ type Info = {
   network: string
   token: { label: string; mpt_issuance_id: string }
   model: string
-  pricing: { creditsPerInputToken: number; creditsPerOutputToken: number }
   faucetAllowanceCredits: number
 }
 
@@ -127,13 +136,10 @@ async function main() {
   const info = await fetchInfo()
   log.wallet('Marketplace issuer', info.issuer)
   log.wallet('Marketplace recipient', info.recipient)
-  log.info(`Token: ${info.token.label} (MPT)`)
+  log.info(`Token to opt in to: ${info.token.label} (MPT)`)
   log.key('MPTokenIssuanceID', info.token.mpt_issuance_id)
   log.info(`Model: ${info.model}`)
-  log.info(
-    `Pricing: ${info.pricing.creditsPerInputToken} ${info.token.label}/in, ` +
-      `${info.pricing.creditsPerOutputToken} ${info.token.label}/out`,
-  )
+  log.info('Per-call price: not advertised here -- will arrive in the 402 on /complete')
   log.separator()
 
   // Holder-side MPTokenAuthorize. Creates an MPToken object on the payer
@@ -161,14 +167,37 @@ async function main() {
   log.success(`Payer credited with ${info.faucetAllowanceCredits} ${info.token.label}`)
   log.separator()
 
-  // Patch fetch so the next /complete call auto-handles the MPT 402.
+  // Capture the 402 quote so we can log what the marketplace just asked
+  // for, before mppx signs anything. This is the *first* moment the
+  // client knows what this specific call costs.
+  let quote: Quote | null = null
+
   Mppx.create({
-    methods: [charge({ wallet, mode: 'pull', network: NETWORK })],
+    methods: [
+      charge({
+        wallet,
+        mode: 'pull',
+        network: NETWORK,
+        onProgress: (evt) => {
+          if (evt.type === 'challenge') {
+            quote = { recipient: evt.recipient, amount: evt.amount, currency: evt.currency }
+            log.challenge(
+              `402 received -- price: ${formatAmount(evt.amount, evt.currency, info.token.label)}`,
+            )
+            log.info(`Payable to: ${evt.recipient}`)
+          } else if (evt.type === 'signing') {
+            log.info('Signing the MPT Payment tx with the quoted amount...')
+          } else if (evt.type === 'confirmed') {
+            log.info(`Tx submitted: ${evt.hash}`)
+          }
+        },
+      }),
+    ],
   })
 
   log.info(`Prompt: "${PROMPT}"`)
   log.info(`maxTokens: ${MAX_TOKENS}`)
-  log.loading('Sending POST /complete -- mppx will auto-handle the 402...')
+  log.loading(`POST ${BASE}/complete -- price will arrive in the 402...`)
   log.separator()
 
   const response = await fetch(`${BASE}/complete`, {
@@ -222,17 +251,23 @@ async function main() {
   const overpayPct = done.paid > 0 ? ((done.overpayment / done.paid) * 100).toFixed(1) : '0.0'
   const remaining = info.faucetAllowanceCredits - done.paid
 
+  // Render everything in the unit the client learned from the 402,
+  // tagged with the friendly token label the server hinted at boot.
+  const wire = quote?.currency ?? '<unknown>'
+  const label = done.token_label
+
   log.box([
     'Settlement -- charge in MPT credits',
     '',
     `Anthropic usage:   ${done.input_tokens} input + ${done.output_tokens} output tokens`,
-    `Real cost:         ${done.actual_cost} ${done.token_label}`,
-    `Paid (quote):      ${done.paid} ${done.token_label} (worst case before generation)`,
-    `Overpayment:       ${done.overpayment} ${done.token_label} (${overpayPct}%)`,
-    `Remaining balance: ${remaining} ${done.token_label} (of ${info.faucetAllowanceCredits} faucet)`,
+    `Real cost:         ${formatAmount(done.actual_cost, wire, label)}`,
+    `Paid (quote):      ${formatAmount(done.paid, wire, label)} (worst case, learned from the 402)`,
+    `Overpayment:       ${formatAmount(done.overpayment, wire, label)} (${overpayPct}%)`,
+    `Remaining balance: ${formatAmount(remaining, wire, label)} (of ${info.faucetAllowanceCredits} ${label} faucet)`,
     '',
     'Charge mode: 1 on-chain MPT Payment tx settled the whole call.',
     'No trustline reserve on the holder -- just one MPToken owner object.',
+    'Price discovery: the 402 challenge -- no client-side price table.',
   ])
 
   process.exit(0)

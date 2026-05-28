@@ -57,7 +57,10 @@ npx tsx demo/weather-api/client.ts
 2. **Client bootstrap** (one-time):
    - Fund a fresh payer wallet via the XRPL faucet (gives XRP for the
      trustline reserve and tx fees -- not what we pay *with*).
-   - `GET /info` discovers `{ issuer, recipient, currency, pricePerCallWth, knownCities }`.
+   - `GET /info` discovers `{ issuer, recipient, currency, knownCities, ... }`.
+     **No `pricePerCallWth`** -- the per-call price is announced inside
+     the 402 challenge, not on `/info`. The client never holds a local
+     price table.
    - `acceptToken` (TrustSet) toward the issuer so the payer can hold WTH.
    - `POST /faucet-iou` -> the issuer mints 10 WTH to the payer.
      Demo-only bootstrap; in production this would be a paid credit
@@ -66,10 +69,13 @@ npx tsx demo/weather-api/client.ts
 3. **Paid calls** (one HTTP request per city in `CITIES`):
    - Client calls `POST /forecast` with `{ city }`.
    - Server replies `402 Payment Required` with an MPP challenge
-     advertising 1 WTH from payer to recipient.
-   - **mppx intercepts the 402 transparently**: signs an IOU `Payment`,
-     submits it to XRPL via the server (pull mode), the server polls
-     until `tesSUCCESS`, then re-runs the original `/forecast` request.
+     advertising the per-call WTH amount from payer to recipient.
+   - mppx's `onProgress` hook logs the quote the moment it lands --
+     the first time the client sees a price for this call.
+   - **mppx then intercepts the 402 transparently**: signs an IOU
+     `Payment` for the quoted amount, submits it to XRPL via the
+     server (pull mode), the server polls until `tesSUCCESS`, then
+     re-runs the original `/forecast` request.
    - Server returns the forecast JSON plus a `Payment-Receipt` header
      carrying the tx hash.
 

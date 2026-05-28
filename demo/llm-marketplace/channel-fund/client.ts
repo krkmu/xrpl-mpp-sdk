@@ -4,13 +4,20 @@
  * Counterpart of channel-fund/server.ts. Same 3-prompt flow as channel/,
  * but the client opens the channel with a deliberately TINY initial
  * deposit (5 000 drops -- enough only for prompt 1) and tops up
- * reactively when the server replies 409 + CHANNEL_EXHAUSTED. Each
+ * reactively when the server replies 402 + CHANNEL_EXHAUSTED. Each
  * top-up is one PaymentChannelFund transaction.
  *
  * The win: peak locked capital stays close to the running cumulative
  * cost (~0.02 XRP for 3 prompts), instead of the worst-case lump sum
  * the eager variant pre-commits (5 XRP). Trade-off: more on-chain txs
  * (open + N funds + close vs open + close).
+ *
+ * Pricing: the client holds **no per-token price table**. The size of
+ * every top-up is derived from the CHANNEL_EXHAUSTED 402's Problem
+ * Details body -- which carries the cumulative voucher amount the
+ * marketplace is asking for plus the on-chain deposit currently
+ * available. The required top-up is exactly `cumulative - available`,
+ * so the client never has to mirror the marketplace's rate table.
  *
  * Run: npx tsx demo/llm-marketplace/channel-fund/client.ts
  *      (after `npx tsx demo/llm-marketplace/channel-fund/server.ts`)
@@ -25,7 +32,7 @@ import {
 import { close } from '../../../sdk/src/channel/server/Channel.js'
 import { Wallet } from '../../../sdk/src/utils/wallet.js'
 import * as log from '../../log.js'
-import { estimateInputTokens, quoteDrops } from '../shared/anthropic.js'
+import { formatAmount } from '../shared/format.js'
 
 const PORT = 3006
 const BASE = `http://localhost:${PORT}`
@@ -70,6 +77,29 @@ type DoneEvent = {
   paid: number
   overpayment: number
   voucher_cumulative: string
+}
+
+/**
+ * Parse the Problem Details body of a CHANNEL_EXHAUSTED 402 to extract
+ * the voucher cumulative the marketplace is asking for and the on-chain
+ * deposit currently available. Returns null if the body is not in that
+ * shape so the caller can degrade gracefully.
+ *
+ * Source format (from sdk/src/errors.ts `amountExceedsDeposit`):
+ *   "[CHANNEL_EXHAUSTED] Cumulative {X} drops on channel {id}
+ *    exceeds available balance {Y} drops -- top up via
+ *    PaymentChannelFund or reset cumulative."
+ *
+ * mppx wraps it as the `detail` field of an RFC 9457 Problem Details JSON
+ * body alongside `type: ".../amount-exceeds-deposit"`. The regex tolerates
+ * either the JSON-escaped or the plain text form.
+ */
+function parseExhaustedQuote(bodyText: string): { cumulative: bigint; available: bigint } | null {
+  const match = bodyText.match(
+    /Cumulative\s+(\d+)\s+drops\s+on\s+channel\s+\S+\s+exceeds\s+available\s+balance\s+(\d+)\s+drops/,
+  )
+  if (!match) return null
+  return { cumulative: BigInt(match[1]!), available: BigInt(match[2]!) }
 }
 
 async function* readSseEvents(
@@ -120,9 +150,9 @@ async function streamPromptWithLazyFund(args: {
 
   log.separator()
   log.info(`[prompt ${index}/${total}] "${prompt}"`)
-  const quote = BigInt(quoteDrops(estimateInputTokens(prompt), maxTokens))
   log.info(
-    `Worst-case quote: ${quote} drops. Current channel deposit: ${depositRef.current} drops.`,
+    `Current channel deposit: ${formatAmount(depositRef.current.toString(), 'XRP')}. ` +
+      `Worst-case quote: not known -- will arrive in the 402 if a top-up is needed.`,
   )
   log.separator()
 
@@ -150,25 +180,43 @@ async function streamPromptWithLazyFund(args: {
         log.error(`Unexpected 402 (not CHANNEL_EXHAUSTED): ${bodyText.slice(0, 200)}`)
         process.exit(1)
       }
-      // Top up by exactly the worst-case quote of THIS prompt. The previous
-      // call already left the channel with enough headroom for the prior
-      // cumulative, so adding `quote` guarantees the new cumulative fits
-      // (deposit' = deposit + quote >= prev_cumulative + quote = new_cumulative).
+      // The Problem Details body carries the cumulative voucher the
+      // marketplace is asking for and the on-chain deposit currently
+      // available. The exact top-up needed is the delta -- no client-side
+      // pricing maths required. (We *only* learn the per-call rate by
+      // reading what the marketplace just demanded.)
+      const parsed = parseExhaustedQuote(bodyText)
+      if (!parsed) {
+        log.error(`Could not extract cumulative/available from 402 body: ${bodyText.slice(0, 200)}`)
+        process.exit(1)
+      }
+      const topUp = parsed.cumulative - parsed.available
+      if (topUp <= 0n) {
+        log.error(
+          `Refusing to PaymentChannelFund by ${topUp} drops -- ` +
+            `cumulative=${parsed.cumulative} available=${parsed.available}.`,
+        )
+        process.exit(1)
+      }
       log.fix(
         `Channel exhausted (mppx 402, amount-exceeds-deposit). ` +
-          `Submitting PaymentChannelFund(+${quote} drops) and retrying...`,
+          `Marketplace wants cumulative ${formatAmount(parsed.cumulative.toString(), 'XRP')}, ` +
+          `deposit currently ${formatAmount(parsed.available.toString(), 'XRP')}. ` +
+          `Submitting PaymentChannelFund(+${formatAmount(topUp.toString(), 'XRP')}) and retrying...`,
       )
       const { txHash } = await fundChannel({
         wallet,
         channelId,
-        amount: quote.toString(),
+        amount: topUp.toString(),
         network: NETWORK,
       })
       fundTxs.push(txHash)
-      topUpDrops += quote
-      depositRef.current += quote
+      topUpDrops += topUp
+      depositRef.current += topUp
       log.tx(txHash, log.explorerLink(txHash))
-      log.success(`Channel deposit topped up. New deposit: ${depositRef.current} drops.`)
+      log.success(
+        `Channel deposit topped up. New deposit: ${formatAmount(depositRef.current.toString(), 'XRP')}.`,
+      )
       continue
     }
 
@@ -209,10 +257,13 @@ async function streamPromptWithLazyFund(args: {
     }
 
     log.separator()
+    // `done.paid` is the worst-case quote the marketplace announced in
+    // the 402 for THIS call; the client never derived it.
     log.success(
       `Call #${done.call}: ${done.input_tokens}in + ${done.output_tokens}out -> ` +
-        `real ${done.actual_cost} drops, voucher +${done.paid} (overpay ${done.overpayment}), ` +
-        `cumulative ${done.voucher_cumulative}`,
+        `real ${formatAmount(done.actual_cost, 'XRP')}, ` +
+        `voucher +${formatAmount(done.paid, 'XRP')} (overpay ${formatAmount(done.overpayment, 'XRP')}), ` +
+        `cumulative ${formatAmount(done.voucher_cumulative, 'XRP')}`,
     )
     return { done, fundTxs, topUpDrops }
   }
@@ -236,13 +287,10 @@ async function main() {
     address: string
     model: string
     network: string
-    pricing: { dropsPerInputToken: number; dropsPerOutputToken: number }
   }
   log.wallet('Marketplace', info.address)
   log.info(`Model: ${info.model}`)
-  log.info(
-    `Pricing: ${info.pricing.dropsPerInputToken} drops/in, ${info.pricing.dropsPerOutputToken} drops/out`,
-  )
+  log.info('Per-call price: not advertised here -- will arrive in each /complete 402')
   log.separator()
 
   log.loading('POST /register -- sharing publicKey with marketplace...')
@@ -365,24 +413,26 @@ async function main() {
     'Settlement -- channel + just-in-time fund',
     '',
     `Channel:                 ${channelId}`,
-    `Initial deposit:         ${INITIAL_DEPOSIT_DROPS} drops`,
+    `Initial deposit:         ${formatAmount(INITIAL_DEPOSIT_DROPS, 'XRP')}`,
     `Top-ups:                 ${allFundTxs.length} × PaymentChannelFund`,
-    `Peak channel deposit:    ${peakDeposit} drops (${(Number(peakDeposit) / 1_000_000).toFixed(6)} XRP)`,
+    `Peak channel deposit:    ${formatAmount(peakDeposit.toString(), 'XRP')}`,
     '',
     'Per-call breakdown (drops):',
     ...perCall,
     '',
-    `Voucher cumulative (closed): ${totalPaid} drops (${(totalPaid / 1_000_000).toFixed(6)} XRP)`,
-    `Real Anthropic cost:         ${totalActual} drops (${(totalActual / 1_000_000).toFixed(6)} XRP)`,
-    `Overpayment:                 ${overpayment} drops (${overpayPct.toFixed(1)}%)`,
+    `Voucher cumulative (closed): ${formatAmount(totalPaid, 'XRP')}`,
+    `Real Anthropic cost:         ${formatAmount(totalActual, 'XRP')}`,
+    `Overpayment:                 ${formatAmount(overpayment, 'XRP')} (${overpayPct.toFixed(1)}%)`,
     '',
     `On-chain txs: ${onchainTxs} (1 open + ${allFundTxs.length} fund + 1 close) for ${dones.length} prompts`,
     '',
     'vs eager channel/ variant:',
-    `  Eager peak locked:  ${eagerLockedDrops} drops (5 XRP)`,
-    `  Lazy peak locked:   ${peakDeposit} drops (~${peakReductionRatio.toFixed(0)}x less capital tied up)`,
+    `  Eager peak locked:  ${formatAmount(eagerLockedDrops.toString(), 'XRP')}`,
+    `  Lazy peak locked:   ${formatAmount(peakDeposit.toString(), 'XRP')} (~${peakReductionRatio.toFixed(0)}x less capital tied up)`,
     `  Eager on-chain txs: 2 (open + close)`,
     `  Lazy on-chain txs:  ${onchainTxs} (more txs, but right-sized capital)`,
+    '',
+    'Price discovery: every per-call quote AND every fund delta came from a 402.',
   ])
 
   process.exit(0)

@@ -3,15 +3,22 @@
  *
  * A consumer of a premium weather API that, instead of an API key or
  * monthly subscription, bills every call as an on-chain micropayment in
- * the API's own token (`WTH`). The whole pitch in one paragraph:
+ * the API's own token (`WTH`). The client holds **no client-side price
+ * table**: it just POSTs /forecast with `{ city }`. The marketplace
+ * decides the quote and ships it inside the 402 challenge; mppx parses
+ * it and we surface the (amount, currency) pair via the `onProgress`
+ * hook before the payment is signed. Same pattern as
+ * `../llm-marketplace/charge-iou/` -- the only number the client picks
+ * is *which city*.
  *
  *   Traditional SaaS API:   Authorization: Bearer sk-... + invoice end of month
- *   This API:               HTTP 402 -> 1 WTH on-chain -> 200 + forecast
+ *   This API:               HTTP 402 -> WTH on-chain -> 200 + forecast
  *
  * Bootstrap (one-time, before any paid call):
  *   1. Fund a fresh wallet via the XRPL testnet faucet (XRP for the
  *      trustline reserve and tx fees -- not what we're paying *with*).
- *   2. GET /info to discover marketplace address, currency, and pricing.
+ *   2. GET /info to discover marketplace address and IOU currency
+ *      identifier. The endpoint does NOT advertise per-call pricing.
  *   3. Open a trustline to the issuer (acceptToken / TrustSet) so the
  *      payer can hold and spend WTH.
  *   4. POST /faucet-iou to receive the demo allowance (10 WTH).
@@ -19,9 +26,9 @@
  *      (card payment, DEX swap, fiat on-ramp, ...).
  *
  * Then for each city in CITIES we POST /forecast. mppx intercepts the
- * 402, signs an IOU `Payment` for 1 WTH, submits to XRPL, polls until
- * validated, and retries the request transparently. The settlement
- * summary at the end shows per-call tx hashes and total WTH spent.
+ * 402, the `onProgress` hook logs the price the marketplace just
+ * announced, signs an IOU `Payment` for that exact amount, submits to
+ * XRPL, polls until validated, and retries the request transparently.
  *
  * Run: npx tsx demo/weather-api/client.ts
  *      (after `npx tsx demo/weather-api/server.ts`)
@@ -31,6 +38,7 @@ import { Mppx } from 'mppx/client'
 import { charge } from '../../sdk/src/client/Charge.js'
 import { Wallet } from '../../sdk/src/utils/wallet.js'
 import * as log from '../log.js'
+import { formatAmount } from '../llm-marketplace/shared/format.js'
 
 const PORT = 3007
 const BASE = `http://localhost:${PORT}`
@@ -56,19 +64,28 @@ type Forecast = {
   premium_advice: string
 }
 
+/**
+ * `/info` carries identity + token descriptor only. No `pricePerCallWth`
+ * here: the price is announced per call inside the 402 challenge.
+ *   - `currency` is "which token" (needed to open the trustline)
+ *   - `faucetAllowanceWth` is the bootstrap top-up size (not a per-call price)
+ */
 type Info = {
   issuer: string
   recipient: string
   network: string
   currency: { currency: string; issuer: string }
-  pricePerCallWth: string
   faucetAllowanceWth: string
   payerTrustlineLimitWth: string
   knownCities: string[]
 }
 
+/** Per-call quote learned from the 402 challenge (mppx onProgress). */
+type Quote = { recipient: string; amount: string; currency: string }
+
 type CallRecord = {
   city: string
+  /** Amount paid for this call, learned from the 402 (not from a local table). */
   pricePaidWth: string
   txHash: string
   forecast: Forecast | null
@@ -79,6 +96,43 @@ async function fetchInfo(): Promise<Info> {
   const res = await rawFetch(`${BASE}/info`)
   if (!res.ok) throw new Error(`/info failed: ${res.status}`)
   return (await res.json()) as Info
+}
+
+/**
+ * Verify that the IOU descriptor announced by a 402 challenge matches
+ * the one we discovered via `/info` and opened a trustline to.
+ *
+ * On XRPL, an IOU is uniquely identified by the (currency, issuer)
+ * pair. The 3-char symbol alone is not enough -- any account can issue
+ * an IOU called "WTH". If the marketplace announces a different
+ * issuer at quote time, either the server is misconfigured or it is
+ * trying to redirect payment to a token we did not trustline (worst
+ * case: a worthless lookalike). Either way we abort before mppx signs
+ * anything.
+ */
+function assertIouMatches(
+  wireCurrency: string,
+  expected: { currency: string; issuer: string },
+): void {
+  let parsed: { currency?: unknown; issuer?: unknown }
+  try {
+    parsed = JSON.parse(wireCurrency)
+  } catch {
+    log.error(`402 currency is not a JSON IOU descriptor: ${wireCurrency}`)
+    process.exit(1)
+  }
+  if (typeof parsed.currency !== 'string' || typeof parsed.issuer !== 'string') {
+    log.error(`402 currency is missing currency/issuer fields: ${wireCurrency}`)
+    process.exit(1)
+  }
+  if (parsed.currency !== expected.currency || parsed.issuer !== expected.issuer) {
+    log.error(
+      `402 announces IOU (${parsed.currency}, issuer ${parsed.issuer.slice(0, 6)}...${parsed.issuer.slice(-4)}) ` +
+        `but /info advertised (${expected.currency}, issuer ${expected.issuer.slice(0, 6)}...${expected.issuer.slice(-4)}). ` +
+        `Refusing to pay -- this is not the token we trustlined.`,
+    )
+    process.exit(1)
+  }
 }
 
 async function fetchFaucetIou(holder: string): Promise<{ txHash: string }> {
@@ -95,11 +149,14 @@ async function fetchFaucetIou(holder: string): Promise<{ txHash: string }> {
 /**
  * Call /forecast for a single city. mppx intercepts the 402 silently:
  * reads the WTH challenge, signs an IOU Payment, submits to XRPL, retries
- * the request once the tx is validated. From the caller's point of view
- * this is just an HTTP request that takes ~one ledger close to settle.
+ * the request once the tx is validated. The price is announced by the
+ * server inside the 402 -- the client never advertises it.
+ *
+ * `lastQuote` is a ref into the captured-from-onProgress quote so we
+ * can stash the paid amount in the call record after the request returns.
  */
-async function getForecast(city: string, price: string): Promise<CallRecord> {
-  log.loading(`GET forecast("${city}") -- mppx will auto-pay ${price} WTH...`)
+async function getForecast(city: string, lastQuote: { value: Quote | null }): Promise<CallRecord> {
+  log.loading(`GET forecast("${city}") -- mppx will auto-pay the quote from the 402...`)
   const response = await fetch(`${BASE}/forecast`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -134,7 +191,12 @@ async function getForecast(city: string, price: string): Promise<CallRecord> {
       `visibility ${forecast.visibility_km} km`,
   )
   log.info(`  Premium advice: ${forecast.premium_advice}`)
-  return { city, pricePaidWth: price, txHash, forecast }
+  return {
+    city,
+    pricePaidWth: lastQuote.value?.amount ?? '0',
+    txHash,
+    forecast,
+  }
 }
 
 async function main() {
@@ -153,7 +215,7 @@ async function main() {
   log.info(
     `Currency: ${info.currency.currency} (issuer ${info.currency.issuer.slice(0, 6)}...${info.currency.issuer.slice(-4)})`,
   )
-  log.info(`Price per /forecast call: ${info.pricePerCallWth} ${info.currency.currency}`)
+  log.info('Per-call price: not advertised here -- will arrive in the 402 on /forecast')
   log.info(`Known cities: ${info.knownCities.join(', ')}`)
   log.separator()
 
@@ -181,22 +243,57 @@ async function main() {
   log.success(`Payer credited with ${info.faucetAllowanceWth} ${info.currency.currency}`)
   log.separator()
 
-  // Patch fetch so subsequent /forecast calls auto-handle the WTH 402.
+  // Capture the 402 quote so we can log what the marketplace just asked
+  // for, before mppx signs anything. This is the *first* moment the
+  // client knows what each specific call costs.
+  const lastQuote: { value: Quote | null } = { value: null }
+
   Mppx.create({
-    methods: [charge({ wallet, mode: 'pull', network: NETWORK })],
+    methods: [
+      charge({
+        wallet,
+        mode: 'pull',
+        network: NETWORK,
+        onProgress: (evt) => {
+          if (evt.type === 'challenge') {
+            // Security check: the 402 declares the IOU as a JSON
+            // (currency, issuer) pair. On XRPL anyone can issue an
+            // IOU called "WTH" -- only the (symbol, issuer) pair is
+            // unique. We refuse to pay if the marketplace tries to
+            // bill us in a "WTH" issued by anyone other than the one
+            // we discovered via /info and opened a trustline to.
+            assertIouMatches(evt.currency, info.currency)
+
+            lastQuote.value = {
+              recipient: evt.recipient,
+              amount: evt.amount,
+              currency: evt.currency,
+            }
+            log.challenge(
+              `402 received -- price: ${formatAmount(evt.amount, evt.currency, info.currency.currency)}`,
+            )
+            log.info(`Payable to: ${evt.recipient}`)
+          } else if (evt.type === 'signing') {
+            log.info('Signing the IOU Payment tx with the quoted amount...')
+          } else if (evt.type === 'confirmed') {
+            log.info(`Tx submitted: ${evt.hash}`)
+          }
+        },
+      }),
+    ],
   })
 
   log.box([
     'Querying the API',
     '',
     `Cities to fetch: ${CITIES.join(', ')}`,
-    `Each call will cost ${info.pricePerCallWth} ${info.currency.currency} (one IOU Payment tx on XRPL).`,
+    'Each call costs whatever the 402 announces (one IOU Payment tx on XRPL).',
   ])
   log.separator()
 
   const calls: CallRecord[] = []
   for (const city of CITIES) {
-    const record = await getForecast(city, info.pricePerCallWth)
+    const record = await getForecast(city, lastQuote)
     calls.push(record)
     log.separator()
   }
@@ -216,9 +313,8 @@ async function main() {
     '',
     `Currency:                ${info.currency.currency} (issuer ${info.currency.issuer.slice(0, 6)}...)`,
     `Calls made:              ${calls.length} (${successful.length} succeeded)`,
-    `Per-call IOU price:      ${info.pricePerCallWth} ${info.currency.currency}`,
     '',
-    'Per-call breakdown:',
+    'Per-call breakdown (price learned from each 402):',
     ...perCall,
     '',
     `Total spent:             ${totalSpent} ${info.currency.currency}`,
@@ -230,6 +326,7 @@ async function main() {
     '',
     'No API key, no signup, no monthly bill -- the request itself carries',
     'the payment and the receipt arrives in the response headers.',
+    'Price discovery: the 402 challenge -- no client-side price table.',
   ])
 
   process.exit(0)

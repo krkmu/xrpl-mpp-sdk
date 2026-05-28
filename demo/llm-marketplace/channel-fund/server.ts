@@ -123,6 +123,11 @@ async function main() {
     const method = req.method ?? 'GET'
 
     try {
+      // Identity probe. As in channel/, we do NOT advertise per-token
+      // rates here. Per-call quotes ride on the 402 challenge that
+      // /complete returns; CHANNEL_EXHAUSTED 402s additionally carry
+      // the cumulative + available deposit in their Problem Details
+      // body, which the client parses to size each PaymentChannelFund.
       if (method === 'GET' && path === '/info') {
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(
@@ -130,10 +135,6 @@ async function main() {
             address: wallet.address,
             model: MODEL,
             network: NETWORK,
-            pricing: {
-              dropsPerInputToken: DROPS_PER_INPUT_TOKEN,
-              dropsPerOutputToken: DROPS_PER_OUTPUT_TOKEN,
-            },
           }),
         )
         return
@@ -375,7 +376,7 @@ async function main() {
     log.box([
       'Endpoints:',
       '',
-      'GET  /info       -> marketplace address, model, drop pricing',
+      'GET  /info       -> marketplace address + model (no pricing -- see 402)',
       'POST /register   -> { publicKey } -> arms the xrpl/channel server method',
       'GET  /open       -> 402 (action: open) -> server submits PaymentChannelCreate',
       'POST /complete   -> 402 (action: voucher) -> SSE token stream on success',

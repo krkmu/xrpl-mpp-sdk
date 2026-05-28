@@ -226,6 +226,11 @@ async function main() {
 
     try {
       if (method === 'GET' && path === '/info') {
+        // Setup-only probe. We expose the issuer + currency *identifier*
+        // here because the client needs it to open a trustline before any
+        // IOU payment can clear -- this is "which token" info, not "what
+        // it costs". The per-call price is discovered exclusively from
+        // the 402 challenge on /complete.
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(
           JSON.stringify({
@@ -234,10 +239,6 @@ async function main() {
             network: NETWORK,
             currency,
             model: MODEL,
-            pricing: {
-              usdPerInputToken: USD_PER_INPUT_TOKEN,
-              usdPerOutputToken: USD_PER_OUTPUT_TOKEN,
-            },
             faucetAllowanceUsd: FAUCET_ALLOWANCE_USD,
             payerTrustlineLimitUsd: PAYER_TRUSTLINE_LIMIT_USD,
           }),
@@ -394,7 +395,7 @@ async function main() {
     log.box([
       'Endpoints:',
       '',
-      'GET  /info        -> issuer, recipient, USD currency, model, drop pricing',
+      'GET  /info        -> issuer, recipient, USD currency, model (no pricing -- see 402)',
       'POST /faucet-usd  -> { holder } -> issues 10 USD (demo bootstrap)',
       'POST /complete    -> { prompt, maxTokens } -> 402 quote in USD -> SSE token stream',
       '',

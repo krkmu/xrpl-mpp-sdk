@@ -2,20 +2,21 @@
  * LLM Marketplace -- Charge mode (IOU) -- Client
  *
  * Fires ONE /complete request to the marketplace, billed in an XRPL
- * issued currency (IOU) instead of native XRP. mppx's patched fetch
- * handles the 402: signs an IOU Payment tx, the server submits it to
- * XRPL, validates, and returns an SSE token stream we render live.
+ * issued currency (IOU) instead of native XRP. The client holds **no
+ * client-side price table**: the per-call quote (amount + IOU pair) is
+ * carried inside the 402 challenge and surfaced via mppx's `onProgress`
+ * hook the moment it lands. The only number the client picks is
+ * `maxTokens`, the worst-case output budget it's willing to authorise.
  *
- * The marketplace mints its own test IOU with the 3-char code `USD`
- * (XRPL native IOU codes are 3 ASCII chars; longer codes such as real
- * `RLUSD` require the 40-char hex-encoded format). On mainnet, point
- * the recipient's trustline at any production issuer instead -- the
- * client code path is identical.
+ * The /info endpoint still exposes the *currency identifier* (issuer +
+ * 3-char code) because the trustline needs that to open before any IOU
+ * Payment can clear. That's "which token", not "what it costs".
  *
  * Bootstrap (one-time, before the paid call):
  *   1. Fund a fresh wallet via the XRPL testnet faucet (XRP for the
  *      trustline reserve and tx fees -- not what we're paying *with*).
- *   2. GET /info to discover marketplace address, currency, model, pricing.
+ *   2. GET /info -- discover issuer + recipient + IOU identifier + model.
+ *      Does NOT advertise per-token pricing.
  *   3. Open a trustline to the test USD issuer (acceptToken / TrustSet).
  *   4. POST /faucet-usd to receive the demo allowance (10 USD).
  *      Demo-only bootstrap; in production this would be a paid top-up
@@ -23,8 +24,8 @@
  *      USD-pegged issuer such as Ripple's RLUSD.
  *
  * Then POST /complete with { prompt, maxTokens }; mppx intercepts the
- * 402 transparently and pays the quote in USD before the SSE stream
- * starts.
+ * 402, the `onProgress` hook logs the price the marketplace just
+ * announced, and the IOU Payment is signed for that exact amount.
  *
  * Run: npx tsx demo/llm-marketplace/charge-iou/client.ts
  *      (after `npx tsx demo/llm-marketplace/charge-iou/server.ts`)
@@ -34,6 +35,7 @@ import { Mppx } from 'mppx/client'
 import { charge } from '../../../sdk/src/client/Charge.js'
 import { Wallet } from '../../../sdk/src/utils/wallet.js'
 import * as log from '../../log.js'
+import { formatAmount } from '../shared/format.js'
 
 const PORT = 3008
 const BASE = `http://localhost:${PORT}`
@@ -44,6 +46,8 @@ const rawFetch = globalThis.fetch
 // is willing to pay for; the actual Anthropic generation will usually be less.
 const PROMPT = 'Explain what the Machine Payments Protocol does in one short paragraph.'
 const MAX_TOKENS = 120
+
+type Quote = { recipient: string; amount: string; currency: string }
 
 type DoneEvent = {
   input_tokens: number
@@ -60,7 +64,6 @@ type Info = {
   network: string
   currency: { currency: string; issuer: string }
   model: string
-  pricing: { usdPerInputToken: number; usdPerOutputToken: number }
   faucetAllowanceUsd: string
   payerTrustlineLimitUsd: string
 }
@@ -125,14 +128,11 @@ async function main() {
   log.wallet('Marketplace issuer', info.issuer)
   log.wallet('Marketplace recipient', info.recipient)
   log.info(
-    `Currency: ${info.currency.currency} ` +
+    `Currency to trust: ${info.currency.currency} ` +
       `(issuer ${info.currency.issuer.slice(0, 6)}...${info.currency.issuer.slice(-4)})`,
   )
   log.info(`Model: ${info.model}`)
-  log.info(
-    `Pricing: ${info.pricing.usdPerInputToken} ${info.currency.currency}/in, ` +
-      `${info.pricing.usdPerOutputToken} ${info.currency.currency}/out`,
-  )
+  log.info('Per-call price: not advertised here -- will arrive in the 402 on /complete')
   log.separator()
 
   // TrustSet from the payer toward the issuer. Without this the payer
@@ -159,14 +159,37 @@ async function main() {
   log.success(`Payer credited with ${info.faucetAllowanceUsd} ${info.currency.currency}`)
   log.separator()
 
-  // Patch fetch so the next /complete call auto-handles the USD 402.
+  // Capture the 402 quote so we can log what the marketplace just asked
+  // for, before mppx signs anything. This is the *first* moment the
+  // client knows what this specific call costs.
+  let quote: Quote | null = null
+
   Mppx.create({
-    methods: [charge({ wallet, mode: 'pull', network: NETWORK })],
+    methods: [
+      charge({
+        wallet,
+        mode: 'pull',
+        network: NETWORK,
+        onProgress: (evt) => {
+          if (evt.type === 'challenge') {
+            quote = { recipient: evt.recipient, amount: evt.amount, currency: evt.currency }
+            log.challenge(
+              `402 received -- price: ${formatAmount(evt.amount, evt.currency, info.currency.currency)}`,
+            )
+            log.info(`Payable to: ${evt.recipient}`)
+          } else if (evt.type === 'signing') {
+            log.info('Signing the IOU Payment tx with the quoted amount...')
+          } else if (evt.type === 'confirmed') {
+            log.info(`Tx submitted: ${evt.hash}`)
+          }
+        },
+      }),
+    ],
   })
 
   log.info(`Prompt: "${PROMPT}"`)
   log.info(`maxTokens: ${MAX_TOKENS}`)
-  log.loading('Sending POST /complete -- mppx will auto-handle the 402...')
+  log.loading(`POST ${BASE}/complete -- price will arrive in the 402...`)
   log.separator()
 
   const response = await fetch(`${BASE}/complete`, {
@@ -222,17 +245,24 @@ async function main() {
   const overpayPct = paid > 0 ? ((overpayment / paid) * 100).toFixed(1) : '0.0'
   const remaining = Number(info.faucetAllowanceUsd) - paid
 
+  // Render everything in the unit the client learned from the 402. We
+  // pass the IOU code as a friendly label so the box reads `0.06 USD`
+  // rather than `0.06 USD` derived from a parsed JSON blob.
+  const wire = quote?.currency ?? '<unknown>'
+  const label = done.currency
+
   log.box([
     'Settlement -- charge in IOU',
     '',
     `Anthropic usage:   ${done.input_tokens} input + ${done.output_tokens} output tokens`,
-    `Real cost:         ${done.actual_cost} ${done.currency}`,
-    `Paid (quote):      ${done.paid} ${done.currency} (worst case before generation)`,
-    `Overpayment:       ${done.overpayment} ${done.currency} (${overpayPct}%)`,
-    `Remaining balance: ${remaining} ${done.currency} (of ${info.faucetAllowanceUsd} faucet)`,
+    `Real cost:         ${formatAmount(done.actual_cost, wire, label)}`,
+    `Paid (quote):      ${formatAmount(done.paid, wire, label)} (worst case, learned from the 402)`,
+    `Overpayment:       ${formatAmount(done.overpayment, wire, label)} (${overpayPct}%)`,
+    `Remaining balance: ${formatAmount(remaining, wire, label)} (of ${info.faucetAllowanceUsd} ${label} faucet)`,
     '',
     'Charge mode: 1 on-chain IOU Payment tx settled the whole call,',
     'denominated in an XRPL issued currency instead of native XRP.',
+    'Price discovery: the 402 challenge -- no client-side price table.',
   ])
 
   process.exit(0)
