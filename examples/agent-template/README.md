@@ -148,25 +148,13 @@ version instead of the local `file:../..`.
 | `AGENT_PRICE_DROPS_PER_1K_TOKENS` | Pricing knob. Default `1000000` (1 XRP). |
 | `MPP_SECRET_KEY`                  | Server-side mppx secret. Default fine for testnet only. |
 
-> **Do NOT do this in production.**
->
-> Reading raw seeds out of `.env` is fine for local testing on testnet,
-> but it is **not** how a real service should hold keys.
->
-> For production:
-> - Use a KMS / HSM / cloud secret manager (AWS KMS, GCP KMS, HashiCorp
->   Vault, Azure Key Vault, ...) and inject signing capability -- never
->   the seed itself -- into the process.
-> - Or run the wallet in a separate signer service the agent talks to
->   over an authenticated channel.
-> - Keep the recipient (server) wallet hot only for the funds it needs
->   to settle protocol-level operations; sweep balances to cold storage
->   on a schedule.
-> - Rate-limit and authenticate the agent endpoint at the application
->   layer -- payment is not a substitute for authn/authz when the same
->   payer should be allowed multiple uses.
-> - Move `ANTHROPIC_API_KEY` into a secret manager too; do not bake it
->   into the process env at build time.
+> **Do NOT do this in production.** Reading raw seeds from `.env` is fine
+> for local testnet only. For production: hold keys in a KMS / HSM / secret
+> manager and inject signing capability (never the seed) -- or use a
+> separate signer service; sweep the recipient wallet to cold storage;
+> add authn/authz + rate-limiting at the app layer (payment is not auth);
+> and keep `ANTHROPIC_API_KEY` in a secret manager too. See the header of
+> `src/env.ts` for the same checklist next to the code it applies to.
 
 ## Files
 
@@ -184,7 +172,7 @@ examples/agent-template/
     ├── server.ts       -- Express + MPP charge + Claude-backed post generation
     ├── client.ts       -- low-level paid HTTP helper used by the agent's tool
     ├── agent.ts        -- Claude agent with tool-use (the integrator's code)
-    └── run-demo.ts     -- one-command orchestrator (server + agent in one process)
+    └── run-demo.ts     -- one-command orchestrator (spawns the server subprocess, runs the agent)
 ```
 
 ## What you replace to make it real
@@ -205,14 +193,9 @@ examples/agent-template/
 
 ## Why this template matters
 
-A normal HTTP API charges its callers via API keys + monthly invoices.
-That works fine when the caller is a human-administered service signed
-up to a stripe account. It breaks down when the caller is an
-**autonomous AI agent** that:
-
-- discovers the API at runtime,
-- pays per call from a wallet **it controls**,
-- needs a cryptographic receipt to reconcile its spend.
-
-That is exactly what this template demonstrates end-to-end, with real
-on-chain payments, on real testnet, with a real LLM driving the agent.
+API keys + monthly invoices assume a human-administered caller. They break
+down when the caller is an **autonomous AI agent** that discovers the API at
+runtime, pays per call from a wallet it controls, and needs a cryptographic
+receipt to reconcile its spend. That is exactly what this template shows
+end-to-end, with real on-chain payments on testnet and a real LLM driving
+the agent.

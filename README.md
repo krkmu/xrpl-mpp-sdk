@@ -791,6 +791,50 @@ CI runs `unit` on every push and PR; `integration` is gated to push-to-main, PRs
 
 This SDK implements the [Machine Payments Protocol (MPP)](https://mpp.dev) HTTP 402 flow as specified in [draft-httpauth-payment-00](https://github.com/tempoxyz/mpp-specs). It extends the [mppx](https://github.com/wevm/mppx) framework with XRPL-specific payment methods.
 
+XRPL's native PayChannel primitive cannot offer the spec's atomic, either-party channel `close()` (settle + refund in one call), so the SDK adds server-side claim/auto-close recovery instead. See [MPP spec deviations](#mpp-spec-deviations) at the end of this README.
+
 ## License
 
 MIT
+
+## MPP spec deviations
+
+`xrpl-mpp-sdk` follows the [Machine Payments Protocol (MPP)](https://mpp.dev) to the letter for the handshake, the `Credential` / `Receipt` envelopes, single-use proof semantics, and the cumulative-voucher session model. The deviations below all trace to a single root: XRPL exposes a **native [PayChannel](https://xrpl.org/payment-channels.html) primitive**, not the programmable escrow contract the spec's `session` intent was written against (Tempo's `TempoStreamChannel`).
+
+### 1. Channel close: two transactions, not one
+
+The MPP [`session` intent](https://mpp.dev/payment-methods/tempo/session) describes settlement as a single, symmetric operation:
+
+> *"Either party can close the channel. The server calls `close()` on the escrow contract with the highest voucher, **settling the final balance on-chain and refunding any unused deposit** to the client."*
+
+So in the reference model one `close()` call, callable by either side, atomically (a) pays the server what it earned and (b) refunds the client's unused deposit. XRPL has no escrow contract to do this — its native PayChannel splits "settle" and "refund" into two separate transactions, and restricts who may send each:
+
+- `PaymentChannelClaim` **without** `tfClose` — pays the cumulative amount to the **destination** (server). The server may submit this. It does **not** refund the deposit and does **not** delete the channel.
+- `PaymentChannelClaim` **with** `tfClose` — only the channel **source** (funder/client) may set this flag. It starts the `SettleDelay`, after which the channel is deleted and the unspent deposit is returned to the funder.
+
+There is no single transaction, available to the server, that both pays the server and refunds the client. The spec's atomic, either-party `close()` simply does not exist on this primitive.
+
+**What the SDK does about it.** Because off-chain vouchers are worthless until someone posts a `PaymentChannelClaim` on-chain, a client that just walks away would leave the server holding signed claims and no money. To preserve the spec's guarantee ("the server can always recover what it earned"), the SDK adds server-side recovery the contract specs get for free:
+
+- **`closeFromStore()`** reads the highest cumulative voucher persisted for a channel and submits a `PaymentChannelClaim` (no `tfClose`) to pull those funds to the recipient. Idempotent -- no-ops if already finalized/redeemed.
+- **Auto-close sweeper** (`autoClose`, on by default when a recipient `wallet` is provided) runs `closeFromStore` for any channel idle longer than `idleMs` (default 30s), then marks it finalized so later vouchers are rejected with `CHANNEL_CLOSED`.
+
+```ts
+channel({
+  publicKey,
+  store,
+  wallet,          // recipient wallet -- required to sign the on-chain claim
+  autoClose: { idleMs: 30_000 },
+})
+```
+
+Two consequences, both following directly from the split above:
+
+1. **The deposit refund is not automatic.** The server's claim leaves the channel object alive; the funder's unused deposit is only returned when the funder submits `tfClose` or a `CancelAfter` elapses. Set `cancelAfter` at channel creation so a channel cannot leak the funder's reserve indefinitely.
+2. **The server needs the recipient wallet.** The spec's `close()` works from either side because the contract enforces correctness; here the server must actually sign an XRPL transaction.
+
+Implementation: `close`, `closeFromStore`, and the sweeper live in [`sdk/src/channel/server/Channel.ts`](sdk/src/channel/server/Channel.ts); a real usage example is in [`demo/llm-marketplace/channel/server.ts`](demo/llm-marketplace/channel/server.ts).
+
+### 2. Voucher verification is not strictly off-chain
+
+The same "native primitive, no escrow contract" root produces one more deviation. The spec's `session` intent promises that the server verifies each voucher with *"fast signature checks -- no RPC or blockchain calls"*: with a smart-contract escrow, a valid signature is sufficient proof, because the contract guarantees the channel exists and is funded. XRPL has no such contract, so a cryptographically valid claim alone says nothing about whether the `channelId` is real or solvent. By default (`verifyChannelOnChain: true`) the SDK therefore pairs the local signature check with an on-chain `ledger_entry` lookup that confirms the channel exists, has not expired, and is funded above the claimed cumulative. The lookup is cached per channel (`channelMetadataTtlMs`, default 60s), so in practice it costs roughly one RPC on the first voucher and signature-only checks thereafter -- but it is still a departure from the spec's strictly off-chain critical path. Set `verifyChannelOnChain: false` to recover the spec's behaviour at the cost of accepting claims against unverified channels.
