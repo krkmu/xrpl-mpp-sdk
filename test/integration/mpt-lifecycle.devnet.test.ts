@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { Wallet } from '../../sdk/src/utils/wallet.js'
+import { IT_NETWORK } from './devnet-helpers.ts'
 
 /**
  * Real-devnet exercise of the MPT-related Wallet methods that the unit
@@ -17,7 +18,7 @@ import { Wallet } from '../../sdk/src/utils/wallet.js'
  * default unit suite.
  */
 describe('integration: MPT lifecycle on devnet', () => {
-  const NETWORK = 'devnet' as const
+  const NETWORK = IT_NETWORK
 
   it('walks an issuer + holder through the permissioned-MPT happy path', async () => {
     const [issuer, holder] = await Promise.all([

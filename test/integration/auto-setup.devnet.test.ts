@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { charge as clientCharge } from '../../sdk/src/client/Charge.js'
 import { prepareRecipient, charge as serverCharge } from '../../sdk/src/server/Charge.js'
 import { Wallet } from '../../sdk/src/utils/wallet.js'
+import { IT_NETWORK } from './devnet-helpers.ts'
 
 /**
  * Auto-setup on devnet: the server creates its own trustline / MPT holding
@@ -19,7 +20,7 @@ import { Wallet } from '../../sdk/src/utils/wallet.js'
  *     boot (or on first 402 emission), which is what this test exercises.
  */
 describe('integration: charge auto-setup on devnet', () => {
-  const NETWORK = 'devnet' as const
+  const NETWORK = IT_NETWORK
 
   it('autoTrustline: prepareRecipient() creates the trustline before the first IOU charge', async () => {
     const [issuer, recipient, payer] = await Promise.all([

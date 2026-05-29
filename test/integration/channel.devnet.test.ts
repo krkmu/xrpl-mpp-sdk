@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { openChannel } from '../../sdk/src/channel/client/Channel.js'
 import { close, channel as serverChannel } from '../../sdk/src/channel/server/Channel.js'
 import type { Wallet } from '../../sdk/src/utils/wallet.js'
-import { createFundedWallet, devnetSource } from './devnet-helpers.ts'
+import { createFundedWallet, devnetSource, IT_NETWORK } from './devnet-helpers.ts'
 
 /**
  * Channel lifecycle on devnet:
@@ -15,6 +15,7 @@ import { createFundedWallet, devnetSource } from './devnet-helpers.ts'
  *    latest cumulative amount + signature.
  */
 describe('integration: PayChannel lifecycle on devnet', () => {
+  const NETWORK = IT_NETWORK
   let funder: Wallet
   let receiver: Wallet
 
@@ -32,7 +33,7 @@ describe('integration: PayChannel lifecycle on devnet', () => {
       destination: receiver.address,
       amount: '5000000',
       settleDelay: 60,
-      network: 'devnet',
+      network: NETWORK,
     })
     expect(openTx).toMatch(/^[0-9A-F]{64}$/)
     expect(channelId).toMatch(/^[0-9A-F]{64}$/)
@@ -40,7 +41,7 @@ describe('integration: PayChannel lifecycle on devnet', () => {
     const store = Store.memory()
     const method = serverChannel({
       publicKey: funder.publicKey,
-      network: 'devnet',
+      network: NETWORK,
       store,
       verifyChannelOnChain: true,
     })
@@ -59,7 +60,7 @@ describe('integration: PayChannel lifecycle on devnet', () => {
           amount: (BigInt(cum) - BigInt(prev)).toString(),
           channelId,
           recipient: receiver.address,
-          methodDetails: { network: 'devnet' as const, cumulativeAmount: prev },
+          methodDetails: { network: NETWORK, cumulativeAmount: prev },
         },
       }
       const cred = Credential.from({
@@ -83,7 +84,7 @@ describe('integration: PayChannel lifecycle on devnet', () => {
       amount: prev,
       signature: lastSig,
       channelPublicKey: funder.publicKey,
-      network: 'devnet',
+      network: NETWORK,
       store,
     })
     expect(closeTx).toMatch(/^[0-9A-F]{64}$/)

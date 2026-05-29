@@ -1,29 +1,50 @@
 import { Client } from 'xrpl'
+import { type NetworkId, XRPL_RPC_URLS } from '../../sdk/src/constants.js'
 import { Wallet } from '../../sdk/src/utils/wallet.js'
 
 /**
- * XRPL devnet WebSocket. Devnet has more permissive faucet rate limits than
- * testnet and resets state more frequently, so it's the best place to run
- * end-to-end integration tests.
+ * Network the integration suite runs against.
+ *
+ * Historically this was devnet (more permissive faucet rate limits, earlier
+ * amendment previews). However the public devnet faucet
+ * (`faucet.devnet.rippletest.net`) is frequently down and returns `502 Bad
+ * Gateway`, which fails every test at the funding step. Testnet carries the
+ * same amendments the suite relies on (`MPTokensV1`, `TokenEscrow`) and its
+ * faucet is far more reliable, so we default to it.
+ *
+ * Override with `XRPL_IT_NETWORK=devnet` when devnet is healthy and you need a
+ * bleeding-edge amendment preview that has not yet reached testnet.
  */
-export const DEVNET_WS = 'wss://s.devnet.rippletest.net:51233'
+const ENV_NETWORK = process.env.XRPL_IT_NETWORK
+export const IT_NETWORK: Exclude<NetworkId, 'mainnet'> =
+  ENV_NETWORK === 'devnet' || ENV_NETWORK === 'testnet' ? ENV_NETWORK : 'testnet'
+
+/** WebSocket RPC URL for the selected integration network. */
+export const IT_WS = XRPL_RPC_URLS[IT_NETWORK]
 
 /**
- * Connect a fresh xrpl.js Client to devnet. Caller must `disconnect()`.
+ * Back-compat alias. Older call sites import `DEVNET_WS`; it now resolves to
+ * whichever network {@link IT_NETWORK} selected.
+ */
+export const DEVNET_WS = IT_WS
+
+/**
+ * Connect a fresh xrpl.js Client to the selected integration network. Caller
+ * must `disconnect()`.
  *
  * Kept around for the few integration scenarios that need a long-lived
  * client (e.g. probing `feature` for amendment activation, or running an
  * orderbook setup that the SDK does not yet abstract).
  */
 export async function connectDevnet(): Promise<Client> {
-  const client = new Client(DEVNET_WS)
+  const client = new Client(IT_WS)
   await client.connect()
   return client
 }
 
 /**
- * Generate and fund an ephemeral devnet wallet via the public faucet.
- * Returns the SDK {@link Wallet} so downstream tests can call the
+ * Generate and fund an ephemeral wallet via the selected network's public
+ * faucet. Returns the SDK {@link Wallet} so downstream tests can call the
  * SDK's high-level methods (`enableTransfers`, `acceptToken`, `issue`,
  * `signChannelClaim`, ...) directly without re-deriving from a seed.
  *
@@ -31,16 +52,16 @@ export async function connectDevnet(): Promise<Client> {
  * the suite is informative rather than silently skipping.
  */
 export async function createFundedWallet(): Promise<Wallet> {
-  return Wallet.fromFaucet({ network: 'devnet' })
+  return Wallet.fromFaucet({ network: IT_NETWORK })
 }
 
 /**
- * Build the `did:pkh:xrpl:devnet:{addr}` source string for a wallet.
- * Accepts either an SDK {@link Wallet} or anything that exposes a
- * `classicAddress` (i.e. an `xrpl.Wallet`) so legacy call sites keep
- * compiling while they migrate.
+ * Build the `did:pkh:xrpl:{network}:{addr}` source string for a wallet, using
+ * the network the suite is currently running against. Accepts either an SDK
+ * {@link Wallet} or anything that exposes a `classicAddress` (i.e. an
+ * `xrpl.Wallet`) so legacy call sites keep compiling while they migrate.
  */
 export function devnetSource(wallet: Wallet | { classicAddress: string }): string {
   const address = 'address' in wallet ? wallet.address : wallet.classicAddress
-  return `did:pkh:xrpl:devnet:${address}`
+  return `did:pkh:xrpl:${IT_NETWORK}:${address}`
 }

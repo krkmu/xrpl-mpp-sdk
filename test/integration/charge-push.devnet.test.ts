@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { charge as clientCharge } from '../../sdk/src/client/Charge.js'
 import { charge as serverCharge } from '../../sdk/src/server/Charge.js'
 import type { Wallet } from '../../sdk/src/utils/wallet.js'
-import { createFundedWallet, devnetSource } from './devnet-helpers.ts'
+import { createFundedWallet, devnetSource, IT_NETWORK } from './devnet-helpers.ts'
 
 /**
  * Push-mode end-to-end on devnet.
@@ -28,6 +28,7 @@ import { createFundedWallet, devnetSource } from './devnet-helpers.ts'
  * tests.
  */
 describe('integration: XRP charge (push mode) on devnet', () => {
+  const NETWORK = IT_NETWORK
   let payer: Wallet
   let recipient: Wallet
 
@@ -52,14 +53,14 @@ describe('integration: XRP charge (push mode) on devnet', () => {
         amount: amountDrops,
         currency: 'XRP',
         recipient: recipient.address,
-        methodDetails: { network: 'devnet' as const },
+        methodDetails: { network: NETWORK },
       },
     }
 
     const clientMethod = clientCharge({
       wallet: payer,
       mode: 'push',
-      network: 'devnet',
+      network: NETWORK,
       preflight: true,
     })
 
@@ -84,7 +85,7 @@ describe('integration: XRP charge (push mode) on devnet', () => {
     const store = Store.memory()
     const serverMethod = serverCharge({
       recipient: recipient.address,
-      network: 'devnet',
+      network: NETWORK,
       store,
     })
 

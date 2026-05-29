@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import { Client } from 'xrpl'
 import { generatePreimageCondition } from '../../sdk/src/utils/escrow.js'
 import { Wallet } from '../../sdk/src/utils/wallet.js'
-import { DEVNET_WS } from './devnet-helpers.ts'
+import { DEVNET_WS, IT_NETWORK } from './devnet-helpers.ts'
 
 /**
  * Devnet end-to-end for the Escrow Wallet API.
@@ -34,7 +34,7 @@ import { DEVNET_WS } from './devnet-helpers.ts'
  * unit suite.
  */
 describe('integration: Escrow lifecycle on devnet', () => {
-  const NETWORK = 'devnet' as const
+  const NETWORK = IT_NETWORK
 
   /** Time the test waits before attempting to finish/cancel (ms). */
   const ESCROW_WAIT_MS = 8_000

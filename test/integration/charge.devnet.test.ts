@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { charge as clientCharge } from '../../sdk/src/client/Charge.js'
 import { charge as serverCharge } from '../../sdk/src/server/Charge.js'
 import type { Wallet } from '../../sdk/src/utils/wallet.js'
-import { createFundedWallet, devnetSource } from './devnet-helpers.ts'
+import { createFundedWallet, devnetSource, IT_NETWORK } from './devnet-helpers.ts'
 
 /**
  * Real devnet charge end-to-end test. Funds two ephemeral wallets, builds a
@@ -16,6 +16,7 @@ import { createFundedWallet, devnetSource } from './devnet-helpers.ts'
  * descriptive error rather than silently skipping.
  */
 describe('integration: XRP charge (pull mode) on devnet', () => {
+  const NETWORK = IT_NETWORK
   let payer: Wallet
   let recipient: Wallet
 
@@ -42,13 +43,13 @@ describe('integration: XRP charge (pull mode) on devnet', () => {
         amount: amountDrops,
         currency: 'XRP',
         recipient: recipient.address,
-        methodDetails: { network: 'devnet' as const },
+        methodDetails: { network: NETWORK },
       },
     }
 
     const clientMethod = clientCharge({
       wallet: payer,
-      network: 'devnet',
+      network: NETWORK,
       preflight: true,
     })
 
@@ -66,7 +67,7 @@ describe('integration: XRP charge (pull mode) on devnet', () => {
 
     const serverMethod = serverCharge({
       recipient: recipient.address,
-      network: 'devnet',
+      network: NETWORK,
       store: Store.memory(),
     })
 
