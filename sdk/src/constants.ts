@@ -29,16 +29,32 @@ export const XRPL_EXPLORER_URLS: Record<NetworkId, string> = {
 /** XRP native currency identifier. */
 export const XRP = 'XRP' as const
 
-/** RLUSD on mainnet. */
+/**
+ * RLUSD on mainnet. Official issuer from
+ * https://docs.ripple.com/products/stablecoin/developer-resources/rlusd-on-the-xrpl
+ *
+ * `currency` is the **hex-encoded** form because the human-readable code
+ * `RLUSD` is 5 characters, and XRPL's native IOU codes must be either 3
+ * ASCII characters or a 40-character hex string. Wallets and explorers
+ * decode it back to `RLUSD` for display.
+ */
 export const RLUSD_MAINNET = {
-  currency: 'RLUSD',
-  issuer: 'rMxWzrBMyeKR9oJfYBrhAEGsxwsdLFSfim',
+  currency: '524C555344000000000000000000000000000000',
+  issuer: 'rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De',
 } as const
 
-/** RLUSD on testnet. */
+/**
+ * RLUSD on testnet. Official issuer from
+ * https://docs.ripple.com/products/stablecoin/developer-resources/rlusd-on-the-xrpl
+ *
+ * `currency` is the **hex-encoded** form because the human-readable code
+ * `RLUSD` is 5 characters, and XRPL's native IOU codes must be either 3
+ * ASCII characters or a 40-character hex string. Wallets and explorers
+ * decode it back to `RLUSD` for display.
+ */
 export const RLUSD_TESTNET = {
-  currency: 'RLUSD',
-  issuer: 'rQhWct2fTR9z7bBQaflfqMEr2u8avFFpKH',
+  currency: '524C555344000000000000000000000000000000',
+  issuer: 'rQhWct2fv4Vc4KRjRgMrxa8xPN9Zx9iLKV',
 } as const
 
 /** XRP has 6 decimal places (drops). */

@@ -2,9 +2,10 @@ node_modules/
 dist/
 _reference/
 .env*
+!.env.example
+!**/.env.example
 .DS_Store
 *.log
-coverage/
 CLAUDE.md
 /AUDIT.md
 /REVIEW.md

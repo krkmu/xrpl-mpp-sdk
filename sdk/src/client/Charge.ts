@@ -1,14 +1,16 @@
 import { Credential, Method } from 'mppx'
 import type { Payment } from 'xrpl'
-import { Client, Wallet } from 'xrpl'
+import { Client } from 'xrpl'
 import { z } from 'zod/mini'
 import { type NetworkId, XRPL_RPC_URLS } from '../constants.js'
 import { fromTecResult } from '../errors.js'
 import * as Methods from '../Methods.js'
 import type { ChargeClientConfig, PaymentMode } from '../types.js'
 import { buildAmount, isIOU, parseCurrency } from '../utils/currency.js'
+import { lastLedgerSequenceFromExpires, readCurrentLedgerIndex } from '../utils/ledger-time.js'
 import { resolveIouPaymentExtras, validateSlippageBps } from '../utils/paths.js'
 import { runPreflight } from '../utils/validation.js'
+import { resolveWallet } from '../utils/wallet.js'
 
 /**
  * XRPL charge method for the client.
@@ -27,6 +29,7 @@ import { runPreflight } from '../utils/validation.js'
  */
 export function charge(parameters: charge.Parameters) {
   const {
+    wallet: walletInput,
     seed,
     mode: defaultMode = 'pull',
     preflight: runPreflightCheck = true,
@@ -37,13 +40,13 @@ export function charge(parameters: charge.Parameters) {
     onProgress,
   } = parameters
 
-  if (!seed) {
-    throw new Error('seed is required for client charge method.')
+  if (!walletInput && !seed) {
+    throw new Error('A wallet or seed is required for the client charge method.')
   }
 
   validateSlippageBps(slippageBps)
 
-  const wallet = Wallet.fromSeed(seed)
+  const wallet = resolveWallet({ wallet: walletInput, seed })._xrplWallet
 
   return Method.toClient(Methods.charge, {
     context: z.object({
@@ -124,6 +127,21 @@ export function charge(parameters: charge.Parameters) {
         }
 
         const prepared = await client.autofill(payment as Payment)
+
+        // Cap LastLedgerSequence to challenge.expires when set: xrpl.js's
+        // autofill default (~current + 4 ledgers, ~16 s) can outlive a
+        // tight challenge, leaving a window for an attacker who
+        // intercepts the signed blob to re-submit just before the
+        // ledger-side deadline. Always tighten, never relax.
+        const expiresIso = (challenge as { expires?: string }).expires
+        if (expiresIso) {
+          const currentLedgerIndex = await readCurrentLedgerIndex(client)
+          const cap = lastLedgerSequenceFromExpires({ currentLedgerIndex, expiresIso })
+          const autofilled = (prepared as { LastLedgerSequence?: number }).LastLedgerSequence
+          if (autofilled === undefined || cap < autofilled) {
+            ;(prepared as { LastLedgerSequence?: number }).LastLedgerSequence = cap
+          }
+        }
 
         onProgress?.({ type: 'signing' })
         const signed = wallet.sign(prepared)

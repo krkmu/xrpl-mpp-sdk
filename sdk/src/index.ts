@@ -30,13 +30,40 @@ export {
 export * as Methods from './Methods.js'
 export { fromDrops, toDrops } from './Methods.js'
 export type {
+  AcceptTokenResult,
   ChannelClientConfig,
   ChannelServerConfig,
   ChargeClientConfig,
+  ChargeProgressEvent,
   ChargeServerConfig,
+  CreateEscrowOptions,
+  CreateEscrowResult,
+  CreateTokenOptions,
+  CreateTokenResult,
+  EscrowInfo,
+  EscrowReference,
+  FinishEscrowOptions,
   IssuedCurrency,
+  MPTHoldingInfo,
+  MPTIssuanceInfo,
   MPToken,
   PaymentMode,
+  RefuseTokenResult,
+  TokenHolding,
   XrpCurrency,
   XrplCurrency,
 } from './types.js'
+export { generatePreimageCondition } from './utils/escrow.js'
+export type {
+  SetTrustlineOptions,
+  SetTrustlineResult,
+  TrustlineInfo,
+} from './utils/trustline.js'
+export {
+  type FromFaucetOptions,
+  type NetworkOptions,
+  type Token,
+  type TokenOptions,
+  Wallet,
+  type WalletAlgorithm,
+} from './utils/wallet.js'

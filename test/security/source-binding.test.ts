@@ -1,18 +1,28 @@
 import { Credential, Store } from 'mppx'
 import { describe, expect, it } from 'vitest'
-import { dropsToXrp, encode, signPaymentChannelClaim, Wallet } from 'xrpl'
+import { encode, Wallet as XrplWallet } from 'xrpl'
 import { channel as serverChannel } from '../../sdk/src/channel/server/Channel.js'
 import { charge as serverCharge } from '../../sdk/src/server/Charge.js'
 import { classicAddressFromDID, classicAddressFromPublicKey } from '../../sdk/src/utils/did.js'
+import { Wallet } from '../../sdk/src/utils/wallet.js'
 
 const NETWORK = 'testnet'
 
+/**
+ * The pull-mode adversarial cases below need to hand-craft a Payment tx
+ * blob signed by a specific account, which is not part of the SDK's
+ * public Wallet surface (the SDK only signs Payments via the higher-level
+ * `charge` flow). Those tests still construct an `xrpl.Wallet` directly
+ * to sign a raw tx -- mirroring what a malicious client would do. Every
+ * other case (DID parsing, public-key derivation, channel claims) goes
+ * through the SDK Wallet API.
+ */
 describe('credential source binding (DID -> on-chain payer)', () => {
   describe('classicAddressFromDID', () => {
     it('parses well-formed did:pkh:xrpl DID', () => {
       const wallet = Wallet.generate()
-      const did = `did:pkh:xrpl:testnet:${wallet.classicAddress}`
-      expect(classicAddressFromDID(did)).toBe(wallet.classicAddress)
+      const did = `did:pkh:xrpl:testnet:${wallet.address}`
+      expect(classicAddressFromDID(did)).toBe(wallet.address)
     })
 
     it('rejects empty source', () => {
@@ -26,14 +36,14 @@ describe('credential source binding (DID -> on-chain payer)', () => {
 
     it('rejects wrong namespace', () => {
       const wallet = Wallet.generate()
-      expect(() =>
-        classicAddressFromDID(`did:pkh:stellar:testnet:${wallet.classicAddress}`),
-      ).toThrow('invalid format')
+      expect(() => classicAddressFromDID(`did:pkh:stellar:testnet:${wallet.address}`)).toThrow(
+        'invalid format',
+      )
     })
 
     it('rejects empty network segment', () => {
       const wallet = Wallet.generate()
-      expect(() => classicAddressFromDID(`did:pkh:xrpl::${wallet.classicAddress}`)).toThrow(
+      expect(() => classicAddressFromDID(`did:pkh:xrpl::${wallet.address}`)).toThrow(
         'missing the network segment',
       )
     })
@@ -46,20 +56,23 @@ describe('credential source binding (DID -> on-chain payer)', () => {
   })
 
   describe('classicAddressFromPublicKey', () => {
-    it('derives the same address as wallet.classicAddress (ed25519)', () => {
+    it('derives the same address as Wallet.address (ed25519)', () => {
       const wallet = Wallet.generate('ed25519')
-      expect(classicAddressFromPublicKey(wallet.publicKey)).toBe(wallet.classicAddress)
+      expect(classicAddressFromPublicKey(wallet.publicKey)).toBe(wallet.address)
     })
 
-    it('derives the same address as wallet.classicAddress (secp256k1)', () => {
+    it('derives the same address as Wallet.address (secp256k1)', () => {
       const wallet = Wallet.generate('ecdsa-secp256k1')
-      expect(classicAddressFromPublicKey(wallet.publicKey)).toBe(wallet.classicAddress)
+      expect(classicAddressFromPublicKey(wallet.publicKey)).toBe(wallet.address)
     })
   })
 
   describe('charge server verify -- pull mode source check', () => {
     it('rejects pull-mode credential whose tx.Account does not match source DID (third-party blob replay)', async () => {
-      const realPayer = Wallet.generate()
+      // Raw xrpl.Wallet so we can hand-craft and sign a Payment blob -- this
+      // is the exact attack we want to defend against, so simulating it
+      // requires direct access to the underlying signer.
+      const realPayer = XrplWallet.generate()
       const attacker = Wallet.generate()
       const recipient = Wallet.generate()
 
@@ -67,7 +80,7 @@ describe('credential source binding (DID -> on-chain payer)', () => {
       const tx = {
         TransactionType: 'Payment' as const,
         Account: realPayer.classicAddress,
-        Destination: recipient.classicAddress,
+        Destination: recipient.address,
         Amount: '1000000',
         Fee: '12',
         Sequence: 1,
@@ -86,7 +99,7 @@ describe('credential source binding (DID -> on-chain payer)', () => {
         request: {
           amount: '1000000',
           currency: 'XRP',
-          recipient: recipient.classicAddress,
+          recipient: recipient.address,
           methodDetails: { network: NETWORK },
         },
       }
@@ -95,11 +108,11 @@ describe('credential source binding (DID -> on-chain payer)', () => {
         challenge: challenge as any,
         payload: { type: 'transaction', blob: signed.tx_blob },
         // attacker wraps real payer's blob with attacker's own DID
-        source: `did:pkh:xrpl:${NETWORK}:${attacker.classicAddress}`,
+        source: `did:pkh:xrpl:${NETWORK}:${attacker.address}`,
       })
 
       const method = serverCharge({
-        recipient: recipient.classicAddress,
+        recipient: recipient.address,
         store: Store.memory(),
         network: NETWORK,
       })
@@ -111,13 +124,13 @@ describe('credential source binding (DID -> on-chain payer)', () => {
     })
 
     it('rejects credential with malformed source DID (no source check bypass)', async () => {
-      const realPayer = Wallet.generate()
+      const realPayer = XrplWallet.generate()
       const recipient = Wallet.generate()
 
       const tx = {
         TransactionType: 'Payment' as const,
         Account: realPayer.classicAddress,
-        Destination: recipient.classicAddress,
+        Destination: recipient.address,
         Amount: '1000000',
         Fee: '12',
         Sequence: 1,
@@ -136,7 +149,7 @@ describe('credential source binding (DID -> on-chain payer)', () => {
         request: {
           amount: '1000000',
           currency: 'XRP',
-          recipient: recipient.classicAddress,
+          recipient: recipient.address,
           methodDetails: { network: NETWORK },
         },
       }
@@ -148,7 +161,7 @@ describe('credential source binding (DID -> on-chain payer)', () => {
       })
 
       const method = serverCharge({
-        recipient: recipient.classicAddress,
+        recipient: recipient.address,
         store: Store.memory(),
         network: NETWORK,
       })
@@ -161,8 +174,6 @@ describe('credential source binding (DID -> on-chain payer)', () => {
 
   describe('charge server verify -- push mode source check', () => {
     it('rejects push-mode credential whose source DID does not match (hash-theft attack)', async () => {
-      const realPayer = Wallet.generate()
-      const attacker = Wallet.generate()
       const recipient = Wallet.generate()
 
       // Pretend attacker submits real payer's tx hash
@@ -177,7 +188,7 @@ describe('credential source binding (DID -> on-chain payer)', () => {
         request: {
           amount: '1000000',
           currency: 'XRP',
-          recipient: recipient.classicAddress,
+          recipient: recipient.address,
           methodDetails: { network: NETWORK },
         },
       }
@@ -192,7 +203,7 @@ describe('credential source binding (DID -> on-chain payer)', () => {
       })
 
       const method = serverCharge({
-        recipient: recipient.classicAddress,
+        recipient: recipient.address,
         store: Store.memory(),
         network: NETWORK,
       })
@@ -200,10 +211,6 @@ describe('credential source binding (DID -> on-chain payer)', () => {
       await expect(
         method.verify({ credential: cred as any, request: challenge.request }),
       ).rejects.toThrow(/Credential is malformed|invalid format/)
-
-      // realPayer/attacker compile-time references silence linter
-      void realPayer
-      void attacker
     })
   })
 
@@ -213,10 +220,9 @@ describe('credential source binding (DID -> on-chain payer)', () => {
       const attacker = Wallet.generate()
       const channelId = '0'.repeat(64)
 
-      // Funder signs a valid claim
+      // Funder signs a valid claim via the SDK Wallet API.
       const cumDrops = '500000'
-      const cumXrp = dropsToXrp(cumDrops).toString()
-      const sig = signPaymentChannelClaim(channelId, cumXrp, funder.privateKey)
+      const sig = funder.signChannelClaim(channelId, cumDrops)
 
       const challenge = {
         id: 'test-channel-source-mismatch',
@@ -236,7 +242,7 @@ describe('credential source binding (DID -> on-chain payer)', () => {
       const cred = Credential.from({
         challenge: challenge as any,
         payload: { action: 'voucher', channelId, amount: cumDrops, signature: sig },
-        source: `did:pkh:xrpl:${NETWORK}:${attacker.classicAddress}`,
+        source: `did:pkh:xrpl:${NETWORK}:${attacker.address}`,
       })
 
       const method = serverChannel({
@@ -256,8 +262,7 @@ describe('credential source binding (DID -> on-chain payer)', () => {
       const channelId = '0'.repeat(64)
 
       const cumDrops = '500000'
-      const cumXrp = dropsToXrp(cumDrops).toString()
-      const sig = signPaymentChannelClaim(channelId, cumXrp, funder.privateKey)
+      const sig = funder.signChannelClaim(channelId, cumDrops)
 
       const challenge = {
         id: 'test-channel-source-match',
@@ -276,7 +281,7 @@ describe('credential source binding (DID -> on-chain payer)', () => {
       const cred = Credential.from({
         challenge: challenge as any,
         payload: { action: 'voucher', channelId, amount: cumDrops, signature: sig },
-        source: `did:pkh:xrpl:${NETWORK}:${funder.classicAddress}`,
+        source: `did:pkh:xrpl:${NETWORK}:${funder.address}`,
       })
 
       const method = serverChannel({

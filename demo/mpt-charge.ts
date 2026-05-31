@@ -1,19 +1,22 @@
 /**
  * MPT Charge -- All-in-one demo
- * Creates MPT issuance + authorizes + issues tokens, then runs MPP charge flow.
+ * Mints an MPT issuance, authorizes the server + client, issues tokens, then
+ * runs the MPP charge flow. No `xrpl` import: every XRPL call is funnelled
+ * through the SDK's Wallet API.
+ *
  * Run: npx tsx demo/mpt-charge.ts
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { Receipt } from 'mppx'
 import { Mppx as ClientMppx } from 'mppx/client'
 import { Mppx, Store } from 'mppx/server'
-import { Client } from 'xrpl'
 import { charge as clientCharge } from '../sdk/src/client/Charge.js'
-import { XRPL_RPC_URLS } from '../sdk/src/constants.js'
 import { charge as serverCharge } from '../sdk/src/server/Charge.js'
+import { Wallet } from '../sdk/src/utils/wallet.js'
 import * as log from './log.js'
 
 const PORT = 3002
+const NETWORK = 'testnet'
 
 function toWebRequest(req: IncomingMessage): Request {
   const host = req.headers.host ?? `localhost:${PORT}`
@@ -40,92 +43,68 @@ async function main() {
   log.box(['XRPL MPP Demo -- MPT Charge (all-in-one)'])
   log.separator()
 
-  log.loading('Connecting to XRPL testnet...')
-  const xrpl = new Client(XRPL_RPC_URLS.testnet)
-  await xrpl.connect()
-
   log.loading('Funding 3 wallets (issuer, server, client)...')
-  const { wallet: issuer } = await xrpl.fundWallet()
-  const { wallet: server } = await xrpl.fundWallet()
-  const { wallet: payer } = await xrpl.fundWallet()
-
-  log.wallet('Issuer', issuer.classicAddress)
-  log.wallet('Server', server.classicAddress)
-  log.wallet('Client', payer.classicAddress)
+  const [issuer, server, payer] = await Promise.all([
+    Wallet.fromFaucet({ network: NETWORK }),
+    Wallet.fromFaucet({ network: NETWORK }),
+    Wallet.fromFaucet({ network: NETWORK }),
+  ])
+  log.wallet('Issuer', issuer.address)
+  log.wallet('Server', server.address)
+  log.wallet('Client', payer.address)
   log.separator()
 
-  log.loading('Creating MPTokenIssuance...')
-  const createResult = await xrpl.submitAndWait(
-    {
-      TransactionType: 'MPTokenIssuanceCreate' as any,
-      Account: issuer.classicAddress,
-      AssetScale: 2,
-      MaximumAmount: '100000000',
-      Flags: 0x00000020,
-    },
-    { wallet: issuer },
-  )
-  log.success(`MPTokenIssuanceCreate: ${(createResult.result.meta as any)?.TransactionResult}`)
-  log.tx(createResult.result.hash, log.explorerLink(createResult.result.hash))
+  log.loading('Creating MPT issuance (allowlist + lockable + transferable)...')
+  const { mpt, hash: createHash } = await issuer.createToken({
+    assetScale: 2,
+    maximumAmount: '100000000',
+    requireAuthorization: true,
+    allowLock: true,
+    network: NETWORK,
+  })
+  log.success('MPTokenIssuanceCreate: tesSUCCESS')
+  log.tx(createHash, log.explorerLink(createHash))
+  log.key('MPTokenIssuanceID', mpt.mpt_issuance_id)
 
-  const objs = await xrpl.request({
-    command: 'account_objects',
-    account: issuer.classicAddress,
-    type: 'mpt_issuance',
-  } as any)
-  const mptId = (objs.result as any).account_objects[0].mpt_issuance_id
-  log.key('MPTokenIssuanceID', mptId)
+  log.loading('Holders opt in to the MPT (server + client)...')
+  const [serverAccept, clientAccept] = await Promise.all([
+    server.acceptToken(mpt, { network: NETWORK }),
+    payer.acceptToken(mpt, { network: NETWORK }),
+  ])
+  if ('hash' in serverAccept && serverAccept.hash) {
+    log.tx(serverAccept.hash, log.explorerLink(serverAccept.hash))
+  }
+  if ('hash' in clientAccept && clientAccept.hash) {
+    log.tx(clientAccept.hash, log.explorerLink(clientAccept.hash))
+  }
+  log.success(`Server: ${serverAccept.status} -- Client: ${clientAccept.status}`)
 
-  log.loading('Authorizing server for MPT...')
-  const auth1 = await xrpl.submitAndWait(
-    {
-      TransactionType: 'MPTokenAuthorize' as any,
-      Account: server.classicAddress,
-      MPTokenIssuanceID: mptId,
-    },
-    { wallet: server },
-  )
-  log.success(`MPTokenAuthorize (server): ${(auth1.result.meta as any)?.TransactionResult}`)
-  log.tx(auth1.result.hash, log.explorerLink(auth1.result.hash))
-
-  log.loading('Authorizing client for MPT...')
-  const auth2 = await xrpl.submitAndWait(
-    {
-      TransactionType: 'MPTokenAuthorize' as any,
-      Account: payer.classicAddress,
-      MPTokenIssuanceID: mptId,
-    },
-    { wallet: payer },
-  )
-  log.success(`MPTokenAuthorize (client): ${(auth2.result.meta as any)?.TransactionResult}`)
-  log.tx(auth2.result.hash, log.explorerLink(auth2.result.hash))
+  log.loading('Issuer authorizes both holders (allowlist)...')
+  const [authServer, authClient] = await Promise.all([
+    issuer.authorize(server.address, mpt, { network: NETWORK }),
+    issuer.authorize(payer.address, mpt, { network: NETWORK }),
+  ])
+  log.tx(authServer.hash, log.explorerLink(authServer.hash))
+  log.tx(authClient.hash, log.explorerLink(authClient.hash))
 
   log.loading('Issuing 10000 MPT to client...')
-  const pay = await xrpl.submitAndWait(
-    {
-      TransactionType: 'Payment',
-      Account: issuer.classicAddress,
-      Destination: payer.classicAddress,
-      Amount: { mpt_issuance_id: mptId, value: '10000' } as any,
-    },
-    { wallet: issuer },
-  )
-  log.success(`Issuance: ${(pay.result.meta as any)?.TransactionResult}`)
-  log.tx(pay.result.hash, log.explorerLink(pay.result.hash))
-
-  await xrpl.disconnect()
+  const issued = await issuer.issue(payer.address, '10000', mpt, { network: NETWORK })
+  log.success('Payment (issuance): tesSUCCESS')
+  log.tx(issued.hash, log.explorerLink(issued.hash))
   log.separator()
 
-  const currencyJson = JSON.stringify({ mpt_issuance_id: mptId })
   const chargeMethod = serverCharge({
-    recipient: server.classicAddress,
-    currency: { mpt_issuance_id: mptId },
-    network: 'testnet',
+    recipient: server.address,
+    currency: mpt,
+    network: NETWORK,
     store: Store.memory(),
   })
 
   const mppx = Mppx.create({ secretKey: 'mpt-demo-secret', methods: [chargeMethod] })
-  const handler = mppx['xrpl/charge']({ amount: '100', currency: currencyJson })
+  const handler = mppx['xrpl/charge']({
+    amount: '100',
+    currency: JSON.stringify(mpt),
+  })
 
   const httpServer = createServer(async (req, res) => {
     const path = req.url ?? '/'
@@ -158,7 +137,7 @@ async function main() {
   await new Promise<void>((resolve) => httpServer.listen(PORT, resolve))
   log.server(`Server listening on http://localhost:${PORT}`)
 
-  const clientMethod = clientCharge({ seed: payer.seed!, mode: 'pull', network: 'testnet' })
+  const clientMethod = clientCharge({ wallet: payer, mode: 'pull', network: NETWORK })
   ClientMppx.create({ methods: [clientMethod] })
 
   log.loading(`Requesting http://localhost:${PORT}/resource...`)

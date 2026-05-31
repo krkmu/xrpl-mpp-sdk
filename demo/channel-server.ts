@@ -5,9 +5,8 @@
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { Mppx, Store } from 'mppx/server'
-import { Client } from 'xrpl'
 import { channel } from '../sdk/src/channel/server/Channel.js'
-import { XRPL_RPC_URLS } from '../sdk/src/constants.js'
+import { Wallet } from '../sdk/src/utils/wallet.js'
 import * as log from './log.js'
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -44,15 +43,10 @@ async function main() {
   log.box(['XRPL MPP Server -- PayChannel'])
   log.separator()
 
-  log.loading('Connecting to XRPL testnet...')
-  const xrplClient = new Client(XRPL_RPC_URLS.testnet)
-  await xrplClient.connect()
-
   log.loading('Funding recipient wallet via faucet...')
-  const { wallet } = await xrplClient.fundWallet()
-  await xrplClient.disconnect()
+  const wallet = await Wallet.fromFaucet({ network: 'testnet' })
 
-  log.wallet('Recipient', wallet.classicAddress)
+  log.wallet('Recipient', wallet.address)
   log.separator()
 
   let channelId: string | null = null
@@ -68,7 +62,7 @@ async function main() {
     try {
       if (method === 'GET' && path === '/info') {
         res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ address: wallet.classicAddress }))
+        res.end(JSON.stringify({ address: wallet.address }))
         return
       }
 
@@ -81,7 +75,7 @@ async function main() {
         handler = mppx['xrpl/channel']({
           amount: '100000',
           channelId,
-          recipient: wallet.classicAddress,
+          recipient: wallet.address,
         })
 
         log.success(`Channel configured: ${channelId}`)

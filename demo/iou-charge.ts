@@ -1,19 +1,23 @@
 /**
  * IOU Charge -- All-in-one demo
- * Creates issuer + trustlines + issues tokens, then runs MPP charge flow.
+ *
+ * Setup phase uses only the SDK Wallet API (no `xrpl` import). The issuer
+ * enables transfers, holders accept the token, the issuer credits the payer,
+ * and then the regular MPP charge flow runs end-to-end.
+ *
  * Run: npx tsx demo/iou-charge.ts
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { Receipt } from 'mppx'
 import { Mppx as ClientMppx } from 'mppx/client'
 import { Mppx, Store } from 'mppx/server'
-import { Client } from 'xrpl'
 import { charge as clientCharge } from '../sdk/src/client/Charge.js'
-import { XRPL_RPC_URLS } from '../sdk/src/constants.js'
 import { charge as serverCharge } from '../sdk/src/server/Charge.js'
+import { Wallet } from '../sdk/src/utils/wallet.js'
 import * as log from './log.js'
 
 const PORT = 3001
+const NETWORK = 'testnet' as const
 
 function toWebRequest(req: IncomingMessage): Request {
   const host = req.headers.host ?? `localhost:${PORT}`
@@ -40,69 +44,50 @@ async function main() {
   log.box(['XRPL MPP Demo -- IOU Charge (all-in-one)'])
   log.separator()
 
-  log.loading('Connecting to XRPL testnet...')
-  const xrpl = new Client(XRPL_RPC_URLS.testnet)
-  await xrpl.connect()
+  log.loading('Funding 3 wallets via the testnet faucet (issuer, server, client)...')
+  const [issuer, server, payer] = await Promise.all([
+    Wallet.fromFaucet({ network: NETWORK }),
+    Wallet.fromFaucet({ network: NETWORK }),
+    Wallet.fromFaucet({ network: NETWORK }),
+  ])
 
-  log.loading('Funding 3 wallets (issuer, server, client)...')
-  const { wallet: issuer } = await xrpl.fundWallet()
-  const { wallet: server } = await xrpl.fundWallet()
-  const { wallet: payer } = await xrpl.fundWallet()
-
-  log.wallet('Issuer', issuer.classicAddress)
-  log.wallet('Server', server.classicAddress)
-  log.wallet('Client', payer.classicAddress)
+  log.wallet('Issuer', issuer.address)
+  log.wallet('Server', server.address)
+  log.wallet('Client', payer.address)
   log.separator()
 
-  log.loading('Enabling DefaultRipple on issuer...')
-  const asResult = await xrpl.submitAndWait(
-    { TransactionType: 'AccountSet', Account: issuer.classicAddress, SetFlag: 8 },
-    { wallet: issuer },
-  )
-  log.success(`AccountSet: ${(asResult.result.meta as any)?.TransactionResult}`)
-  log.tx(asResult.result.hash, log.explorerLink(asResult.result.hash))
+  const currency = { currency: 'USD', issuer: issuer.address }
 
-  const limit = { currency: 'USD', issuer: issuer.classicAddress, value: '1000000' }
+  log.loading('Issuer enables transfers (asfDefaultRipple)...')
+  const transfers = await issuer.enableTransfers({ network: NETWORK })
+  log.tx(transfers.hash, log.explorerLink(transfers.hash))
 
-  log.loading('Creating trustline: server -> issuer...')
-  const ts1 = await xrpl.submitAndWait(
-    { TransactionType: 'TrustSet', Account: server.classicAddress, LimitAmount: limit },
-    { wallet: server },
-  )
-  log.success(`TrustSet (server): ${(ts1.result.meta as any)?.TransactionResult}`)
-  log.tx(ts1.result.hash, log.explorerLink(ts1.result.hash))
+  log.loading('Server accepts USD...')
+  const accepted1 = await server.acceptToken(currency, { network: NETWORK, limit: '1000000' })
+  if ('hash' in accepted1 && accepted1.hash) {
+    log.tx(accepted1.hash, log.explorerLink(accepted1.hash))
+  }
+  log.success(`Server -> ${accepted1.status}`)
 
-  log.loading('Creating trustline: client -> issuer...')
-  const ts2 = await xrpl.submitAndWait(
-    { TransactionType: 'TrustSet', Account: payer.classicAddress, LimitAmount: limit },
-    { wallet: payer },
-  )
-  log.success(`TrustSet (client): ${(ts2.result.meta as any)?.TransactionResult}`)
-  log.tx(ts2.result.hash, log.explorerLink(ts2.result.hash))
+  log.loading('Client accepts USD...')
+  const accepted2 = await payer.acceptToken(currency, { network: NETWORK, limit: '1000000' })
+  if ('hash' in accepted2 && accepted2.hash) {
+    log.tx(accepted2.hash, log.explorerLink(accepted2.hash))
+  }
+  log.success(`Client -> ${accepted2.status}`)
 
-  log.loading('Issuing 1000 USD to client...')
-  const pay = await xrpl.submitAndWait(
-    {
-      TransactionType: 'Payment',
-      Account: issuer.classicAddress,
-      Destination: payer.classicAddress,
-      Amount: { currency: 'USD', issuer: issuer.classicAddress, value: '1000' },
-    },
-    { wallet: issuer },
-  )
-  log.success(`Issuance: ${(pay.result.meta as any)?.TransactionResult}`)
-  log.tx(pay.result.hash, log.explorerLink(pay.result.hash))
+  log.loading('Issuer credits the client with 1000 USD...')
+  const issued = await issuer.issue(payer.address, '1000', currency, { network: NETWORK })
+  log.tx(issued.hash, log.explorerLink(issued.hash))
 
-  await xrpl.disconnect()
   log.separator()
 
-  const currencyObj = { currency: 'USD', issuer: issuer.classicAddress }
-  const currencyJson = JSON.stringify(currencyObj)
+  const currencyJson = JSON.stringify(currency)
 
   const chargeMethod = serverCharge({
-    recipient: server.classicAddress,
-    currency: currencyObj,
-    network: 'testnet',
+    recipient: server.address,
+    currency,
+    network: NETWORK,
     store: Store.memory(),
   })
 
@@ -140,7 +125,7 @@ async function main() {
   await new Promise<void>((resolve) => httpServer.listen(PORT, resolve))
   log.server(`Server listening on http://localhost:${PORT}`)
 
-  const clientMethod = clientCharge({ seed: payer.seed!, mode: 'pull', network: 'testnet' })
+  const clientMethod = clientCharge({ wallet: payer, mode: 'pull', network: NETWORK })
   ClientMppx.create({ methods: [clientMethod] })
 
   log.loading(`Requesting http://localhost:${PORT}/resource...`)

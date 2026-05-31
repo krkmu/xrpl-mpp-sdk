@@ -6,8 +6,8 @@
  *
  * Run: npx tsx examples/stream-llm.ts
  */
-import { Wallet } from 'xrpl'
 import { ChannelStream } from '../sdk/src/channel/stream.js'
+import { Wallet } from '../sdk/src/utils/wallet.js'
 
 // Generate a demo wallet (in production, use a real funded wallet)
 const wallet = Wallet.generate()

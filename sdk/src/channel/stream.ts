@@ -1,4 +1,25 @@
 import { dropsToXrp, signPaymentChannelClaim } from 'xrpl'
+import type { Wallet } from '../utils/wallet.js'
+
+/**
+ * Resolve the private key used to sign claims, accepting either a
+ * {@link Wallet} (preferred) or a raw hex string for backward compatibility.
+ */
+function resolvePrivateKey(input: { wallet?: Wallet; privateKey?: string }): string {
+  if (input.wallet) return input.wallet.privateKey
+  if (input.privateKey) return input.privateKey
+  throw new Error('[xrpl-mpp-sdk] ChannelStream/ChannelSession require a wallet or privateKey.')
+}
+
+/**
+ * Common constructor input for both {@link ChannelStream} and
+ * {@link ChannelSession}. Exactly one of `wallet` or `privateKey` must be
+ * provided -- `wallet` is preferred so the secret never appears at the
+ * call site.
+ */
+export type ChannelStreamSigner =
+  | { wallet: Wallet; privateKey?: never }
+  | { wallet?: never; privateKey: string }
 
 /** Pay-per-token streaming via PayChannel claims. */
 export class ChannelStream {
@@ -12,16 +33,20 @@ export class ChannelStream {
   private lastSignature = ''
   private lastSignedCumulative = 0n
 
-  constructor(params: {
-    channelId: string
-    privateKey: string
-    /** Cost per unit (token/byte/chunk) in drops. */
-    dropsPerUnit: string | bigint
-    /** Sign a new claim every N units. @default 1 */
-    granularity?: number
-  }) {
+  constructor(
+    params: {
+      channelId: string
+      /** Cost per unit (token/byte/chunk) in drops. */
+      dropsPerUnit: string | bigint
+      /** Sign a new claim every N units. @default 1 */
+      granularity?: number
+    } & ChannelStreamSigner,
+  ) {
     this.channelId = params.channelId
-    this.#privateKey = params.privateKey
+    this.#privateKey = resolvePrivateKey({
+      ...(params.wallet ? { wallet: params.wallet } : {}),
+      ...(params.privateKey ? { privateKey: params.privateKey } : {}),
+    })
     this.dropsPerUnit = BigInt(params.dropsPerUnit)
     this.granularity = BigInt(params.granularity ?? 1)
   }
@@ -93,22 +118,23 @@ export class ChannelSession {
   #requestCount = 0n
   #stream: ChannelStream
 
-  constructor(params: {
-    channelId: string
-    privateKey: string
-    /** Cost per request in drops. */
-    dropsPerRequest: string | bigint
-    /** Sign every N requests. @default 1 */
-    granularity?: number
-  }) {
+  constructor(
+    params: {
+      channelId: string
+      /** Cost per request in drops. */
+      dropsPerRequest: string | bigint
+      /** Sign every N requests. @default 1 */
+      granularity?: number
+    } & ChannelStreamSigner,
+  ) {
     this.channelId = params.channelId
     this.dropsPerRequest = BigInt(params.dropsPerRequest)
     this.#stream = new ChannelStream({
       channelId: params.channelId,
-      privateKey: params.privateKey,
       dropsPerUnit: params.dropsPerRequest,
-      granularity: params.granularity,
-    })
+      ...(params.granularity !== undefined ? { granularity: params.granularity } : {}),
+      ...(params.wallet ? { wallet: params.wallet } : { privateKey: params.privateKey as string }),
+    } as ConstructorParameters<typeof ChannelStream>[0])
   }
 
   /**

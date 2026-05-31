@@ -5,29 +5,23 @@
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { Mppx, Store } from 'mppx/server'
-import { Client } from 'xrpl'
-import { XRPL_RPC_URLS } from '../sdk/src/constants.js'
 import { charge } from '../sdk/src/server/Charge.js'
+import { Wallet } from '../sdk/src/utils/wallet.js'
 import * as log from './log.js'
 
 async function main() {
   log.box(['XRPL MPP Server -- XRP Charge'])
   log.separator()
 
-  log.loading('Connecting to XRPL testnet...')
-  const xrplClient = new Client(XRPL_RPC_URLS.testnet)
-  await xrplClient.connect()
-
   log.loading('Funding recipient wallet via faucet...')
-  const { wallet } = await xrplClient.fundWallet()
-  await xrplClient.disconnect()
+  const wallet = await Wallet.fromFaucet({ network: 'testnet' })
 
-  log.wallet('Recipient', wallet.classicAddress)
+  log.wallet('Recipient', wallet.address)
   log.separator()
 
   const store = Store.memory()
   const chargeMethod = charge({
-    recipient: wallet.classicAddress,
+    recipient: wallet.address,
     network: 'testnet',
     store,
   })
