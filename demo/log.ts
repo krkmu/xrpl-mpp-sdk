@@ -134,6 +134,55 @@ export function info(msg: string): void {
   console.log(`${ts()}  ${pc.dim('[i]')}   ${msg}`)
 }
 
+// -- Agentic-demo helpers (LLM reasoning, tool calls, shell commands) --
+
+/**
+ * The agent's own reasoning / natural-language output. Rendered in
+ * magenta and clearly attributed so a reader can follow the LLM's
+ * thinking separately from the mechanical log lines.
+ */
+export function agent(msg: string): void {
+  const [first, ...rest] = msg.split('\n')
+  console.log(`${ts()}  ${pc.magenta('[AI]')}  ${pc.magenta(first ?? '')}`)
+  for (const line of rest) {
+    console.log(`${ts()}        ${pc.magenta(line)}`)
+  }
+}
+
+/**
+ * A tool the agent decided to call (with a short rendering of its
+ * input). Distinct from the command that the tool then runs.
+ */
+export function tool(msg: string): void {
+  console.log(`${ts()}  ${pc.bold(pc.blue('[tool]'))} ${pc.blue(msg)}`)
+}
+
+/**
+ * What the tool fed back to the agent (the result the model will read
+ * on its next turn). Kept dim so it doesn't compete with reasoning.
+ */
+export function toolResult(msg: string): void {
+  console.log(`${ts()}  ${pc.dim('[<-]')}  ${pc.dim(msg)}`)
+}
+
+/** A concrete shell command being executed on the agent's behalf. */
+export function cmd(msg: string): void {
+  console.log(`${ts()}  ${pc.bold(pc.cyan('[cmd]'))} ${pc.cyan(`$ ${msg}`)}`)
+}
+
+/** Multi-line command output, indented under the command that produced it. */
+export function output(msg: string): void {
+  for (const line of msg.split('\n')) {
+    console.log(`${ts()}        ${pc.dim(line)}`)
+  }
+}
+
+/** A visually prominent section heading (e.g. an agent turn boundary). */
+export function heading(msg: string): void {
+  console.log('')
+  console.log(pc.bold(pc.cyan(`\u2501\u2501\u2501 ${msg} \u2501\u2501\u2501`)))
+}
+
 export function separator(): void {
   console.log('')
 }

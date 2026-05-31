@@ -11,6 +11,8 @@ marketplace calls Anthropic's Claude API and bills you in drops on testnet.
 | `charge/` | One prompt = one on-chain Payment, billed in **native XRP** (drops) | `charge` (single tx per prompt) | ready |
 | `charge-iou/` | One prompt = one on-chain Payment, billed in an **IOU** (test `USD` here; swap in any production issuer) | `charge` (single IOU tx per prompt) | ready |
 | `charge-mpt/` | One prompt = one on-chain Payment, billed in **MPT credits** (`CRED`, allowlisted) | `charge` (single MPT tx per prompt) | ready |
+| `charge-swap/` | One prompt billed in a marketplace IOU (`CRD`) the agent doesn't hold; it swaps a self-minted `USD` IOU -> `CRD` on a server-seeded AMM first | `charge` + cross-currency `Payment` (swap) + bootstrapped `AMMCreate` | ready |
+| `charge-swap-rlusd/` | One prompt billed in **real testnet RLUSD** the agent doesn't hold; it swaps free faucet **XRP -> RLUSD** on the **public** testnet AMM first | `charge` + cross-currency `Payment` (swap) on public liquidity | ready |
 | `channel/` | 3 prompts on a single PayChannel, eager 5 XRP deposit, off-chain vouchers per call | `channel` + PayChannel (2 txs total) | ready |
 | `channel-fund/` | Same 3 prompts + tiny initial deposit + just-in-time `PaymentChannelFund` on `CHANNEL_EXHAUSTED` | `channel` + PayChannel + `PaymentChannelFund` | ready |
 | `channel-stream/` | Many prompts streaming, taxi-meter vouchers per N tokens | `channel` + PayChannel | planned |
@@ -49,6 +51,7 @@ just received:
 | `charge/` | 402 on `/complete` -- amount + `"XRP"` currency, surfaced via mppx's `onProgress({ type: 'challenge', ... })` |
 | `charge-iou/` | 402 on `/complete` -- amount + `{currency, issuer}`, surfaced via `onProgress` |
 | `charge-mpt/` | 402 on `/complete` -- amount + `{mpt_issuance_id}`, surfaced via `onProgress` |
+| `charge-swap-rlusd/` | 402 on `/complete` -- amount **and** the `{currency, issuer}` itself; `/info` here advertises *none* of it (not even which token), so the 402 is the sole source of the price, the currency, and the issuer |
 | `channel/` | 402 on each `/complete` carries the cumulative quote; the SSE `done` event echoes `paid` back so the settlement box can render it without a local rate |
 | `channel-fund/` | Same as `channel/` for per-call quotes; the `amount-exceeds-deposit` 402 additionally carries the cumulative + available deposit in its Problem Details body, which the client parses to size each `PaymentChannelFund` -- top-up = `cumulative - available`, with no client-side maths |
 
@@ -311,6 +314,133 @@ you want finer per-call granularity.
 |---|---|---|
 | `PROMPT` | "Explain ..." | The prompt to send |
 | `MAX_TOKENS` | `120` | Worst-case output tokens (drives the quote) |
+
+## Run charge-swap-rlusd (one prompt, agent swaps XRP -> RLUSD first)
+
+Same one-prompt-one-Payment flow as `charge/`, but the marketplace bills
+in **real testnet RLUSD** (Ripple's USD-pegged stablecoin) and the agent
+holds **none**. The 402 carries a single RLUSD challenge; the agent has
+to source the RLUSD itself by swapping a slice of its free faucet **XRP**
+against the **public** testnet XRP/RLUSD AMM pool, then retry `/complete`
+with an RLUSD credential.
+
+This is the production-shaped sibling of [`charge-swap/`](charge-swap/):
+
+| | `charge-swap/` | `charge-swap-rlusd/` (this demo) |
+|---|---|---|
+| Billing currency | Self-minted `CRD` IOU | Real testnet RLUSD (Ripple-issued) |
+| Asset the agent starts with | Self-minted `USD` IOU (from `/faucet-usd`) | Native XRP (free from the faucet) |
+| Liquidity | A `USD/CRD` AMM the **server bootstraps** at boot (`AMMCreate`) | The **public** XRP/RLUSD pool already on testnet |
+| Server-side wallets | 3 (issuer + recipient + LP) | 1 (recipient) |
+| Server bootstrap txs | `enableTransfers`, 3 trustlines, 2 issuances, `AMMCreate` | 1 (recipient `TrustSet` toward Ripple's issuer) |
+| `/faucet-*` endpoint | Yes (`/faucet-usd`) | **No** -- XRP is free, RLUSD is bought on the DEX |
+| Wallet ever funded with the charge currency | LP holds `CRD` | **None** -- the only RLUSD that exists is what the agent buys |
+
+### Can we do this without funding any wallet in RLUSD?
+
+Yes. RLUSD is issued by Ripple and there is already a deep, public
+XRP/RLUSD AMM pool on testnet (~500k XRP : ~325k RLUSD at time of
+writing). The agent funds a fresh wallet via the XRP faucet (free, ~100
+XRP), opens a trustline to Ripple's RLUSD testnet issuer
+(`rQhWct2fv4Vc4KRjRgMrxa8xPN9Zx9iLKV`), and buys exactly the RLUSD the
+402 asks for with a cross-currency `Payment` (self -> self, `Amount` in
+RLUSD, `SendMax` in XRP drops). The marketplace's recipient only needs
+the trustline to *receive* RLUSD -- it never has to hold any.
+
+Two (or three) terminals from the repo root:
+
+```bash
+# Terminal 1 -- marketplace server (PORT 3012)
+npx tsx demo/llm-marketplace/charge-swap-rlusd/server.ts
+
+# Terminal 2 -- deterministic client (script does the swap)
+npx tsx demo/llm-marketplace/charge-swap-rlusd/client.ts
+
+# Terminal 2 (alternative) -- fully autonomous agentic client. Claude is
+# handed no invoice and no map: it must call the marketplace itself to
+# learn what it owes, then reason "I owe a token I don't hold -> I must
+# trade", open the trustline, discover the on-chain liquidity, size and
+# execute the swap, then settle. Watch the calls it makes.
+npx tsx demo/llm-marketplace/charge-swap-rlusd/client-agent.ts
+```
+
+The deterministic `client.ts` hard-codes the orchestration (probe the
+402, open the trustline, quote the pair, size with slippage, submit,
+settle). `client-agent.ts` hands that *entire* sequence to Claude through
+four tools and almost nothing else:
+
+- `probe_invoice` -- the agent **POSTs `/complete` itself** (no
+  credential) and reads the amount + token + issuer + payee out of the
+  402. Nothing monetary is known before it makes this call.
+- `open_trustline` -- opens the trustline for the invoice's token in one
+  step **via this SDK** (`wallet.acceptToken`), reading the token from
+  the captured 402. This keeps the agent from hand-assembling (and
+  mistyping) a raw `xrpl-up trust set --currency <hex> …` command.
+- `xrpl_up` -- runs any `xrpl-up` CLI command the model constructs:
+  inspect balances, **discover the liquidity**, and **execute the swap**.
+- `attempt_payment` -- the MPP credential dance (no CLI exists for it),
+  once the agent holds enough of the token.
+
+The script injects only two things into `xrpl_up`, neither of which
+leaks anything about the liquidity: the testnet node, and the signing
+seed for transaction subcommands (`payment`/`trust`, redacted from the
+LLM). It never tells the agent the price, the token, the issuer, the
+payee, that an XRP/RLUSD market exists, which pair to use, the pool
+account, the reserves, or the rate. The agent runs `--help`, calls the
+marketplace, opens its trustline, discovers the pool, and builds the swap
+command entirely on its own.
+
+### What happens
+
+1. **Server boot** -- fund one recipient wallet via the XRP faucet and
+   open its RLUSD trustline (so the first 402 lands without
+   `PAYMENT_PATH_FAILED`). No issuer, no LP, no `AMMCreate`, no
+   `/faucet`: RLUSD is Ripple-issued and the XRP/RLUSD pool is public.
+2. **Client bootstrap** -- fund a fresh payer wallet via the XRP faucet
+   and `GET /info`, which is a **bare identity probe**: it returns only
+   `{ recipient, network, model }`. It carries **no currency, no issuer,
+   and no price** -- the client cannot even know which token it will be
+   billed in yet.
+3. **Round 1** -- `POST /complete` (no credential) returns **HTTP 402**.
+   This is the first and only place the client learns the token, its
+   issuer, and the amount due -- all parsed out of the challenge. Only
+   *now* does the client open a trustline toward that issuer. It holds
+   0 of the token.
+4. **Swap** -- read the public XRP/RLUSD AMM depth (`amm_info`, discovered
+   from the pair, not advertised), compute XRP-in for the quoted RLUSD-out
+   with a ~5% slippage band, and submit a cross-currency `Payment` self ->
+   self (`Amount` RLUSD, `SendMax` XRP drops). rippled path-finds the
+   public pool automatically.
+5. **Round 2** -- build the RLUSD credential with the SDK's `charge`
+   method and retry `/complete` with `Authorization`. The server submits
+   the RLUSD Payment, polls to `tesSUCCESS`, then streams Anthropic tokens
+   via SSE and emits `event: done` with real cost vs paid quote.
+6. **Settlement** -- two on-chain txs for one API call (the XRP->RLUSD
+   swap + the RLUSD Payment), balances before/after, and the proof that
+   no wallet was ever funded in RLUSD.
+
+To go to mainnet, swap `RLUSD_TESTNET` for `RLUSD_MAINNET` in `server.ts`
+and `client.ts` (and confirm a mainnet XRP/RLUSD pool exists, which it
+does); nothing else changes.
+
+### Tunables (charge-swap-rlusd)
+
+`server.ts`:
+
+| Constant | Default | What it is |
+|---|---|---|
+| `CHARGE_CURRENCY` | `RLUSD_TESTNET` | Swap for `RLUSD_MAINNET` to go live |
+| `RLUSD_PER_INPUT_TOKEN` | `0.0001` | demo marketplace fee, input side |
+| `RLUSD_PER_OUTPUT_TOKEN` | `0.0005` | demo marketplace fee, output side (1:5 mirrors Haiku) |
+| `PORT` | `3012` | HTTP port |
+
+`client.ts` / `client-agent.ts`:
+
+| Constant | Default | What it is |
+|---|---|---|
+| `PROMPT` | "Explain ..." | The prompt to send |
+| `MAX_TOKENS` | `120` | Worst-case output tokens (drives the quote) |
+| `SLIPPAGE_PCT` | `5` | Cushion on top of the AMM-quoted XRP cost (`client.ts`) |
 
 ## Run channel (3 prompts, 1 PayChannel)
 

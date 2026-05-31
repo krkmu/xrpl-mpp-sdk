@@ -47,6 +47,31 @@ export function formatAmount(amount: string | number, currency: string, label?: 
 }
 
 /**
+ * Decode an XRPL IOU currency code into a human-readable label.
+ *
+ * XRPL currency codes are either a 3-char ASCII string (used verbatim)
+ * or a 40-char hex string for longer codes. RLUSD, for instance, arrives
+ * on the wire as `524C555344000000000000000000000000000000` -- the ASCII
+ * bytes for "RLUSD" zero-padded to 20 bytes. We decode the hex back to
+ * ASCII (stopping at the first null byte) so the client can render a
+ * friendly symbol it derived itself from the 402 challenge, with no
+ * server-provided label.
+ */
+export function decodeCurrencyCode(code: string): string {
+  if (code.length <= 3) return code
+  if (/^[0-9A-Fa-f]{40}$/.test(code)) {
+    let out = ''
+    for (let i = 0; i < code.length; i += 2) {
+      const byte = parseInt(code.slice(i, i + 2), 16)
+      if (byte === 0) break
+      out += String.fromCharCode(byte)
+    }
+    return out || code
+  }
+  return code
+}
+
+/**
  * Just the unit suffix (no quantity). Useful when a caller is already
  * formatting the number themselves and only needs the trailing label
  * -- e.g. "drops", "USD (issuer rXXX…YYYY)", "<MPT abc…1234>".
