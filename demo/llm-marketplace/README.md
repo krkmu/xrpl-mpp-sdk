@@ -367,7 +367,7 @@ npx tsx demo/llm-marketplace/charge-swap-rlusd/client-agent.ts
 The deterministic `client.ts` hard-codes the orchestration (probe the
 402, open the trustline, quote the pair, size with slippage, submit,
 settle). `client-agent.ts` hands that *entire* sequence to Claude through
-four tools and almost nothing else:
+a handful of tools and almost nothing else:
 
 - `probe_invoice` -- the agent **POSTs `/complete` itself** (no
   credential) and reads the amount + token + issuer + payee out of the
@@ -376,8 +376,15 @@ four tools and almost nothing else:
   step **via this SDK** (`wallet.acceptToken`), reading the token from
   the captured 402. This keeps the agent from hand-assembling (and
   mistyping) a raw `xrpl-up trust set --currency <hex> …` command.
-- `xrpl_up` -- runs any `xrpl-up` CLI command the model constructs:
-  inspect balances, **discover the liquidity**, and **execute the swap**.
+- `acquire_token` -- swaps the agent's XRP for the invoice token on the
+  public on-chain AMM in one step, driving **`xrpl-up`** for both halves:
+  `amm info` discovers the live `XRP/<token>` pool, then `payment` submits
+  a cross-currency Payment capped by `SendMax`. The script sizes the trade
+  (constant-product math) and injects the signing seed, so the agent gets
+  a reliable swap without guessing DEX/AMM/offer CLI syntax or wrangling
+  keystores (which is exactly where it used to get stuck).
+- `xrpl_up` -- runs any `xrpl-up` CLI command the model constructs,
+  mainly to **inspect** the ledger and the wallet.
 - `attempt_payment` -- the MPP credential dance (no CLI exists for it),
   once the agent holds enough of the token.
 

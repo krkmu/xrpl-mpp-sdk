@@ -481,7 +481,6 @@ async function main() {
       'Endpoints:',
       '',
       'GET  /info        -> issuer, recipient, CRD + USD identifiers',
-      '                     (no AMM pool address, no pricing -- see 402)',
       `POST /faucet-usd  -> { holder } -> issues ${FAUCET_ALLOWANCE_USD} ${USD_CODE} (demo bootstrap)`,
       'POST /complete    -> { prompt, maxTokens }',
       `                     -> 402 with ONE challenge in ${CRED_CODE} (no USD option)`,

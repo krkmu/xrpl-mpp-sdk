@@ -50,6 +50,21 @@ const NETWORK = 'testnet' as const
 const PROMPT = 'Explain in one short paragraph why agents need on-chain DEX access.'
 const MAX_TOKENS = 120
 
+/**
+ * Trustline limit the agent sets for whatever token the 402 asks for, if
+ * it doesn't pass one explicitly. A client-side risk choice -- the
+ * marketplace never tells us this.
+ */
+const PAYER_TRUSTLINE_LIMIT = '1000'
+
+/**
+ * Default slippage cushion added on top of the AMM-quoted XRP cost when
+ * the agent doesn't specify one. 5% absorbs the trading fee + price
+ * drift between quote and submission + drop rounding. The swap carries
+ * `SendMax`, so we never overspend -- this is only a permission band.
+ */
+const DEFAULT_SLIPPAGE_PCT = 5
+
 /** Path to the `xrpl-up` binary installed locally as a devDependency. */
 const XRPL_UP = resolve(process.cwd(), 'node_modules/.bin/xrpl-up')
 
@@ -364,6 +379,152 @@ async function toolOpenTrustline(input: {
   }
 }
 
+// ---------- acquire_token tool (pool discovery + swap via xrpl-up) ----------
+
+/** Render XRP drops as an integer string for the wire (round up). */
+function dropsValue(value: number): string {
+  return String(Math.ceil(value))
+}
+
+/**
+ * Parse the bare `amm` object printed by `xrpl-up amm info --json`. The
+ * XRP side is a drops string; the token side is a `{ value, currency,
+ * issuer }` object. We pick by type so we are robust to side ordering.
+ */
+function parseAmmJson(
+  stdout: string,
+  label: string,
+): { xrpReserveDrops: number; tokenReserve: number; tradingFeeUnits: number } {
+  let amm: any
+  try {
+    amm = JSON.parse(stdout)
+  } catch {
+    throw new Error(`amm info did not return JSON: ${stdout.slice(0, 200)}`)
+  }
+  const sideA = amm.amount
+  const sideB = amm.amount2
+  const xrpSide = typeof sideA === 'string' ? sideA : sideB
+  const tokenSide = typeof sideA === 'string' ? sideB : sideA
+  if (typeof xrpSide !== 'string' || !tokenSide || typeof tokenSide.value !== 'string') {
+    throw new Error(`Unexpected amm info shape for XRP/${label} pool`)
+  }
+  return {
+    xrpReserveDrops: Number(xrpSide),
+    tokenReserve: Number(tokenSide.value),
+    tradingFeeUnits: Number(amm.trading_fee),
+  }
+}
+
+/**
+ * Acquire the token the invoice demands by swapping XRP on the public
+ * on-chain AMM, driving the `xrpl-up` CLI for both steps:
+ *
+ *   1. `xrpl-up amm info --asset XRP --asset2 <hex>/<issuer> --json`
+ *      discovers the live pool purely from the token PAIR (the pool
+ *      address is never advertised), and we read its depth + fee.
+ *   2. `xrpl-up payment --to <self> --amount <token>/<hex>/<issuer>
+ *      --send-max <drops>drops` submits a cross-currency Payment from the
+ *      agent to itself; rippled path-finds the pool and executes the
+ *      swap. `SendMax` caps the XRP spent so we never overspend.
+ *
+ * Sizing is automatic via the constant-product invariant with the fee on
+ * the input side (matches rippled's AMM math, XLS-30d):
+ *   dx_pre_fee   = X * dy / (Y - dy)
+ *   dx_after_fee = dx_pre_fee / (1 - fee)
+ * The script builds the commands and injects the seed (hidden from the
+ * LLM), so the agent gets a reliable swap without guessing CLI syntax.
+ */
+async function toolAcquireToken(input: {
+  wallet: Wallet
+  getChallenge: () => ChargeChallenge | null
+  slippagePct?: unknown
+}) {
+  const challenge = input.getChallenge()
+  if (!challenge) {
+    return { ok: false, reason: 'Fetch the invoice first (probe_invoice) so I know what to acquire.' }
+  }
+  let parsed: { currency: string; issuer: string }
+  try {
+    parsed = JSON.parse(challenge.request.currency)
+  } catch {
+    return { ok: false, reason: `Invoice currency was not a JSON IOU descriptor: ${challenge.request.currency}` }
+  }
+  const label = decodeCurrencyCode(parsed.currency)
+  const amountDue = challenge.request.amount
+  // Buy a touch more than the invoice so fees/rounding never leave us short.
+  const targetToken = Number(Number(amountDue) * 1.02).toPrecision(12)
+  const slippagePct =
+    typeof input.slippagePct === 'number' && input.slippagePct > 0
+      ? input.slippagePct
+      : DEFAULT_SLIPPAGE_PCT
+  const asset2 = `${parsed.currency}/${parsed.issuer}`
+
+  // --- 1. Discover the pool with `xrpl-up amm info`. ---
+  const ammRes = await runXrplUp(
+    ['amm', 'info', '--asset', 'XRP', '--asset2', asset2, '--json', '--node', NETWORK],
+  )
+  if (ammRes.exitCode !== 0) {
+    log.error(`exit ${ammRes.exitCode}`)
+    const detail = (ammRes.stderr || ammRes.stdout).trim()
+    if (detail) log.output(detail)
+    return { ok: false, reason: `amm info failed (no XRP/${label} pool?): ${detail.slice(0, 200)}` }
+  }
+  let pool: { xrpReserveDrops: number; tokenReserve: number; tradingFeeUnits: number }
+  try {
+    pool = parseAmmJson(ammRes.stdout.trim(), label)
+  } catch (err: any) {
+    return { ok: false, reason: err.message }
+  }
+  const { xrpReserveDrops: X, tokenReserve: Y, tradingFeeUnits } = pool
+  const dy = Number(targetToken)
+  if (dy >= Y) {
+    return { ok: false, reason: `Pool too shallow: want ${dy} ${label} but only ${Y} available.` }
+  }
+  const dxPreFee = (X * dy) / (Y - dy)
+  const dxAfterFee = dxPreFee / (1 - tradingFeeUnits / 100_000)
+  const xrpDropsMax = dropsValue(dxAfterFee * (1 + slippagePct / 100))
+  log.output(
+    `pool depth ${(X / 1_000_000).toFixed(2)} XRP : ${Y} ${label} ` +
+      `(fee ${tradingFeeUnits / 1000}%); SendMax ${xrpDropsMax} drops ` +
+      `(${(Number(xrpDropsMax) / 1_000_000).toFixed(6)} XRP, +${slippagePct}%)`,
+  )
+
+  // --- 2. Execute the swap with `xrpl-up payment` (self -> self). ---
+  if (!input.wallet.seed) {
+    return { ok: false, reason: 'Wallet has no exportable seed -- cannot sign the swap.' }
+  }
+  const swapRes = await runXrplUp(
+    [
+      'payment',
+      '--to', input.wallet.address,
+      '--amount', `${targetToken}/${parsed.currency}/${parsed.issuer}`,
+      '--send-max', `${xrpDropsMax}drops`,
+      '--node', NETWORK,
+      '--seed', input.wallet.seed,
+    ],
+    { hideArgs: ['--seed'] },
+  )
+  if (swapRes.exitCode !== 0 || !/tesSUCCESS/.test(swapRes.stdout)) {
+    log.error(`exit ${swapRes.exitCode}`)
+    const detail = (swapRes.stderr || swapRes.stdout).trim()
+    if (detail) log.output(detail)
+    return { ok: false, reason: `swap payment failed: ${detail.slice(0, 300)}` }
+  }
+  const hash = swapRes.stdout.match(/Transaction:\s*([0-9A-Fa-f]+)/)?.[1] ?? ''
+  if (hash) log.tx(hash, log.explorerLink(hash))
+  log.output(swapRes.stdout.trim())
+  return {
+    ok: true,
+    swap_tx_hash: hash || null,
+    delivered: targetToken,
+    label,
+    amount_due: amountDue,
+    note:
+      `Swapped XRP for ${targetToken} ${label} via the public AMM (xrpl-up payment). You now ` +
+      `hold enough ${label} to cover the ${amountDue} due. Call attempt_payment to settle.`,
+  }
+}
+
 // ---------- attempt_payment (MPP-specific, no CLI exists) ----------
 
 type PaymentOutcome = {
@@ -520,18 +681,38 @@ async function runAgent(input: {
       },
     },
     {
+      name: 'acquire_token',
+      description:
+        'Acquire enough of the invoice\'s token to pay it, by swapping your XRP on the ' +
+        'public on-chain AMM. It drives `xrpl-up` for both steps: `amm info` to discover ' +
+        'the live XRP/<token> pool, then `payment` (a cross-currency Payment capped by ' +
+        'SendMax) to execute the swap. It sizes the trade to cover the amount due (plus a ' +
+        'small cushion) and reads the token + amount from the invoice you fetched. Use this ' +
+        'to obtain the token instead of hand-building DEX/AMM/offer CLI commands yourself. ' +
+        'Requires the trustline to be open first. Optionally pass "slippage_pct".',
+      input_schema: {
+        type: 'object',
+        properties: {
+          slippage_pct: {
+            type: 'number',
+            description: 'Optional slippage cushion in percent (default 5).',
+          },
+        },
+        required: [],
+      },
+    },
+    {
       name: 'xrpl_up',
       description:
         'Run ANY `xrpl-up` CLI command against the XRP Ledger and get its raw ' +
         'stdout/stderr/exit code back. Pass the arguments as an array of strings ' +
         '(everything you would type after `xrpl-up`), e.g. ' +
         '["account","balance","rEXAMPLE..."] or ["--help"] or ["amm","--help"]. ' +
-        'The CLI is already pointed at the right network and will sign transactions ' +
-        'with your wallet automatically when a command needs it -- you never handle ' +
-        'a seed. Use this to inspect the ledger and your account, to discover how and ' +
-        'where you can trade, and to submit transactions. (To open a trustline, prefer ' +
-        'the dedicated open_trustline tool.) Run `["--help"]` or `["<command>","--help"]` ' +
-        'whenever you are unsure what a command does.',
+        'The CLI is already pointed at the right network. Use this mainly to INSPECT the ' +
+        'ledger and your account (balances, trust-lines, amm info, ...). For the two actions ' +
+        'that matter here, prefer the dedicated SDK tools: open_trustline (trustline) and ' +
+        'acquire_token (swap XRP -> the invoice token). Run `["--help"]` or ' +
+        '`["<command>","--help"]` whenever you are unsure what a command does.',
       input_schema: {
         type: 'object',
         properties: {
@@ -576,15 +757,16 @@ async function runAgent(input: {
     'the trade with a small safety margin, execute it, and verify you received the token.\n\n' +
     'TOOLS:\n' +
     '- probe_invoice: ask the marketplace what you owe (returns amount + token + issuer + payee).\n' +
-    '- open_trustline: open the trustline for the invoice token in ONE step via the SDK. Use ' +
-    'this for the trustline -- do not hand-build a CLI trust command.\n' +
-    '- xrpl_up: run any `xrpl-up` CLI command (inspect state, discover trading options, submit ' +
-    'transactions). Explore with `--help` as needed, but be economical with your turns.\n' +
+    '- open_trustline: open the trustline for the invoice token in ONE step via the SDK.\n' +
+    '- acquire_token: swap your XRP for the invoice token on the public on-chain AMM in ONE ' +
+    'step via the SDK (it finds the pool, sizes the trade, and caps the spend). Requires the ' +
+    'trustline first.\n' +
+    '- xrpl_up: run any `xrpl-up` CLI command, mainly to INSPECT the ledger / your account. ' +
+    'You should not need it for the trustline or the swap -- use the dedicated tools above.\n' +
     '- attempt_payment: settle with the marketplace once you actually hold enough of the token.\n\n' +
-    'A natural order is: probe_invoice -> open_trustline -> discover liquidity + acquire the ' +
-    'token with your XRP -> attempt_payment. Work step by step. Before each tool call, briefly ' +
-    'state your reasoning so a human can follow your decisions. Stop only when attempt_payment ' +
-    'returns ok:true.'
+    'The natural order is: probe_invoice -> open_trustline -> acquire_token -> attempt_payment. ' +
+    'Work step by step. Before each tool call, briefly state your reasoning so a human can ' +
+    'follow your decisions. Stop only when attempt_payment returns ok:true.'
 
   const messages: Anthropic.MessageParam[] = [
     {
@@ -648,6 +830,12 @@ async function runAgent(input: {
             wallet,
             getChallenge: () => challenge,
             limit: (tu.input as { limit?: unknown }).limit,
+          })
+        } else if (tu.name === 'acquire_token') {
+          result = await toolAcquireToken({
+            wallet,
+            getChallenge: () => challenge,
+            slippagePct: (tu.input as { slippage_pct?: unknown }).slippage_pct,
           })
         } else if (tu.name === 'xrpl_up') {
           result = await toolXrplUp({ wallet, args: (tu.input as { args: unknown }).args })
