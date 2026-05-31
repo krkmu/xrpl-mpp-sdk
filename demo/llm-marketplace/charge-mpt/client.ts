@@ -260,7 +260,7 @@ async function main() {
     'Settlement -- charge in MPT credits',
     '',
     `Anthropic usage:   ${done.input_tokens} input + ${done.output_tokens} output tokens`,
-    `Real cost:         ${formatAmount(done.actual_cost, wire, label)}`,
+    `Actual cost:       ${formatAmount(done.actual_cost, wire, label)}`,
     `Paid (quote):      ${formatAmount(done.paid, wire, label)} (worst case, learned from the 402)`,
     `Overpayment:       ${formatAmount(done.overpayment, wire, label)} (${overpayPct}%)`,
     `Remaining balance: ${formatAmount(remaining, wire, label)} (of ${info.faucetAllowanceCredits} ${label} faucet)`,

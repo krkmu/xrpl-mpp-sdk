@@ -61,12 +61,6 @@ type Info = {
   chargeCurrencyLabel: string
   bootstrapCurrency: { currency: string; issuer: string }
   bootstrapCurrencyLabel: string
-  amm: {
-    account: string | null
-    asset: { currency: string; issuer: string }
-    asset2: { currency: string; issuer: string }
-    tradingFeeUnits: number
-  }
   faucetAllowanceUsd: string
   payerTrustlineLimit: string
 }
@@ -167,10 +161,12 @@ async function quoteSwap(
   info: Info,
   requestedCred: string,
 ): Promise<AmmQuote> {
+  // The pool address is never advertised: we discover the pool purely
+  // from the token PAIR we want to trade (USD we hold, CRD we owe).
   const ammInfo = (await xrpl.request({
     command: 'amm_info',
-    asset: info.amm.asset,
-    asset2: info.amm.asset2,
+    asset: info.bootstrapCurrency,
+    asset2: info.chargeCurrency,
   } as any)) as any
 
   const a = ammInfo.result?.amm
@@ -189,12 +185,14 @@ async function quoteSwap(
     throw new Error(`Pool too shallow: want ${dy} ${info.chargeCurrencyLabel} but only ${Y} available.`)
   }
   const dxPreFee = (X * dy) / (Y - dy)
-  const feeFraction = info.amm.tradingFeeUnits / 100_000
+  // Trading fee comes from the on-chain pool itself, not from /info.
+  const tradingFeeUnits = Number(a.trading_fee)
+  const feeFraction = tradingFeeUnits / 100_000
   const dxAfterFee = dxPreFee / (1 - feeFraction)
   return {
     usdReserve: usdSide.value,
     credReserve: credSide.value,
-    tradingFeeUnits: info.amm.tradingFeeUnits,
+    tradingFeeUnits,
     usdQuotedForRequest: iouValue(dxAfterFee),
   }
 }
@@ -281,7 +279,10 @@ async function main() {
   log.info(
     `Bootstrap (faucet): ${info.bootstrapCurrencyLabel} (same issuer)`,
   )
-  log.info(`AMM pool: ${info.amm.account ?? '(unknown)'}`)
+  log.info(
+    `DEX pool address: not advertised -- discovered from the ` +
+      `${info.bootstrapCurrencyLabel}/${info.chargeCurrencyLabel} pair`,
+  )
   log.info(
     'Per-call price: not advertised here -- arrives in the 402 on /complete, ' +
       `in ${info.chargeCurrencyLabel} only.`,
@@ -525,7 +526,7 @@ async function main() {
     'Settlement -- charge (paid in CRD, agent sourced CRD via DEX swap)',
     '',
     `Server quote:        ${formatAmount(done.paid, offer.request.currency, info.chargeCurrencyLabel)} (from the 402)`,
-    `Real cost:           ${formatAmount(done.actual_cost, offer.request.currency, info.chargeCurrencyLabel)} (Anthropic usage report)`,
+    `Actual cost:         ${formatAmount(done.actual_cost, offer.request.currency, info.chargeCurrencyLabel)} (Anthropic usage report)`,
     `Overpayment:         ${formatAmount(done.overpayment, offer.request.currency, info.chargeCurrencyLabel)} (${overpayPct}%)`,
     '',
     `Anthropic usage:     ${done.input_tokens} input + ${done.output_tokens} output tokens (${MODEL})`,

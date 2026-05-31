@@ -61,12 +61,6 @@ type Info = {
   chargeCurrencyLabel: string
   bootstrapCurrency: { currency: string; issuer: string }
   bootstrapCurrencyLabel: string
-  amm: {
-    account: string | null
-    asset: { currency: string; issuer: string }
-    asset2: { currency: string; issuer: string }
-    tradingFeeUnits: number
-  }
   faucetAllowanceUsd: string
   payerTrustlineLimit: string
 }
@@ -478,8 +472,10 @@ async function runAgent(input: {
     `${info.chargeCurrencyLabel} to recipient ${info.recipient}. ` +
     `You currently hold ${info.bootstrapCurrencyLabel} (USD-pegged IOU from the same issuer ` +
     `${info.bootstrapCurrency.issuer}) but no ${info.chargeCurrencyLabel}. ` +
-    `A ${info.bootstrapCurrencyLabel}/${info.chargeCurrencyLabel} AMM pool exists on testnet ` +
-    `(account ${info.amm.account}). ` +
+    `To obtain ${info.chargeCurrencyLabel} you must swap your ${info.bootstrapCurrencyLabel} on the ` +
+    `testnet DEX. You are NOT told where the liquidity is -- you only know the token PAIR ` +
+    `(${info.bootstrapCurrencyLabel}/${info.chargeCurrencyLabel}); use query_amm to discover the ` +
+    'pool and its depth on-chain before swapping. ' +
     'You have four tools: check_balances, query_amm, swap_usd_to_cred, attempt_payment. ' +
     'Plan, call tools, and stop only when attempt_payment returns ok:true. ' +
     'Be efficient: do not query the AMM repeatedly without reason. ' +
@@ -628,7 +624,10 @@ async function main() {
     `Charging in: ${info.chargeCurrencyLabel} (issuer ${info.chargeCurrency.issuer.slice(0, 6)}…${info.chargeCurrency.issuer.slice(-4)})`,
   )
   log.info(`Bootstrap (faucet): ${info.bootstrapCurrencyLabel}`)
-  log.info(`AMM pool: ${info.amm.account ?? '(unknown)'}`)
+  log.info(
+    `DEX pool address: not advertised -- agent must discover it from the ` +
+      `${info.bootstrapCurrencyLabel}/${info.chargeCurrencyLabel} pair`,
+  )
   log.separator()
 
   log.loading(
@@ -740,7 +739,7 @@ async function main() {
     'Settlement -- agentic charge (Claude tool-use + xrpl-up CLI)',
     '',
     `Server quote:        ${formatAmount(outcome.doneEvent.paid, challenge.request.currency, info.chargeCurrencyLabel)}`,
-    `Real cost:           ${formatAmount(outcome.doneEvent.actual_cost, challenge.request.currency, info.chargeCurrencyLabel)}`,
+    `Actual cost:         ${formatAmount(outcome.doneEvent.actual_cost, challenge.request.currency, info.chargeCurrencyLabel)}`,
     `Overpayment:         ${formatAmount(outcome.doneEvent.overpayment, challenge.request.currency, info.chargeCurrencyLabel)} (${overpayPct}%)`,
     `Anthropic usage:     ${outcome.doneEvent.input_tokens} input + ${outcome.doneEvent.output_tokens} output tokens`,
     '',

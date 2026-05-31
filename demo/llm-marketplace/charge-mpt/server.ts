@@ -130,7 +130,7 @@ async function pipeStream(webRes: Response, res: ServerResponse): Promise<void> 
 }
 
 async function main() {
-  log.box(['XRPL MPP -- LLM Marketplace (charge, MPT credits billing, real Claude)'])
+  log.box(['XRPL MPP -- LLM Marketplace (charge, MPT credits billing)'])
   log.separator()
 
   try {

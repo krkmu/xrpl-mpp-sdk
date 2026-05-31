@@ -144,7 +144,7 @@ function classifyPaidCurrency(currencyStr: string): Paid {
 }
 
 async function main() {
-  log.box(['XRPL MPP -- LLM Marketplace (charge, multi-challenge 402, real Claude)'])
+  log.box(['XRPL MPP -- LLM Marketplace (charge, multi-challenge 402)'])
   log.separator()
 
   try {

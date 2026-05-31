@@ -320,7 +320,7 @@ async function main() {
     ...perCall,
     '',
     `Voucher cumulative (closed): ${formatAmount(totalPaid, 'XRP')}`,
-    `Real Anthropic cost:         ${formatAmount(totalActual, 'XRP')}`,
+    `Actual Anthropic cost:       ${formatAmount(totalActual, 'XRP')}`,
     `Overpayment:                 ${formatAmount(overpayment, 'XRP')} (${overpayPct.toFixed(1)}%)`,
     '',
     `On-chain txs: 2 (open + close) for ${dones.length} prompts`,

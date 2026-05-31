@@ -26,220 +26,254 @@ timestamps, colored tags, and box-drawn headers.
 | `channel-fund.ts` | all-in-one | Open tiny channel, exhaust it, top up via `PaymentChannelFund`, recover, close |
 | `channel-server-open.ts` | all-in-one | Server-managed open: client signs `PaymentChannelCreate`, server submits it |
 | `channel-auto-close-proof.ts` | all-in-one | Proof that the server sweeper auto-redeems a channel when the client disconnects |
-| `llm-marketplace/*` | two-terminal | Real Anthropic Claude billed over MPP -- see its own README |
+| `llm-marketplace/*` | two-terminal | Anthropic Claude billed over MPP -- see the LLM marketplace section below |
 | `weather-api/*` | two-terminal | Premium HTTP API, no API key, billed in the API's own IOU (`WTH`) |
 | `weather-api-rlusd/*` | two-terminal | Same flow billed in real testnet RLUSD; `setup-trustline.ts` bootstraps a wallet |
 | `escrow-lifecycle.ts` | all-in-one | 3 escrow scenarios: time-locked, crypto-condition, cancellable |
 | `error-showcase.ts` | all-in-one | 16 error cases with the fail-fix-validate pattern |
 
-## XRP charge (two-terminal)
+The rest of this file is in three parts:
+
+1. **Basic demos** -- the self-contained XRPL/MPP building blocks (no AI, no agent).
+2. **LLM marketplace** -- Claude billed over MPP, including the two
+   variants where an AI agent makes the payment decision.
+3. **Weather API** -- a paid HTTP API with no API key (no agent either).
+
+---
+
+# Basic demos
+
+Self-contained payment building blocks. No LLM, no agent -- each one isolates a
+single XRPL/MPP primitive so you can read it end to end. They are either
+all-in-one scripts (one `npx tsx`, self-funding) or simple two-terminal
+server/client pairs.
+
+### Per-payment charges (HTTP 402 -> pay -> 200)
 
 ```bash
+# XRP, two terminals
 npx tsx demo/xrp-server.ts   # terminal 1, :3000
 npx tsx demo/xrp-client.ts   # terminal 2
 ```
 
-Client requests the resource, gets 402, signs a Payment, retries with the
-credential, gets 200 + a receipt with an explorer link.
-
-## IOU charge
+The client requests the resource, gets a 402, signs a `Payment`, retries with
+the credential, and gets 200 + a receipt with an explorer link. The same charge
+pattern in other currencies, each an all-in-one script that funds its wallets,
+sets up the token, and runs one charge:
 
 ```bash
-npx tsx demo/iou-charge.ts
+npx tsx demo/iou-charge.ts        # a test USD IOU (TrustSet + issue + charge)
+npx tsx demo/iou-allowlist.ts     # RequireAuth: accept -> pending_authorization -> authorize -> charge
+npx tsx demo/iou-cross-issuer.ts  # USD.A <-> USD.B bridge, cross-issuer path-finding
+npx tsx demo/mpt-charge.ts        # a Multi-Purpose Token (allowlisted prepaid credits)
 ```
 
-Funds issuer + server + client. Issuer `enableTransfers`, both sides
-`acceptToken(USD)`, issuer credits the client, then the client pays 10 USD. No
-direct `xrpl` import -- everything goes through the Wallet API.
-
-## IOU allowlist (RequireAuth)
+### PayChannels (amortize N payments into 2 on-chain txs)
 
 ```bash
-npx tsx demo/iou-allowlist.ts
-```
-
-Issuer enables `DefaultRipple` + `RequireAuth`. Holders `acceptToken` and land at
-`pending_authorization`. An early credit attempt surfaces a typed
-`TRUSTLINE_NOT_AUTHORIZED`; the issuer then `authorize`s both holders, credits the
-client, and the charge runs.
-
-## IOU cross-issuer
-
-```bash
-npx tsx demo/iou-cross-issuer.ts
-```
-
-5 wallets bridging `USD.A` and `USD.B` through a market maker, exercising
-cross-issuer path-finding so a payer holding one issuer's USD can pay a recipient
-who only trusts the other.
-
-## MPT charge
-
-```bash
-npx tsx demo/mpt-charge.ts
-```
-
-Creates an `MPTokenIssuance` (`tfMPTCanTransfer`), authorizes server + client,
-issues 10000 MPT to the client, then the client pays 100 MPT.
-
-## PayChannel (two-terminal)
-
-```bash
+# Streaming micropayments over one channel, two terminals
 npx tsx demo/channel-server.ts   # terminal 1
-npx tsx demo/channel-client.ts   # terminal 2
+npx tsx demo/channel-client.ts   # terminal 2 -- open 10 XRP channel, 5 off-chain claims, close
+
+npx tsx demo/channel-fund.ts             # open tiny -> exhaust -> PaymentChannelFund -> recover -> close
+npx tsx demo/channel-server-open.ts      # client signs the open, server submits it on-chain
+npx tsx demo/channel-auto-close-proof.ts # server sweeper auto-redeems when the client disconnects
 ```
 
-Client opens a 10 XRP channel, makes 5 paid requests settled by off-chain claims
-(cumulative 100k -> 500k drops), then closes the channel. 2 on-chain txs, 5
-off-chain claims.
+A PayChannel settles many payments with off-chain signed claims and only 2
+on-chain transactions (open + close), regardless of how many claims you sign.
 
-## PayChannel fund / exhaustion / recovery
+### Escrow, errors, streaming
 
 ```bash
-npx tsx demo/channel-fund.ts
+npx tsx demo/escrow-lifecycle.ts  # time-locked, crypto-condition, and cancellable escrows
+npx tsx demo/error-showcase.ts    # 16 typed error cases, each fail-fix-validate
+npx tsx examples/stream-llm.ts    # pay-per-token streaming with ChannelStream (offline, no testnet)
 ```
 
-Opens a tiny 200,000-drop channel, exhausts it, and shows the top-up lifecycle.
+---
 
-| Step | What it shows |
-|---|---|
-| Open | `PaymentChannelCreate` with reserve preflight |
-| Claim | Off-chain voucher signing + cumulative tracking |
-| Limit | `cumulative > deposit` -> typed `CHANNEL_EXHAUSTED` |
-| Fund | `PaymentChannelFund` via `fundChannel` (same channelId) |
-| Recover | Rejected claim retried successfully after top-up |
-| Close | `PaymentChannelClaim tfClose` with the latest signature |
+# LLM marketplace -- Claude over MPP
 
-3 on-chain txs (open + fund + close), 6 off-chain claims. The server's metadata
-cache auto-refreshes when a claim's cumulative exceeds the cached deposit, so the
-top-up is detected without manual cache busting.
-
-## PayChannel server-managed open
-
-```bash
-npx tsx demo/channel-server-open.ts
-```
-
-The `action: 'open'` flow: the client signs the `PaymentChannelCreate` but the
-**server** submits it and extracts the `channelId` from the ledger metadata
-(returned via the receipt). Contrast with `channel-client.ts`, where the client
-submits the open tx itself. Then 3 off-chain voucher requests + an on-chain close.
-
-## PayChannel auto-close proof
-
-```bash
-npx tsx demo/channel-auto-close-proof.ts
-```
-
-Proves the server-side sweeper redeems a channel when the client just disconnects
-(never calls `close()`). Runs three controls: a negative control with
-`autoClose: false` (balance stays 0), a positive control via the direct
-`verify()` path, and a full end-to-end run through the real HTTP + mppx layer.
-
-## LLM marketplace -- real Claude over MPP
-
-A real AI agent paying an LLM marketplace for inference on the XRP Ledger. The
-server actually calls Anthropic Claude and bills you in testnet funds. Requires an
-Anthropic API key (free $5 trial credit at console.anthropic.com).
+An AI agent paying an LLM marketplace for inference on the XRP Ledger. The
+server calls Anthropic Claude and bills you in testnet funds. Requires
+an Anthropic API key (free $5 trial credit at console.anthropic.com).
 
 ```bash
 cp demo/llm-marketplace/.env.example demo/llm-marketplace/.env
-# paste your sk-ant-api03-... key, then run any variant (two terminals):
-npx tsx demo/llm-marketplace/charge/server.ts
+# paste your sk-ant-api03-... key
+```
+
+Every variant is two terminals (start the server, then a client) and shares the
+same wire shape: `POST /complete` -> `402` carrying the price -> pay -> `200` +
+an SSE stream of Claude's tokens. The per-call price is **never** on `/info`; it
+lives only in the 402 challenge, so the client holds no local price table.
+
+## Is there an agent here? (server vs client)
+
+- **Server-side**, *every* variant runs a Claude inference -- that is the
+  product being sold (a prompt in, streamed tokens out).
+- **Client-side** (the side that *pays*), most variants are deterministic: read
+  the price from the 402, sign, retry. Only two put an LLM in charge of the
+  **payment decision**: `charge-multi/` and `charge-swap/`.
+
+| Variant | Bills in | Client-side AI agent? |
+|---|---|---|
+| `charge/` | native XRP | no |
+| `charge-iou/` | a USD IOU | no |
+| `charge-mpt/` | MPT credits (`CRED`) | no |
+| `charge-multi/` | XRP **or** USD (the 402 offers both) | **yes** -- Claude picks the currency |
+| `charge-swap/` | `CRD` only (the agent must swap to get it) | **yes** (`client-agent.ts`) / scripted (`client.ts`) |
+| `channel/` | XRP over one PayChannel (3 prompts) | no |
+| `channel-fund/` | same + just-in-time top-up | no |
+
+## Simple variants (no client-side agent)
+
+```bash
+npx tsx demo/llm-marketplace/charge/server.ts      # XRP, then:
 npx tsx demo/llm-marketplace/charge/client.ts
 ```
 
-| Variant | What it bills in |
-|---|---|
-| `charge/` | one Payment per prompt, native XRP |
-| `charge-iou/` | one Payment per prompt, an IOU (test `USD`; swap in any production issuer) |
-| `charge-mpt/` | one Payment per prompt, an MPT (`CRED`, allowlisted credits) |
-| `charge-multi/` | two payment options (XRP + USD IOU) in a single 402; client picks one |
-| `charge-swap/` | marketplace accepts only its own IOU (`CRD`); client holds USD and must swap on the testnet AMM first (`client-agent.ts` does it via a real Claude tool-use loop) |
-| `channel/` | 3 prompts on one PayChannel, eager 5 XRP deposit, off-chain vouchers |
-| `channel-fund/` | same 3 prompts, tiny deposit + just-in-time `PaymentChannelFund` |
+One prompt = one on-chain Payment. `charge-iou/` (port 3008) and `charge-mpt/`
+(port 3009) are identical except for the currency, and `channel/` / `channel-fund/`
+fold several prompts into a single PayChannel (2 on-chain txs instead of N). The
+per-token pricing and PayChannel details are in `demo/llm-marketplace/README.md`.
 
-Full walkthrough, ports, and tunables: `demo/llm-marketplace/README.md`.
-
-## Weather API -- no API key, pay per call
+## `charge-multi/` -- the agent picks the currency
 
 ```bash
-npx tsx demo/weather-api/server.ts   # terminal 1, :3007
-npx tsx demo/weather-api/client.ts   # terminal 2
+npx tsx demo/llm-marketplace/charge-multi/server.ts   # :3010, then:
+npx tsx demo/llm-marketplace/charge-multi/client.ts
 ```
 
-A premium HTTP API that replaces `Authorization: Bearer sk-...` + monthly invoice
-with `HTTP 402 -> on-chain micropayment -> 200`. The credit unit is the
-marketplace's own trustlined IOU (`WTH`). The server holds an issuer + a recipient
-wallet; the client funds a payer, opens a trustline, claims a demo allowance via
-`/faucet-iou`, then pays 1 WTH per `/forecast` call. Full walkthrough:
-`demo/weather-api/README.md`.
+The marketplace accepts **either XRP or a USD IOU** and advertises both in a
+**single 402** (two `WWW-Authenticate: Payment` headers, RFC 9110 §11.6.1; built
+server-side with `Mppx.compose`). The client then:
 
-## Weather API -- real testnet RLUSD
+1. parses both quotes from the 402 -- the first time it sees a price, once per
+   currency;
+2. snapshots its own on-chain XRP + USD balances;
+3. hands Claude the two quotes + the two balances and asks for strict JSON
+   `{"payWith":"XRP"|"USD","reason":"..."}`. The prompt frames the real
+   trade-off (XRP is cheap to settle but volatile; the USD IOU is pegged 1:1 so
+   the budget is predictable). No tools, no `/quote`, no local price table --
+   just the 402 quotes and the model's judgement;
+4. signs the Payment for the chosen challenge (pull mode -> the server submits
+   it) and retries `/complete` to stream the answer.
+
+Pin a branch to demo each path deterministically (or for CI):
+
+```bash
+PAY_WITH=XRP  npx tsx demo/llm-marketplace/charge-multi/client.ts
+PAY_WITH=USD  npx tsx demo/llm-marketplace/charge-multi/client.ts
+PAY_WITH=auto npx tsx demo/llm-marketplace/charge-multi/client.ts  # default = ask Claude
+```
+
+If the LLM answer is unusable, a local heuristic (prefer USD when it fits the
+balance, else XRP) takes over so the demo never wedges on a flaky completion.
+
+## `charge-swap/` -- the agent sources its currency on the DEX
+
+```bash
+npx tsx demo/llm-marketplace/charge-swap/server.ts        # :3011, also opens the AMM pool
+
+# then pick ONE client:
+npx tsx demo/llm-marketplace/charge-swap/client.ts        # scripted treasurer, no LLM
+npx tsx demo/llm-marketplace/charge-swap/client-agent.ts  # agentic: Claude tool-use loop
+```
+
+The hardest scenario. The marketplace bills **exclusively in its own IOU**
+(`CRD`) -- the 402 carries a single challenge, in `CRD`. But the agent is handed
+a *different* asset at bootstrap: a USD-pegged IOU via `/faucet-usd`. It holds
+something the marketplace will not accept and has to work out the rest itself. To
+make the swap actually settle (a freshly minted token has no organic liquidity),
+the **server opens a `USD/CRD` AMM pool at boot** (XLS-30 `AMMCreate`, 1:1
+parity, 0.5% trading fee) via a dedicated LP wallet. `/info` advertises neither
+the pool address nor the price -- only the token *pair*.
+
+What the agent has to figure out, on its own:
+
+1. "I hold 10 USD and 0 CRD; the 402 wants ~0.06 CRD" -- it is short the only
+   currency the marketplace accepts.
+2. **Find the pool.** Its address is never advertised, so it is discovered purely
+   from the token pair via `amm_info` (rippled's path-finder also locates it
+   automatically).
+3. **Size the swap** from the live reserves + fee using the constant-product
+   invariant `(X + dx)(Y - dy) = XY`, fee on the input side:
+   `dx = (X·dy / (Y - dy)) / (1 - fee)` (X = USD reserve, Y = CRD reserve,
+   dy = CRD wanted), plus a ~5% slippage buffer.
+4. **Swap** with a cross-currency Payment from the agent to itself: `Amount` in
+   CRD (exact out), `SendMax` in USD (the spend cap). rippled routes it through
+   the AMM automatically -- no `Paths` field -- and `SendMax` guarantees it never
+   overspends.
+5. **Pay** -- retry `/complete` with a `CRD` credential (a plain CRD Payment to
+   the recipient; the swap is over by now). One API call = **two on-chain txs**:
+   the swap, then the payment.
+
+Two clients run the same five steps; the difference is *who decides*:
+
+- **`client.ts`** hard-codes the plan -- the math, the slippage constant, and the
+  call order all live in the script. Read this to follow the flow with zero model
+  variance.
+- **`client-agent.ts`** hands the wheel to Claude via Anthropic tool-use. The
+  script only bootstraps the wallet, probes the 402 once, and executes whatever
+  tool Claude asks for (capped at 8 turns as a runaway safety net). Every
+  XRPL-touching action shells out to the **`xrpl-up` CLI**, so each command
+  Claude decides to run is printed as a `$ xrpl-up …` line you can watch live:
+
+  | Tool | Backed by | The agent uses it to |
+  |---|---|---|
+  | `check_balances` | `xrpl-up account trust-lines` | read its USD + CRD balances before/after swapping |
+  | `query_amm` | `xrpl-up amm info` | discover the pool from the pair + read reserves + fee (it does the swap math itself) |
+  | `swap_usd_to_cred` | `xrpl-up payment --amount CRD --send-max USD` | run the cross-currency swap with its chosen target + slippage band |
+  | `attempt_payment` | the SDK (no MPP CLI exists) | build the credential + POST `/complete`; returns `{ok:false, reason}` on insufficient CRD so the agent can self-correct |
+
+  Claude plans, calls tools, observes the results, and stops only when
+  `attempt_payment` returns `ok:true`. The script never decides *what* to do --
+  it only executes the commands the model asks for.
+
+Full per-variant pricing, ports, and tunables: `demo/llm-marketplace/README.md`.
+
+---
+
+# Weather API -- pay per call, no API key
+
+A premium HTTP API that replaces `Authorization: Bearer sk-...` + a monthly
+invoice with `HTTP 402 -> on-chain micropayment -> 200`. **No LLM and no agent**:
+the only decision the client makes is *which city* to query. For each call
+`mppx` reads the per-call price from the 402, signs one IOU `Payment`, and
+retries -- fully deterministic. The two variants differ only in the currency.
+
+## `weather-api/` -- billed in the API's own IOU (`WTH`)
+
+```bash
+npx tsx demo/weather-api/server.ts   # :3007, then:
+npx tsx demo/weather-api/client.ts
+```
+
+The server holds an issuer + a recipient wallet, mints `WTH`, and hands the
+client a demo allowance via `/faucet-iou`. The client opens a trustline, claims
+the allowance, then pays 1 WTH per `/forecast` call. This is the prepaid-credits
+model (OpenAI/Stripe-style) with the credit unit moved on-chain as a trustlined
+XRPL IOU.
+
+## `weather-api-rlusd/` -- billed in real testnet RLUSD
 
 ```bash
 cp demo/weather-api-rlusd/.env.example demo/weather-api-rlusd/.env
 # set PAYER_SEED (a pre-funded seed from https://tryrlusd.com)
-npx tsx demo/weather-api-rlusd/server.ts   # terminal 1, :3010
-npx tsx demo/weather-api-rlusd/client.ts   # terminal 2
+npx tsx demo/weather-api-rlusd/server.ts   # :3010, then:
+npx tsx demo/weather-api-rlusd/client.ts
 ```
 
-Same flow as `weather-api/` but billed in **real testnet RLUSD** (Ripple's
-USD-pegged stablecoin) -- the production shape of the IOU charge model, with no
-self-run treasury. The payer wallet comes from `.env` because Ripple has no RLUSD
-faucet; `npx tsx demo/weather-api-rlusd/setup-trustline.ts` bootstraps a wallet's
-trustline. Full walkthrough: `demo/weather-api-rlusd/README.md`.
+The same flow billed in **real testnet RLUSD** (Ripple's USD-pegged stablecoin)
+-- the production shape of the IOU charge model, with no self-run treasury. The
+payer wallet comes from `.env` because Ripple has no RLUSD faucet;
+`npx tsx demo/weather-api-rlusd/setup-trustline.ts` bootstraps a wallet's
+trustline.
 
-## Escrow lifecycle
-
-```bash
-npx tsx demo/escrow-lifecycle.ts
-```
-
-Three escrow scenarios end-to-end, each using fail-fix-validate (trigger the typed
-error first, then do the right thing). ~30 s on testnet (two 15 s time gates).
-
-| # | Scenario | What it shows |
-|---|---|---|
-| 1 | Time-locked (5 XRP) | reserve preflight, `getEscrow` round-trip, `ESCROW_NOT_READY` on early finish, finish + entry deletion |
-| 2 | Crypto-condition (4 XRP) | `generatePreimageCondition()`, `ESCROW_INVALID_FULFILLMENT` on missing/wrong fulfillment, finish with the correct preimage |
-| 3 | Cancellable (3 XRP) | `ESCROW_NOT_READY` on early cancel, refund after `CancelAfter` |
-
-## Error showcase
-
-```bash
-npx tsx demo/error-showcase.ts
-```
-
-16 error cases run sequentially with the fail-fix-validate pattern:
-
-| # | Case | Error triggered | Fix applied |
-|---|---|---|---|
-| 1 | INSUFFICIENT_BALANCE | Unfunded wallet | Fund via faucet |
-| 2 | RECIPIENT_NOT_FOUND | Non-existent destination | Fund destination |
-| 3 | AMOUNT_MISMATCH | Client pays wrong amount | Correct amount |
-| 4 | MISSING_TRUSTLINE | IOU without trustline | Create trustline + issue |
-| 5 | PAYMENT_PATH_FAILED | Rippling disabled | Enable DefaultRipple |
-| 6 | INSUFFICIENT_IOU_BALANCE | Zero token balance | Issue tokens |
-| 7 | MPT_NOT_AUTHORIZED | MPT not authorized | Authorize + issue |
-| 8 | INSUFFICIENT_MPT_BALANCE | Zero MPT balance | Issue tokens |
-| 9 | WRONG_SIGNER | Claim with wrong key | Sign with correct key |
-| 10 | REPLAY_DETECTED | Same cumulative twice | Increment cumulative |
-| 11 | OVERPAY | Claim > channel deposit | Correct amount |
-| 12 | SERVER_REDEEM | Client disappears | Server closes with stored claim |
-| 13 | FINALIZED_CHANNEL | Credential on closed channel | Rejected with CHANNEL_CLOSED |
-| 14 | INSUFFICIENT_RESERVE | Deposit too large for free balance | Top-up via faucet |
-| 15 | PARTIAL_PAYMENT_REJECTED | `tfPartialPayment` flag | Sign without the flag |
-| 16 | DESTINATION_TAG_MISMATCH | Missing required tag | Sign with the matching `DestinationTag` |
-
-## Streaming (offline)
-
-```bash
-npx tsx examples/stream-llm.ts
-```
-
-Simulates pay-per-token LLM streaming with `ChannelStream`, signing a claim every
-10 tokens. No testnet needed.
+Full walkthroughs: `demo/weather-api/README.md` and
+`demo/weather-api-rlusd/README.md`.
 
 ## Notes
 

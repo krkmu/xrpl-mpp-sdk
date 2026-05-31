@@ -55,7 +55,7 @@ async function main(): Promise<void> {
 
   log.header(
     'XRPL MPP -- AI Agent Template',
-    'A real Claude agent paying a Claude-backed service on XRPL testnet',
+    'A Claude agent paying a Claude-backed service on XRPL testnet',
   )
   log.kv([
     ['network', config.network],

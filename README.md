@@ -133,7 +133,7 @@ per-call XRPL Payment settled through the MPP HTTP 402 flow.
   `xrpl-mpp-sdk` charge method. The server-side workload is itself a Claude
   call that drafts the post once payment is validated on-chain.
 - **AI agent process** ([`src/agent.ts`](examples/agent-template/src/agent.ts))
-  -- a real Claude model (Haiku 4.5 by default) with one tool,
+  -- a Claude model (Haiku 4.5 by default) with one tool,
   `generate_linkedin_post`. Holds the payer wallet and signs the XRPL Payment
   transparently when the server replies `402`.
 - **Paid fetch helper** ([`src/client.ts`](examples/agent-template/src/client.ts))
@@ -663,9 +663,9 @@ Every demo is self-contained: zero env vars, ephemeral wallets funded automatica
 | Charge with a **permissioned / allowlisted token** (MPT) | `npx tsx demo/mpt-charge.ts` | testnet |
 | Stream **off-chain micropayments** (PayChannel: open, claim N times, close) | `npx tsx demo/channel-server.ts` + `npx tsx demo/channel-client.ts` (two terminals) | testnet |
 | **Top up / recover** an exhausted PayChannel (open + `PaymentChannelFund` + close) | `npx tsx demo/channel-fund.ts` | testnet |
-| Pay a **real Claude LLM** per prompt in **native XRP** (SSE token stream back) | `npx tsx demo/llm-marketplace/charge/server.ts` + `npx tsx demo/llm-marketplace/charge/client.ts` (two terminals) | testnet |
-| Pay a **real Claude LLM** per prompt in an **IOU** (test `USD`, swap in any issuer) | `npx tsx demo/llm-marketplace/charge-iou/server.ts` + `npx tsx demo/llm-marketplace/charge-iou/client.ts` (two terminals) | testnet |
-| Pay a **real Claude LLM** per prompt in **MPT credits** (`CRED`, allowlisted) | `npx tsx demo/llm-marketplace/charge-mpt/server.ts` + `npx tsx demo/llm-marketplace/charge-mpt/client.ts` (two terminals) | testnet |
+| Pay a **Claude LLM** per prompt in **native XRP** (SSE token stream back) | `npx tsx demo/llm-marketplace/charge/server.ts` + `npx tsx demo/llm-marketplace/charge/client.ts` (two terminals) | testnet |
+| Pay a **Claude LLM** per prompt in an **IOU** (test `USD`, swap in any issuer) | `npx tsx demo/llm-marketplace/charge-iou/server.ts` + `npx tsx demo/llm-marketplace/charge-iou/client.ts` (two terminals) | testnet |
+| Pay a **Claude LLM** per prompt in **MPT credits** (`CRED`, allowlisted) | `npx tsx demo/llm-marketplace/charge-mpt/server.ts` + `npx tsx demo/llm-marketplace/charge-mpt/client.ts` (two terminals) | testnet |
 | Bill **N Claude prompts on one PayChannel** (2 on-chain txs total, eager deposit) | `npx tsx demo/llm-marketplace/channel/server.ts` + `npx tsx demo/llm-marketplace/channel/client.ts` (two terminals) | testnet |
 | Bill **N Claude prompts on one PayChannel** with **just-in-time `PaymentChannelFund`** | `npx tsx demo/llm-marketplace/channel-fund/server.ts` + `npx tsx demo/llm-marketplace/channel-fund/client.ts` (two terminals) | testnet |
 | Run a **paid HTTP API** (no API keys) billed in the API's own IOU (`WTH`) | `npx tsx demo/weather-api/server.ts` + `npx tsx demo/weather-api/client.ts` (two terminals) | testnet |
@@ -748,7 +748,7 @@ xrpl-mpp-sdk/
     channel-fund.ts          # PayChannel top-up lifecycle: open + claim + fund + recover + close (all-in-one)
     escrow-lifecycle.ts      # Escrow lifecycle: time-locked, crypto-condition, cancellable
     error-showcase.ts        # 16 error cases, fail-fix-validate
-    llm-marketplace/         # Real Anthropic Claude over MPP -- five paid-LLM patterns
+    llm-marketplace/         # Anthropic Claude over MPP -- five paid-LLM patterns
       charge/                #   one prompt = one on-chain Payment, native XRP
       charge-iou/            #   one prompt = one on-chain Payment, IOU (test USD; swap any issuer)
       charge-mpt/            #   one prompt = one on-chain Payment, MPT credits (allowlisted)

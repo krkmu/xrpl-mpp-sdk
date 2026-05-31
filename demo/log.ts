@@ -16,13 +16,49 @@ function ts(): string {
 
 // -- Box drawing --
 
+/**
+ * Max content width inside a box before lines get word-wrapped. Sized so
+ * that single tx-hash entries (indent + label + 64-char hash) still fit
+ * on one line, while long prose (e.g. an LLM's reasoning) gets folded.
+ */
+const BOX_MAX_WIDTH = 84
+
+/**
+ * Word-wrap a single line to `width` visible columns, preserving any
+ * leading indentation on the continuation lines so list-style entries
+ * stay aligned. Lines without spaces longer than `width` (e.g. tx
+ * hashes) are returned as-is rather than hard-split.
+ */
+function wrapLine(line: string, width: number): string[] {
+  if (stripAnsi(line).length <= width) return [line]
+
+  const indentMatch = line.match(/^(\s*)/)
+  const indent = indentMatch ? indentMatch[1] : ''
+  const words = line.trim().split(/\s+/)
+
+  const out: string[] = []
+  let current = indent
+  for (const word of words) {
+    const candidate = current === indent ? `${indent}${word}` : `${current} ${word}`
+    if (stripAnsi(candidate).length > width && current !== indent) {
+      out.push(current)
+      current = `${indent}${word}`
+    } else {
+      current = candidate
+    }
+  }
+  if (current !== '') out.push(current)
+  return out.length > 0 ? out : [line]
+}
+
 export function box(lines: string[]): void {
-  const maxLen = Math.max(...lines.map((l) => stripAnsi(l).length))
+  const wrapped = lines.flatMap((l) => wrapLine(l, BOX_MAX_WIDTH))
+  const maxLen = Math.max(...wrapped.map((l) => stripAnsi(l).length))
   const inner = maxLen + 4 // 2 spaces padding each side
   const top = `\u250c${'─'.repeat(inner)}\u2510`
   const bot = `\u2514${'─'.repeat(inner)}\u2518`
   console.log(top)
-  for (const line of lines) {
+  for (const line of wrapped) {
     const visLen = stripAnsi(line).length
     const right = maxLen - visLen
     console.log(`\u2502  ${line}${' '.repeat(right)}  \u2502`)

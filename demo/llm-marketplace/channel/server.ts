@@ -82,7 +82,7 @@ async function pipeStream(webRes: Response, res: ServerResponse): Promise<void> 
 }
 
 async function main() {
-  log.box(['XRPL MPP -- LLM Marketplace (channel mode, real Claude)'])
+  log.box(['XRPL MPP -- LLM Marketplace (channel mode)'])
   log.separator()
 
   // Fail fast if the Anthropic key is missing -- better than crashing mid-request.
@@ -117,7 +117,7 @@ async function main() {
   // Server-side accounting -- shown via /summary at the end.
   let callCount = 0
   let voucherCumulative = '0' // sum of worst-case quotes signed by the client
-  let actualCumulative = 0 // sum of real Anthropic costs
+  let actualCumulative = 0 // sum of actual Anthropic costs
 
   const httpServer = createServer(async (req, res) => {
     const path = req.url ?? '/'
@@ -394,7 +394,7 @@ async function main() {
       'POST /register   -> { publicKey } -> arms the xrpl/channel server method',
       'GET  /open       -> 402 (action: open) -> server submits PaymentChannelCreate',
       'POST /complete   -> 402 (action: voucher) -> SSE token stream',
-      'GET  /summary    -> server-side accounting (voucher vs real cost)',
+      'GET  /summary    -> server-side accounting (voucher vs actual cost)',
       '',
       'Waiting for a client...',
     ])

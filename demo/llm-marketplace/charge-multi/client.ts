@@ -222,7 +222,7 @@ async function decideViaLLM(input: {
     'You are a treasury agent for an AI workload. ' +
     'You decide which currency to pay an LLM marketplace with, for a SINGLE inference call. ' +
     'Reply with strict JSON only -- no preamble, no Markdown fences, no extra text. ' +
-    'Schema: {"payWith":"XRP"|"USD","reason":"<one short sentence>"}.'
+    'Schema: {"payWith":"XRP"|"USD","reason":"<1-2 sentences explaining the trade-off you weighed>"}.'
 
   const user =
     'The marketplace just sent a 402 with two acceptable payment options for this call.\n' +
@@ -254,6 +254,11 @@ async function decideViaLLM(input: {
     .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
     .map((b) => b.text)
     .join('')
+
+  // Log the agent's answer the moment it lands, so the reasoning is
+  // visible even if parsing fails below (and independent of main()'s
+  // later summary logging).
+  log.info(`Claude answered: ${rawText.trim()}`)
 
   // Extract the first {...} block tolerantly -- Haiku occasionally
   // wraps strict JSON in extra whitespace or, rarely, a fence.
@@ -472,7 +477,7 @@ async function main() {
     log.info(`Claude raw output: ${decision.llmRaw}`)
   }
   log.info(`Decision: pay in ${decision.payWith}  (source: ${decision.source})`)
-  log.info(`Reason: ${decision.reason}`)
+  log.info(`Agent reasoning: ${decision.reason}`)
   log.separator()
 
   const chosenKind = decision.payWith
@@ -560,7 +565,7 @@ async function main() {
       : []),
     '',
     `Anthropic usage:   ${done.input_tokens} input + ${done.output_tokens} output tokens`,
-    `Real cost:         ${formatAmount(done.actual_cost, wire, friendlyLabel)}`,
+    `Actual cost:       ${formatAmount(done.actual_cost, wire, friendlyLabel)}`,
     `Paid (quote):      ${formatAmount(done.paid, wire, friendlyLabel)} ` +
       `(worst case, learned from the 402)`,
     `Overpayment:       ${formatAmount(done.overpayment, wire, friendlyLabel)} (${overpayPct}%)`,

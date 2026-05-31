@@ -197,5 +197,5 @@ API keys + monthly invoices assume a human-administered caller. They break
 down when the caller is an **autonomous AI agent** that discovers the API at
 runtime, pays per call from a wallet it controls, and needs a cryptographic
 receipt to reconcile its spend. That is exactly what this template shows
-end-to-end, with real on-chain payments on testnet and a real LLM driving
+end-to-end, with on-chain payments on testnet and an LLM driving
 the agent.

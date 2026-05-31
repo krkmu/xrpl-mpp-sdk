@@ -1,5 +1,5 @@
 /**
- * The agent itself -- a real Claude model with tool-use.
+ * The agent itself -- a Claude model with tool-use.
  *
  * What this file does, in plain English:
  *
@@ -310,7 +310,7 @@ async function main(): Promise<void> {
 
   log.header(
     'XRPL MPP -- AI Agent (standalone CLI)',
-    'Real Claude agent paying a Claude-backed service on testnet',
+    'Claude agent paying a Claude-backed service on testnet',
   )
   log.kv([
     ['network', config.network],

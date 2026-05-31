@@ -401,7 +401,7 @@ async function main() {
       'POST /complete   -> 402 (action: voucher) -> SSE token stream on success',
       '                    402 with Problem Details `amount-exceeds-deposit`',
       '                    when cumulative > on-chain deposit (client tops up + retries)',
-      'GET  /summary    -> server-side accounting (voucher vs real cost)',
+      'GET  /summary    -> server-side accounting (voucher vs actual cost)',
       '',
       'Waiting for a client...',
     ])

@@ -167,7 +167,7 @@ async function main() {
     'Settlement',
     '',
     `Anthropic usage:  ${done.input_tokens} input + ${done.output_tokens} output tokens`,
-    `Real cost:        ${formatAmount(done.actual_cost, unit)}`,
+    `Actual cost:      ${formatAmount(done.actual_cost, unit)}`,
     `Paid (quote):     ${formatAmount(done.paid, unit)} (worst case, learned from the 402)`,
     `Overpayment:      ${formatAmount(done.overpayment, unit)} (${overpayPct}%)`,
     '',

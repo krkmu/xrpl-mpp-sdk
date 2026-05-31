@@ -1,9 +1,8 @@
-# LLM Marketplace -- real Claude over MPP
+# LLM Marketplace -- Claude over MPP
 
 A real-world workflow demo: an AI agent pays an LLM marketplace for
-inference, on the XRP Ledger, via the Machine Payments Protocol. No mocks
-on the payment side, no mocks on the LLM side -- the marketplace really
-calls Anthropic's Claude API and bills you in drops on testnet.
+inference, on the XRP Ledger, via the Machine Payments Protocol. The
+marketplace calls Anthropic's Claude API and bills you in drops on testnet.
 
 ## Demos
 
@@ -122,20 +121,6 @@ npx tsx demo/llm-marketplace/charge/client.ts
 | Anthropic API call | **Real** (uses your `ANTHROPIC_API_KEY`) |
 | Token streaming via SSE | **Real** (cadence is Anthropic's actual rate) |
 | Drop-to-token pricing | **Demo constants** (10/in, 50/out -- preserves the 1:5 input/output ratio of real Haiku) |
-
-### Why pay-up-front (and not pay-after)?
-
-`charge` mode requires the payment to land before the resource is served --
-that is the HTTP 402 contract. We don't know exact Anthropic token counts
-until generation completes, so we quote the worst case (maxTokens). The
-overpayment is the cost of using this MPP-native pattern on a billing model
-that's inherently post-hoc.
-
-The `channel/` demo (below) keeps the same per-call worst-case quote but
-amortises the on-chain cost across N prompts: 2 txs total instead of N.
-The `channel-stream/` variant will go further and sign vouchers per N
-output tokens within a single prompt, so the client pays close to the
-real consumption.
 
 ## Run charge-iou (one prompt, paid in an IOU)
 
@@ -260,23 +245,6 @@ npx tsx demo/llm-marketplace/charge-mpt/server.ts
 npx tsx demo/llm-marketplace/charge-mpt/client.ts
 ```
 
-### Why MPT for an LLM marketplace?
-
-MPTs are the XRPL primitive built specifically for SaaS-style prepaid
-credits:
-
-- **Identifier**: a 64-char hex `mpt_issuance_id` -- no 3-char currency
-  code limit, no issuer/currency hex-encoding gymnastics.
-- **Allowlist** (`requireAuthorization: true`, immutable): the issuer
-  must counter-sign each holder before they can hold a balance. Maps
-  naturally to KYC, subscriptions, invite codes.
-- **Cap** (`maximumAmount`, immutable): the marketplace cannot mint
-  credits beyond the declared supply -- a credible promise on-chain.
-- **Reserve**: a single owner object on the holder (vs a trustline
-  reserve per IOU issuer).
-- **Transferability** (`allowTransfer: true`, immutable): mandatory for
-  any pay-per-X flow.
-
 ### What changes vs `charge/` and `charge-iou/`
 
 | | `charge/` | `charge-iou/` | `charge-mpt/` |
@@ -390,20 +358,6 @@ npx tsx demo/llm-marketplace/channel/client.ts
 6. Settlement summary: per-call breakdown, voucher cumulative vs real
    total Anthropic cost, on-chain footprint (2 txs)
 
-### Why this is interesting
-
-| | `charge/` | `channel/` |
-|---|---|---|
-| Per-prompt UX | Identical (POST /complete, SSE response) | Identical |
-| On-chain txs for N prompts | N | 2 (open + close) |
-| Settlement latency per prompt | One ledger close (~4 s) | None (off-chain voucher) |
-| Worst-case overpayment | Per call | Per call (carries forward in cumulative) |
-
-Same 402 contract, same SSE token stream -- only the underlying XRPL
-primitive changes. With the channel pattern, the *Nth* prompt and the
-1st prompt have identical per-call cost (just signature math), no matter
-how many you fire.
-
 ### Tunables (channel)
 
 `channel/client.ts`:
@@ -463,11 +417,6 @@ The wire protocol is identical -- same `/info`, `/register`, `/open`,
 | On-chain txs | 2 (open + close) | 4 (open + 2 funds + close) |
 | Off-chain claims | 3 | 3 |
 | Per-call overpayment | identical | identical |
-
-The trade-off is explicit: pay more in transaction fees to commit less
-capital up-front. For an agent making thousands of prompts with unknown
-total spend, the lazy variant is materially better. For a known short
-workload, the eager variant is cheaper in fees and simpler.
 
 ### Tunables (channel-fund)
 

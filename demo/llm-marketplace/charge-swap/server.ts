@@ -256,7 +256,8 @@ async function main() {
     }
     log.tx(ammResult.result.hash, log.explorerLink(ammResult.result.hash))
 
-    // Read back amm_info so we can advertise the AMM account address.
+    // Read back amm_info for our own boot log only -- the pool address
+    // is NOT advertised to clients (see /info).
     const info = (await xrpl.request({
       command: 'amm_info',
       asset: { currency: USD_CODE, issuer: issuer.address },
@@ -293,12 +294,15 @@ async function main() {
 
     try {
       if (method === 'GET' && path === '/info') {
-        // We expose the CRD identifier (which trustline to open), the
-        // USD identifier (which trustline the agent will need to *hold*
-        // its bootstrap allowance), and the AMM account so the agent
-        // can query amm_info directly to learn the pool depth before
-        // sizing its swap. We deliberately do NOT advertise the per-
-        // call price -- that arrives in the 402.
+        // We expose the CRD identifier (which trustline to open) and the
+        // USD identifier (which trustline the agent needs to *hold* its
+        // bootstrap allowance). We deliberately do NOT advertise the AMM
+        // pool address: in real-life conditions a marketplace doesn't tell
+        // you where to find liquidity. The agent only learns the token
+        // PAIR (it holds USD, it owes CRD) and must discover the pool
+        // itself on-chain (amm_info by asset pair, or path-finding). We
+        // also do not advertise the per-call price -- that arrives in the
+        // 402.
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(
           JSON.stringify({
@@ -310,12 +314,6 @@ async function main() {
             chargeCurrencyLabel: CRED_CODE,
             bootstrapCurrency: usd,
             bootstrapCurrencyLabel: USD_CODE,
-            amm: {
-              account: ammAccount ?? null,
-              asset: usd,
-              asset2: cred,
-              tradingFeeUnits: AMM_TRADING_FEE,
-            },
             faucetAllowanceUsd: FAUCET_ALLOWANCE_USD,
             payerTrustlineLimit: PAYER_TRUSTLINE_LIMIT,
           }),
@@ -482,8 +480,8 @@ async function main() {
     log.box([
       'Endpoints:',
       '',
-      'GET  /info        -> issuer, recipient, CRD identifier, AMM account',
-      '                     (no pricing -- see 402)',
+      'GET  /info        -> issuer, recipient, CRD + USD identifiers',
+      '                     (no AMM pool address, no pricing -- see 402)',
       `POST /faucet-usd  -> { holder } -> issues ${FAUCET_ALLOWANCE_USD} ${USD_CODE} (demo bootstrap)`,
       'POST /complete    -> { prompt, maxTokens }',
       `                     -> 402 with ONE challenge in ${CRED_CODE} (no USD option)`,

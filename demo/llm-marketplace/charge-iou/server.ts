@@ -154,7 +154,7 @@ async function pipeStream(webRes: Response, res: ServerResponse): Promise<void> 
 }
 
 async function main() {
-  log.box(['XRPL MPP -- LLM Marketplace (charge, IOU billing, real Claude)'])
+  log.box(['XRPL MPP -- LLM Marketplace (charge, IOU billing)'])
   log.separator()
 
   // Fail fast if the Anthropic key is missing -- better than crashing mid-request.
