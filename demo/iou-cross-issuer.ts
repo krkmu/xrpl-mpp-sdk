@@ -14,15 +14,21 @@
  * credited with USD.B even though sender never holds USD.B directly.
  *
  * Run: npx tsx demo/iou-cross-issuer.ts
+ *
+ * Note: `OfferCreate` is the only operation still routed through a raw
+ * xrpl.Client -- order book primitives are intentionally outside the SDK
+ * abstraction surface for now. Everything trustline-related goes through
+ * the Wallet API.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { Receipt } from 'mppx'
 import { Mppx as ClientMppx } from 'mppx/client'
 import { Mppx, Store } from 'mppx/server'
-import { Client, type Wallet } from 'xrpl'
+import { Client } from 'xrpl'
 import { charge as clientCharge } from '../sdk/src/client/Charge.js'
 import { XRPL_EXPLORER_URLS, XRPL_RPC_URLS } from '../sdk/src/constants.js'
 import { charge as serverCharge } from '../sdk/src/server/Charge.js'
+import { Wallet } from '../sdk/src/utils/wallet.js'
 import * as log from './log.js'
 
 const PORT = 3003
@@ -31,7 +37,7 @@ const PORT = 3003
 // public testnet's is materially slower and frequently returns empty until
 // the offer ages by ~minutes. For a self-contained one-command demo we use
 // devnet so the run finishes in under a minute.
-const NETWORK = 'devnet'
+const NETWORK = 'devnet' as const
 
 function toWebRequest(req: IncomingMessage): Request {
   const host = req.headers.host ?? `localhost:${PORT}`
@@ -58,151 +64,77 @@ function explorer(hash: string): string {
   return `${XRPL_EXPLORER_URLS[NETWORK]}${hash}`
 }
 
-async function submit(xrpl: Client, wallet: Wallet, tx: any, label: string) {
-  const r = await xrpl.submitAndWait(tx, { wallet })
-  const meta = r.result.meta as any
-  if (meta?.TransactionResult !== 'tesSUCCESS') {
-    throw new Error(`${label} failed: ${meta?.TransactionResult ?? 'unknown'}`)
-  }
-  log.tx(r.result.hash, explorer(r.result.hash))
-  return r.result.hash
-}
-
-async function readUsdBalance(xrpl: Client, account: string, issuer: string): Promise<string> {
-  const r = await xrpl.request({ command: 'account_lines', account, peer: issuer })
-  const line = (r.result.lines as any[]).find((l) => l.currency === 'USD')
-  return line?.balance ?? '0'
-}
-
 async function main() {
   log.box(['XRPL MPP Demo -- Cross-issuer IOU Charge'])
   log.separator()
 
-  log.loading(`Connecting to XRPL ${NETWORK}...`)
-  const xrpl = new Client(XRPL_RPC_URLS[NETWORK], { timeout: 60_000 })
-  await xrpl.connect()
-
-  log.loading('Funding 5 wallets (issuerA, issuerB, MM, sender, recipient)...')
+  log.loading(
+    `Funding 5 wallets via the ${NETWORK} faucet (issuerA, issuerB, MM, sender, recipient)...`,
+  )
   const [issuerA, issuerB, mm, sender, recipient] = await Promise.all([
-    xrpl.fundWallet(),
-    xrpl.fundWallet(),
-    xrpl.fundWallet(),
-    xrpl.fundWallet(),
-    xrpl.fundWallet(),
-  ]).then((rs) => rs.map((r) => r.wallet))
+    Wallet.fromFaucet({ network: NETWORK }),
+    Wallet.fromFaucet({ network: NETWORK }),
+    Wallet.fromFaucet({ network: NETWORK }),
+    Wallet.fromFaucet({ network: NETWORK }),
+    Wallet.fromFaucet({ network: NETWORK }),
+  ])
 
-  log.wallet('IssuerA  ', issuerA.classicAddress)
-  log.wallet('IssuerB  ', issuerB.classicAddress)
-  log.wallet('Market mkr', mm.classicAddress)
-  log.wallet('Sender   ', sender.classicAddress)
-  log.wallet('Recipient', recipient.classicAddress)
+  log.wallet('IssuerA  ', issuerA.address)
+  log.wallet('IssuerB  ', issuerB.address)
+  log.wallet('Market mkr', mm.address)
+  log.wallet('Sender   ', sender.address)
+  log.wallet('Recipient', recipient.address)
   log.separator()
 
-  log.loading('Enabling DefaultRipple on issuerA, issuerB, and MM...')
+  const usdA = { currency: 'USD', issuer: issuerA.address }
+  const usdB = { currency: 'USD', issuer: issuerB.address }
+
+  log.loading('Issuers (and MM) enable transfers (asfDefaultRipple)...')
   for (const w of [issuerA, issuerB, mm]) {
-    await submit(
-      xrpl,
-      w,
-      { TransactionType: 'AccountSet', Account: w.classicAddress, SetFlag: 8 },
-      'AccountSet',
-    )
+    const r = await w.enableTransfers({ network: NETWORK })
+    log.tx(r.hash, explorer(r.hash))
   }
 
-  log.loading('Setting up trustlines...')
-  // MM trusts both issuers
-  await submit(
-    xrpl,
-    mm,
-    {
-      TransactionType: 'TrustSet',
-      Account: mm.classicAddress,
-      LimitAmount: { currency: 'USD', issuer: issuerA.classicAddress, value: '10000' },
-    },
-    'TrustSet (mm->issuerA)',
-  )
-  await submit(
-    xrpl,
-    mm,
-    {
-      TransactionType: 'TrustSet',
-      Account: mm.classicAddress,
-      LimitAmount: { currency: 'USD', issuer: issuerB.classicAddress, value: '10000' },
-    },
-    'TrustSet (mm->issuerB)',
-  )
-  // Sender trusts issuerA only
-  await submit(
-    xrpl,
-    sender,
-    {
-      TransactionType: 'TrustSet',
-      Account: sender.classicAddress,
-      LimitAmount: { currency: 'USD', issuer: issuerA.classicAddress, value: '10000' },
-    },
-    'TrustSet (sender->issuerA)',
-  )
-  // Recipient trusts issuerB only
-  await submit(
-    xrpl,
-    recipient,
-    {
-      TransactionType: 'TrustSet',
-      Account: recipient.classicAddress,
-      LimitAmount: { currency: 'USD', issuer: issuerB.classicAddress, value: '10000' },
-    },
-    'TrustSet (recipient->issuerB)',
-  )
+  log.loading('MM accepts USD.A and USD.B; sender accepts USD.A; recipient accepts USD.B...')
+  await Promise.all([
+    mm.acceptToken(usdA, { network: NETWORK, limit: '10000' }),
+    mm.acceptToken(usdB, { network: NETWORK, limit: '10000' }),
+    sender.acceptToken(usdA, { network: NETWORK, limit: '10000' }),
+    recipient.acceptToken(usdB, { network: NETWORK, limit: '10000' }),
+  ])
 
-  log.loading('Issuers fund MM with 5000 USD on each side...')
-  await submit(
-    xrpl,
-    issuerA,
-    {
-      TransactionType: 'Payment',
-      Account: issuerA.classicAddress,
-      Destination: mm.classicAddress,
-      Amount: { currency: 'USD', issuer: issuerA.classicAddress, value: '5000' },
-    },
-    'Payment (issuerA->mm)',
+  log.loading(
+    'Issuers fund MM with 5000 USD on each side, then issuerA credits sender with 200 USD.A...',
   )
-  await submit(
-    xrpl,
-    issuerB,
-    {
-      TransactionType: 'Payment',
-      Account: issuerB.classicAddress,
-      Destination: mm.classicAddress,
-      Amount: { currency: 'USD', issuer: issuerB.classicAddress, value: '5000' },
-    },
-    'Payment (issuerB->mm)',
-  )
-
-  log.loading('Sender receives 200 USD.A from issuerA...')
-  await submit(
-    xrpl,
-    issuerA,
-    {
-      TransactionType: 'Payment',
-      Account: issuerA.classicAddress,
-      Destination: sender.classicAddress,
-      Amount: { currency: 'USD', issuer: issuerA.classicAddress, value: '200' },
-    },
-    'Payment (issuerA->sender)',
-  )
+  await Promise.all([
+    issuerA.issue(mm.address, '5000', usdA, { network: NETWORK }),
+    issuerB.issue(mm.address, '5000', usdB, { network: NETWORK }),
+  ])
+  const seed = await issuerA.issue(sender.address, '200', usdA, { network: NETWORK })
+  log.tx(seed.hash, explorer(seed.hash))
 
   log.loading('MM places parity offer bridging USD.A -> USD.B (1:1)...')
-  await submit(
-    xrpl,
-    mm,
-    {
-      TransactionType: 'OfferCreate',
-      Account: mm.classicAddress,
-      // MM gives USD.B in exchange for receiving USD.A
-      TakerGets: { currency: 'USD', issuer: issuerB.classicAddress, value: '500' },
-      TakerPays: { currency: 'USD', issuer: issuerA.classicAddress, value: '500' },
-    },
-    'OfferCreate',
-  )
+  // Order book primitives are not yet covered by the SDK abstraction.
+  const xrpl = new Client(XRPL_RPC_URLS[NETWORK], { timeout: 60_000 })
+  await xrpl.connect()
+  try {
+    const offerResult = await xrpl.submitAndWait(
+      {
+        TransactionType: 'OfferCreate',
+        Account: mm.address,
+        TakerGets: { currency: 'USD', issuer: issuerB.address, value: '500' },
+        TakerPays: { currency: 'USD', issuer: issuerA.address, value: '500' },
+      },
+      { wallet: mm._xrplWallet },
+    )
+    const offerMeta = offerResult.result.meta as any
+    if (offerMeta?.TransactionResult !== 'tesSUCCESS') {
+      throw new Error(`OfferCreate failed: ${offerMeta?.TransactionResult ?? 'unknown'}`)
+    }
+    log.tx(offerResult.result.hash, explorer(offerResult.result.hash))
+  } finally {
+    await xrpl.disconnect()
+  }
 
   // Give the path indexer a moment to pick up the new offer. Testnet's path
   // finder is fed asynchronously and can take several seconds to surface a
@@ -214,21 +146,17 @@ async function main() {
   log.separator()
 
   // Snapshot pre-payment balances for the realised-slippage report.
-  const senderUsdABefore = await readUsdBalance(xrpl, sender.classicAddress, issuerA.classicAddress)
-  const recipientUsdBBefore = await readUsdBalance(
-    xrpl,
-    recipient.classicAddress,
-    issuerB.classicAddress,
-  )
+  const senderUsdABefore = (await sender.holdsToken(usdA, { network: NETWORK }))?.balance ?? '0'
+  const recipientUsdBBefore =
+    (await recipient.holdsToken(usdB, { network: NETWORK }))?.balance ?? '0'
 
   // Recipient's currency is USD.B. The challenge advertises that.
-  const destCurrency = { currency: 'USD', issuer: issuerB.classicAddress }
-  const destCurrencyJson = JSON.stringify(destCurrency)
+  const destCurrencyJson = JSON.stringify(usdB)
   const desiredAmount = '10' // 10 USD.B delivered to recipient
 
   const chargeMethod = serverCharge({
-    recipient: recipient.classicAddress,
-    currency: destCurrency,
+    recipient: recipient.address,
+    currency: usdB,
     network: NETWORK,
     store: Store.memory(),
   })
@@ -279,7 +207,7 @@ async function main() {
   let resolved: { strategy?: string; sourceAmountValue?: string; sourceAmountCurrency?: string } =
     {}
   const clientMethod = clientCharge({
-    seed: sender.seed!,
+    wallet: sender,
     mode: 'pull',
     network: NETWORK,
     slippageBps: 50,
@@ -316,12 +244,9 @@ async function main() {
   }
 
   // Realised-slippage report.
-  const senderUsdAAfter = await readUsdBalance(xrpl, sender.classicAddress, issuerA.classicAddress)
-  const recipientUsdBAfter = await readUsdBalance(
-    xrpl,
-    recipient.classicAddress,
-    issuerB.classicAddress,
-  )
+  const senderUsdAAfter = (await sender.holdsToken(usdA, { network: NETWORK }))?.balance ?? '0'
+  const recipientUsdBAfter =
+    (await recipient.holdsToken(usdB, { network: NETWORK }))?.balance ?? '0'
   const debitedFromSender = (Number(senderUsdABefore) - Number(senderUsdAAfter)).toFixed(6)
   const deliveredToRecipient = (Number(recipientUsdBAfter) - Number(recipientUsdBBefore)).toFixed(6)
   const realizedSlippageBps = Math.round(
@@ -341,7 +266,6 @@ async function main() {
     `Realised slippage:    ${realizedSlippageBps} bps (default cap 50 bps)`,
   ])
 
-  await xrpl.disconnect()
   httpServer.close()
   log.separator()
   log.info('Cross-issuer IOU charge demo complete.')

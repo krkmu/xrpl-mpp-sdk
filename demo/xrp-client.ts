@@ -5,28 +5,22 @@
  */
 import { Receipt } from 'mppx'
 import { Mppx } from 'mppx/client'
-import { Client } from 'xrpl'
 import { charge } from '../sdk/src/client/Charge.js'
-import { XRPL_RPC_URLS } from '../sdk/src/constants.js'
+import { Wallet } from '../sdk/src/utils/wallet.js'
 import * as log from './log.js'
 
 async function main() {
   log.box(['XRPL MPP Client -- XRP Charge'])
   log.separator()
 
-  log.loading('Connecting to XRPL testnet...')
-  const xrplClient = new Client(XRPL_RPC_URLS.testnet)
-  await xrplClient.connect()
-
   log.loading('Funding payer wallet via faucet...')
-  const { wallet } = await xrplClient.fundWallet()
-  await xrplClient.disconnect()
+  const wallet = await Wallet.fromFaucet({ network: 'testnet' })
 
-  log.wallet('Payer', wallet.classicAddress)
+  log.wallet('Payer', wallet.address)
   log.separator()
 
   const chargeMethod = charge({
-    seed: wallet.seed!,
+    wallet,
     mode: 'pull',
     network: 'testnet',
   })

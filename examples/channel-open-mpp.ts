@@ -6,6 +6,7 @@
  *
  * Flow overview:
  *   1. Client builds and signs a PaymentChannelCreate tx locally
+ *      (via `prepareOpenChannelTransaction` -- no xrpl import needed)
  *   2. Client sends the signed tx blob as a credential with action: 'open'
  *   3. Server broadcasts the tx on-chain, extracts the channelId
  *   4. Server initializes cumulative tracking in its store
@@ -20,8 +21,8 @@
  *   XRPL_SEED=sEdYourSeed npx tsx examples/channel-open-mpp.ts
  */
 import { Mppx } from 'mppx/client'
-import { Client, Wallet } from 'xrpl'
-import { channel } from '../sdk/src/channel/client/Channel.js'
+import { channel, prepareOpenChannelTransaction } from '../sdk/src/channel/client/index.js'
+import { Wallet } from '../sdk/src/index.js'
 
 const SEED = process.env.XRPL_SEED
 if (!SEED) {
@@ -32,30 +33,37 @@ if (!SEED) {
 const SERVER_DESTINATION = process.env.XRPL_DEST ?? 'rServerAddress...'
 
 // -- Step 1: Prepare the PaymentChannelCreate tx locally --
+//
+// One call. No xrpl.Client / xrpl.Wallet imports, no manual autofill or
+// disconnect lifecycle. The helper handles all of it (and runs the
+// owner-reserve preflight so a typed INSUFFICIENT_RESERVE surfaces
+// here instead of a tec-bubble at submit time).
 
 const wallet = Wallet.fromSeed(SEED)
-const xrplClient = new Client('wss://s.altnet.rippletest.net:51233')
-await xrplClient.connect()
-
-const channelCreate = {
-  TransactionType: 'PaymentChannelCreate' as const,
-  Account: wallet.classicAddress,
-  Destination: SERVER_DESTINATION,
-  Amount: '10000000', // 10 XRP in drops
-  SettleDelay: 3600, // 1 hour settle delay
-  PublicKey: wallet.publicKey,
-}
-
-const prepared = await xrplClient.autofill(channelCreate)
-const signed = wallet.sign(prepared)
-await xrplClient.disconnect()
+const { txBlob, txHash } = await prepareOpenChannelTransaction({
+  wallet,
+  destination: SERVER_DESTINATION,
+  amount: '10000000', // 10 XRP in drops
+  settleDelay: 3600, // 1 hour settle delay
+  network: 'testnet',
+})
 
 console.log('Channel open via MPP flow -- client-side preparation')
-console.log(`  Account:     ${wallet.classicAddress}`)
+console.log(`  Account:     ${wallet.address}`)
 console.log(`  Destination: ${SERVER_DESTINATION}`)
 console.log(`  Amount:      10 XRP (10000000 drops)`)
-console.log(`  Tx blob:     ${signed.tx_blob.slice(0, 60)}...`)
+console.log(`  Tx hash:     ${txHash}`)
+console.log(`  Tx blob:     ${txBlob.slice(0, 60)}...`)
 console.log()
+
+// Equivalently, via the Wallet method:
+//
+//   const { txBlob, txHash } = await wallet.signOpenChannelTransaction({
+//     destination: SERVER_DESTINATION,
+//     amount: '10000000',
+//     settleDelay: 3600,
+//     network: 'testnet',
+//   })
 
 // -- Step 2: Configure Mppx with the channel method --
 //
@@ -63,7 +71,7 @@ console.log()
 // When the client makes its first request, it passes the signed tx blob
 // as openTransaction in the context.
 
-const channelMethod = channel({ seed: SEED, network: 'testnet' })
+const channelMethod = channel({ wallet, network: 'testnet' })
 
 Mppx.create({
   methods: [channelMethod],
@@ -76,7 +84,7 @@ Mppx.create({
 //   const response = await fetch('https://api.example.com/resource', {
 //     context: {
 //       action: 'open',
-//       openTransaction: signed.tx_blob,
+//       openTransaction: txBlob,
 //     },
 //   })
 //
@@ -89,6 +97,11 @@ Mppx.create({
 //      Destination matches itself, broadcasts on-chain
 //   e) Server extracts channelId from tx metadata, initializes store
 //   f) Server returns 200 with Payment-Receipt containing the channelId
+//
+// Tip: in production, pass `expiresAt: challenge.expires` to
+// `prepareOpenChannelTransaction`. The helper caps `LastLedgerSequence`
+// so the blob cannot land past the challenge expiry, mirroring what the
+// server checks on receive.
 //
 // -- Step 4: Subsequent requests -- voucher (default) --
 //

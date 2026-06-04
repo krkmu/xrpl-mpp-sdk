@@ -32,6 +32,18 @@ export const TEC_RESULT_MAP: Record<string, string> = {
   // tecNO_PERMISSION on the MPT path: holder not authorised when the issuance
   // has lsfMPTRequireAuth set.
   tecNO_PERMISSION: 'MPT_NOT_AUTHORIZED',
+  // MPT-specific runtime failures observed at submit time. `tecMPT_LOCKED`
+  // means the MPT issuance (or the holder's MPToken) was locked by the
+  // issuer between path-finding and submit. `tecMPT_NOT_AUTHORIZED` means
+  // the issuer never authorised this holder for an `RequireAuth` issuance.
+  tecMPT_LOCKED: 'MPT_LOCKED',
+  tecMPT_NOT_AUTHORIZED: 'MPT_NOT_AUTHORIZED',
+  // Escrow-specific. tecCRYPTOCONDITION_ERROR fires when the supplied
+  // fulfillment does not satisfy the on-chain condition (or is malformed).
+  // tecNO_TARGET on EscrowFinish/Cancel means the (Owner, OfferSequence)
+  // pair does not resolve to an Escrow ledger entry.
+  tecCRYPTOCONDITION_ERROR: 'ESCROW_INVALID_FULFILLMENT',
+  tecNO_TARGET: 'ESCROW_NOT_FOUND',
 }
 
 export type XrplErrorCode =
@@ -43,6 +55,7 @@ export type XrplErrorCode =
   | 'TRUSTLINE_NOT_AUTHORIZED'
   | 'TRUSTLINE_REQUIRES_AUTH'
   | 'TRUSTLINE_FROZEN'
+  | 'TRUSTLINE_HAS_BALANCE'
   | 'MISSING_TRUSTLINE'
   | 'ISSUER_GLOBAL_FROZEN'
   | 'INVALID_AMOUNT'
@@ -56,6 +69,15 @@ export type XrplErrorCode =
   | 'SOURCE_MISMATCH'
   | 'SUBMISSION_FAILED'
   | 'MPT_NOT_AUTHORIZED'
+  | 'MPT_LOCKED'
+  | 'MPT_HAS_BALANCE'
+  | 'MPT_ISSUANCE_NOT_FOUND'
+  | 'MPT_NOT_ISSUER'
+  | 'MPT_INVALID_METADATA'
+  | 'ESCROW_NOT_FOUND'
+  | 'ESCROW_NOT_READY'
+  | 'ESCROW_INVALID_FULFILLMENT'
+  | 'ESCROW_FAILED'
 
 export function mapTecResult(tecResult: string): XrplErrorCode | undefined {
   return TEC_RESULT_MAP[tecResult] as XrplErrorCode | undefined

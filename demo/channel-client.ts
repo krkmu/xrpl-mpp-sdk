@@ -4,10 +4,9 @@
  * Run: npx tsx demo/channel-client.ts
  */
 import { Mppx } from 'mppx/client'
-import { Client, dropsToXrp, signPaymentChannelClaim } from 'xrpl'
 import { channel, openChannel } from '../sdk/src/channel/client/Channel.js'
 import { close } from '../sdk/src/channel/server/Channel.js'
-import { XRPL_RPC_URLS } from '../sdk/src/constants.js'
+import { Wallet } from '../sdk/src/utils/wallet.js'
 import * as log from './log.js'
 
 const rawFetch = globalThis.fetch
@@ -16,15 +15,10 @@ async function main() {
   log.box(['XRPL MPP Client -- PayChannel'])
   log.separator()
 
-  log.loading('Connecting to XRPL testnet...')
-  const xrplClient = new Client(XRPL_RPC_URLS.testnet)
-  await xrplClient.connect()
-
   log.loading('Funding funder wallet via faucet...')
-  const { wallet } = await xrplClient.fundWallet()
-  await xrplClient.disconnect()
+  const wallet = await Wallet.fromFaucet({ network: 'testnet' })
 
-  log.wallet('Funder', wallet.classicAddress)
+  log.wallet('Funder', wallet.address)
   log.key('Public key', wallet.publicKey)
   log.separator()
 
@@ -36,7 +30,7 @@ async function main() {
   // Open channel
   log.loading('Opening PaymentChannel (10 XRP, 3600s settle delay)...')
   const { channelId, txHash: createHash } = await openChannel({
-    seed: wallet.seed!,
+    wallet,
     destination: serverAddress,
     amount: '10000000',
     settleDelay: 3600,
@@ -55,7 +49,7 @@ async function main() {
   log.separator()
 
   // Patch fetch for auto 402 handling
-  const channelMethod = channel({ seed: wallet.seed!, network: 'testnet' })
+  const channelMethod = channel({ wallet, network: 'testnet' })
   Mppx.create({ methods: [channelMethod] })
 
   // Make 5 paid requests
@@ -78,13 +72,9 @@ async function main() {
 
   // Close channel
   log.loading('Closing channel on-chain...')
-  const closeSig = signPaymentChannelClaim(
-    channelId,
-    dropsToXrp(lastCumulative).toString(),
-    wallet.privateKey,
-  )
+  const closeSig = wallet.signChannelClaim(channelId, lastCumulative)
   const { txHash: closeHash } = await close({
-    seed: wallet.seed!,
+    wallet,
     channelId,
     amount: lastCumulative,
     signature: closeSig,

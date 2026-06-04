@@ -7,19 +7,24 @@
  * Run: npx tsx demo/error-showcase.ts
  */
 import { Credential, Store } from 'mppx'
-import { Client, dropsToXrp, signPaymentChannelClaim, Wallet } from 'xrpl'
+import { Client } from 'xrpl'
 import { openChannel } from '../sdk/src/channel/client/Channel.js'
 import { close, channel as serverChannel } from '../sdk/src/channel/server/Channel.js'
 import { charge as clientCharge } from '../sdk/src/client/Charge.js'
 import { XRPL_RPC_URLS } from '../sdk/src/constants.js'
+import { fromDrops } from '../sdk/src/Methods.js'
 import { charge as serverCharge } from '../sdk/src/server/Charge.js'
+import { Wallet } from '../sdk/src/utils/wallet.js'
 import * as log from './log.js'
 
 const NETWORK = 'testnet'
-const RPC = XRPL_RPC_URLS[NETWORK]
+
+/** tfPartialPayment flag bit. Used in the PARTIAL_PAYMENT_REJECTED case to
+ * forge a tx the SDK should refuse on the server side. */
+const TF_PARTIAL_PAYMENT = 0x00020000
 
 let caseNum = 0
-const total = 13
+const total = 16
 
 function header(name: string) {
   caseNum++
@@ -63,21 +68,21 @@ async function main() {
   log.separator()
   log.loading('Generating wallets on XRPL testnet...')
 
-  const xrpl = new Client(RPC)
-  await xrpl.connect()
-
-  const { wallet: mainWallet } = await xrpl.fundWallet()
-  const { wallet: recipientWallet } = await xrpl.fundWallet()
-  const { wallet: issuerWallet } = await xrpl.fundWallet()
-  const { wallet: channelFunder } = await xrpl.fundWallet()
-  const { wallet: channelReceiver } = await xrpl.fundWallet()
+  const [mainWallet, recipientWallet, issuerWallet, channelFunder, channelReceiver] =
+    await Promise.all([
+      Wallet.fromFaucet({ network: NETWORK }),
+      Wallet.fromFaucet({ network: NETWORK }),
+      Wallet.fromFaucet({ network: NETWORK }),
+      Wallet.fromFaucet({ network: NETWORK }),
+      Wallet.fromFaucet({ network: NETWORK }),
+    ])
   const wrongSigner = Wallet.generate()
 
-  log.wallet('Main', mainWallet.classicAddress)
-  log.wallet('Recipient', recipientWallet.classicAddress)
-  log.wallet('Issuer', issuerWallet.classicAddress)
-  log.wallet('Channel funder', channelFunder.classicAddress)
-  log.wallet('Channel receiver', channelReceiver.classicAddress)
+  log.wallet('Main', mainWallet.address)
+  log.wallet('Recipient', recipientWallet.address)
+  log.wallet('Issuer', issuerWallet.address)
+  log.wallet('Channel funder', channelFunder.address)
+  log.wallet('Channel receiver', channelReceiver.address)
 
   // ---- CASE 1 ----
   header('INSUFFICIENT_BALANCE')
@@ -87,7 +92,7 @@ async function main() {
     try {
       await runChargeFlow({
         clientSeed: unfunded.seed!,
-        recipient: recipientWallet.classicAddress,
+        recipient: recipientWallet.address,
         amount: '1000000',
         currency: 'XRP',
       })
@@ -97,13 +102,13 @@ async function main() {
     }
 
     log.fix('Funding wallet via testnet faucet...')
-    await xrpl.fundWallet(unfunded)
+    await unfunded.fundFromFaucet({ network: NETWORK })
 
     log.loading('Retrying...')
     try {
       const { hash } = await runChargeFlow({
         clientSeed: unfunded.seed!,
-        recipient: recipientWallet.classicAddress,
+        recipient: recipientWallet.address,
         amount: '1000000',
         currency: 'XRP',
       })
@@ -118,11 +123,11 @@ async function main() {
   header('RECIPIENT_NOT_FOUND')
   {
     const nonExistent = Wallet.generate()
-    log.loading(`Paying to non-existent address ${nonExistent.classicAddress}...`)
+    log.loading(`Paying to non-existent address ${nonExistent.address}...`)
     try {
       await runChargeFlow({
         clientSeed: mainWallet.seed!,
-        recipient: nonExistent.classicAddress,
+        recipient: nonExistent.address,
         amount: '1000000',
         currency: 'XRP',
       })
@@ -132,13 +137,13 @@ async function main() {
     }
 
     log.fix('Funding destination account...')
-    await xrpl.fundWallet(nonExistent)
+    await nonExistent.fundFromFaucet({ network: NETWORK })
 
     log.loading('Retrying...')
     try {
       const { hash } = await runChargeFlow({
         clientSeed: mainWallet.seed!,
-        recipient: nonExistent.classicAddress,
+        recipient: nonExistent.address,
         amount: '1000000',
         currency: 'XRP',
       })
@@ -154,7 +159,7 @@ async function main() {
   {
     log.loading('Client signs 1 drop, server expects 1,000,000 drops...')
     const store = Store.memory()
-    const srv = serverCharge({ recipient: recipientWallet.classicAddress, network: NETWORK, store })
+    const srv = serverCharge({ recipient: recipientWallet.address, network: NETWORK, store })
     const cli = clientCharge({ seed: mainWallet.seed!, mode: 'pull', network: NETWORK })
 
     const wrongChallenge = {
@@ -165,7 +170,7 @@ async function main() {
       request: {
         amount: '1',
         currency: 'XRP',
-        recipient: recipientWallet.classicAddress,
+        recipient: recipientWallet.address,
         methodDetails: { network: NETWORK, reference: crypto.randomUUID() },
       },
     }
@@ -187,7 +192,7 @@ async function main() {
     try {
       const { hash } = await runChargeFlow({
         clientSeed: mainWallet.seed!,
-        recipient: recipientWallet.classicAddress,
+        recipient: recipientWallet.address,
         amount: '1000000',
         currency: 'XRP',
       })
@@ -201,30 +206,21 @@ async function main() {
   // ---- CASE 4 ----
   header('MISSING_TRUSTLINE')
   {
+    const usd = { currency: 'USD', issuer: issuerWallet.address }
     log.loading('Setting up issuer with DefaultRipple...')
-    await xrpl.submitAndWait(
-      { TransactionType: 'AccountSet', Account: issuerWallet.classicAddress, SetFlag: 8 },
-      { wallet: issuerWallet },
-    )
-    await xrpl.submitAndWait(
-      {
-        TransactionType: 'TrustSet',
-        Account: recipientWallet.classicAddress,
-        LimitAmount: { currency: 'USD', issuer: issuerWallet.classicAddress, value: '1000000' },
-      },
-      { wallet: recipientWallet },
-    )
+    await issuerWallet.enableTransfers({ network: NETWORK })
+    await recipientWallet.acceptToken(usd, { network: NETWORK, limit: '1000000' })
 
-    const { wallet: noTrustClient } = await xrpl.fundWallet()
+    const noTrustClient = await Wallet.fromFaucet({ network: NETWORK })
     log.loading('Attempting IOU payment without client trustline...')
-    const currencyJson = JSON.stringify({ currency: 'USD', issuer: issuerWallet.classicAddress })
+    const currencyJson = JSON.stringify(usd)
     try {
       await runChargeFlow({
         clientSeed: noTrustClient.seed!,
-        recipient: recipientWallet.classicAddress,
+        recipient: recipientWallet.address,
         amount: '10',
         currency: currencyJson,
-        serverCurrency: { currency: 'USD', issuer: issuerWallet.classicAddress },
+        serverCurrency: usd,
       })
       log.error('Expected error but succeeded')
     } catch (err: any) {
@@ -232,32 +228,17 @@ async function main() {
     }
 
     log.fix('Creating trustline + issuing tokens...')
-    await xrpl.submitAndWait(
-      {
-        TransactionType: 'TrustSet',
-        Account: noTrustClient.classicAddress,
-        LimitAmount: { currency: 'USD', issuer: issuerWallet.classicAddress, value: '1000000' },
-      },
-      { wallet: noTrustClient },
-    )
-    await xrpl.submitAndWait(
-      {
-        TransactionType: 'Payment',
-        Account: issuerWallet.classicAddress,
-        Destination: noTrustClient.classicAddress,
-        Amount: { currency: 'USD', issuer: issuerWallet.classicAddress, value: '1000' },
-      },
-      { wallet: issuerWallet },
-    )
+    await noTrustClient.acceptToken(usd, { network: NETWORK, limit: '1000000' })
+    await issuerWallet.issue(noTrustClient.address, '1000', usd, { network: NETWORK })
 
     log.loading('Retrying...')
     try {
       const { hash } = await runChargeFlow({
         clientSeed: noTrustClient.seed!,
-        recipient: recipientWallet.classicAddress,
+        recipient: recipientWallet.address,
         amount: '10',
         currency: currencyJson,
-        serverCurrency: { currency: 'USD', issuer: issuerWallet.classicAddress },
+        serverCurrency: usd,
       })
       log.success('Payment succeeded')
       log.tx(hash, log.explorerLink(hash))
@@ -269,95 +250,43 @@ async function main() {
   // ---- CASE 5 ----
   header('PAYMENT_PATH_FAILED')
   {
-    const { wallet: badIssuer } = await xrpl.fundWallet()
-    const { wallet: pathClient } = await xrpl.fundWallet()
-    const { wallet: pathRecipient } = await xrpl.fundWallet()
+    const [badIssuer, pathClient, pathRecipient] = await Promise.all([
+      Wallet.fromFaucet({ network: NETWORK }),
+      Wallet.fromFaucet({ network: NETWORK }),
+      Wallet.fromFaucet({ network: NETWORK }),
+    ])
+    const tst = { currency: 'TST', issuer: badIssuer.address }
 
-    log.loading('Setting up IOU with rippling DISABLED...')
-    await xrpl.submitAndWait(
-      {
-        TransactionType: 'TrustSet',
-        Account: pathClient.classicAddress,
-        LimitAmount: { currency: 'TST', issuer: badIssuer.classicAddress, value: '1000000' },
-      },
-      { wallet: pathClient },
-    )
-    await xrpl.submitAndWait(
-      {
-        TransactionType: 'TrustSet',
-        Account: pathRecipient.classicAddress,
-        LimitAmount: { currency: 'TST', issuer: badIssuer.classicAddress, value: '1000000' },
-      },
-      { wallet: pathRecipient },
-    )
-    await xrpl.submitAndWait(
-      {
-        TransactionType: 'Payment',
-        Account: badIssuer.classicAddress,
-        Destination: pathClient.classicAddress,
-        Amount: { currency: 'TST', issuer: badIssuer.classicAddress, value: '1000' },
-      },
-      { wallet: badIssuer },
-    )
-
-    log.loading('Attempting IOU payment (rippling disabled)...')
-    const currencyJson = JSON.stringify({ currency: 'TST', issuer: badIssuer.classicAddress })
+    // The SDK guards against creating a trustline against an issuer that has
+    // not enabled DefaultRipple -- payments through it would later fail with
+    // tecPATH_DRY. So the error surfaces at trustline-creation time rather
+    // than at payment time, which is strictly better but makes for a different
+    // narrative than the raw-XRPL flow.
+    log.loading('Issuer has rippling DISABLED -- attempting to create trustline...')
     try {
-      await runChargeFlow({
-        clientSeed: pathClient.seed!,
-        recipient: pathRecipient.classicAddress,
-        amount: '10',
-        currency: currencyJson,
-        serverCurrency: { currency: 'TST', issuer: badIssuer.classicAddress },
-      })
+      await pathClient.acceptToken(tst, { network: NETWORK, limit: '1000000' })
       log.error('Expected error but succeeded')
     } catch (err: any) {
       log.error(err.message.slice(0, 120))
     }
 
-    log.fix('Enabling DefaultRipple on issuer + recreating trustlines...')
-    await xrpl.submitAndWait(
-      { TransactionType: 'AccountSet', Account: badIssuer.classicAddress, SetFlag: 8 },
-      { wallet: badIssuer },
-    )
-    // Trustlines created before DefaultRipple don't inherit the flag.
-    // Use fresh wallets so the new trustlines pick up rippling.
-    const { wallet: pathClient2 } = await xrpl.fundWallet()
-    const { wallet: pathRecipient2 } = await xrpl.fundWallet()
-    await xrpl.submitAndWait(
-      {
-        TransactionType: 'TrustSet',
-        Account: pathClient2.classicAddress,
-        LimitAmount: { currency: 'TST', issuer: badIssuer.classicAddress, value: '1000000' },
-      },
-      { wallet: pathClient2 },
-    )
-    await xrpl.submitAndWait(
-      {
-        TransactionType: 'TrustSet',
-        Account: pathRecipient2.classicAddress,
-        LimitAmount: { currency: 'TST', issuer: badIssuer.classicAddress, value: '1000000' },
-      },
-      { wallet: pathRecipient2 },
-    )
-    await xrpl.submitAndWait(
-      {
-        TransactionType: 'Payment',
-        Account: badIssuer.classicAddress,
-        Destination: pathClient2.classicAddress,
-        Amount: { currency: 'TST', issuer: badIssuer.classicAddress, value: '1000' },
-      },
-      { wallet: badIssuer },
-    )
+    log.fix('Enabling DefaultRipple on issuer + creating trustlines...')
+    await badIssuer.enableTransfers({ network: NETWORK })
+    await Promise.all([
+      pathClient.acceptToken(tst, { network: NETWORK, limit: '1000000' }),
+      pathRecipient.acceptToken(tst, { network: NETWORK, limit: '1000000' }),
+    ])
+    await badIssuer.issue(pathClient.address, '1000', tst, { network: NETWORK })
 
-    log.loading('Retrying with fresh trustlines...')
+    log.loading('Retrying payment with rippling enabled...')
+    const currencyJson = JSON.stringify(tst)
     try {
       const { hash } = await runChargeFlow({
-        clientSeed: pathClient2.seed!,
-        recipient: pathRecipient2.classicAddress,
+        clientSeed: pathClient.seed!,
+        recipient: pathRecipient.address,
         amount: '10',
         currency: currencyJson,
-        serverCurrency: { currency: 'TST', issuer: badIssuer.classicAddress },
+        serverCurrency: tst,
       })
       log.success('Payment succeeded')
       log.tx(hash, log.explorerLink(hash))
@@ -369,25 +298,19 @@ async function main() {
   // ---- CASE 6 ----
   header('INSUFFICIENT_IOU_BALANCE')
   {
-    const { wallet: emptyClient } = await xrpl.fundWallet()
-    await xrpl.submitAndWait(
-      {
-        TransactionType: 'TrustSet',
-        Account: emptyClient.classicAddress,
-        LimitAmount: { currency: 'USD', issuer: issuerWallet.classicAddress, value: '1000000' },
-      },
-      { wallet: emptyClient },
-    )
+    const usd = { currency: 'USD', issuer: issuerWallet.address }
+    const emptyClient = await Wallet.fromFaucet({ network: NETWORK })
+    await emptyClient.acceptToken(usd, { network: NETWORK, limit: '1000000' })
 
     log.loading('Client has trustline but zero token balance...')
-    const currencyJson = JSON.stringify({ currency: 'USD', issuer: issuerWallet.classicAddress })
+    const currencyJson = JSON.stringify(usd)
     try {
       await runChargeFlow({
         clientSeed: emptyClient.seed!,
-        recipient: recipientWallet.classicAddress,
+        recipient: recipientWallet.address,
         amount: '10',
         currency: currencyJson,
-        serverCurrency: { currency: 'USD', issuer: issuerWallet.classicAddress },
+        serverCurrency: usd,
       })
       log.error('Expected error but succeeded')
     } catch (err: any) {
@@ -395,24 +318,16 @@ async function main() {
     }
 
     log.fix('Issuer sends tokens to client...')
-    await xrpl.submitAndWait(
-      {
-        TransactionType: 'Payment',
-        Account: issuerWallet.classicAddress,
-        Destination: emptyClient.classicAddress,
-        Amount: { currency: 'USD', issuer: issuerWallet.classicAddress, value: '1000' },
-      },
-      { wallet: issuerWallet },
-    )
+    await issuerWallet.issue(emptyClient.address, '1000', usd, { network: NETWORK })
 
     log.loading('Retrying...')
     try {
       const { hash } = await runChargeFlow({
         clientSeed: emptyClient.seed!,
-        recipient: recipientWallet.classicAddress,
+        recipient: recipientWallet.address,
         amount: '10',
         currency: currencyJson,
-        serverCurrency: { currency: 'USD', issuer: issuerWallet.classicAddress },
+        serverCurrency: usd,
       })
       log.success('Payment succeeded')
       log.tx(hash, log.explorerLink(hash))
@@ -425,45 +340,27 @@ async function main() {
   header('MPT_NOT_AUTHORIZED')
   {
     log.loading('Creating MPT issuance...')
-    const { wallet: mptIssuer } = await xrpl.fundWallet()
-    const { wallet: mptRecipient } = await xrpl.fundWallet()
-    const { wallet: mptClient } = await xrpl.fundWallet()
-
-    await xrpl.submitAndWait(
-      {
-        TransactionType: 'MPTokenIssuanceCreate' as any,
-        Account: mptIssuer.classicAddress,
-        AssetScale: 2,
-        MaximumAmount: '100000000',
-        Flags: 0x00000020,
-      },
-      { wallet: mptIssuer },
-    )
-    const objs = await xrpl.request({
-      command: 'account_objects',
-      account: mptIssuer.classicAddress,
-      type: 'mpt_issuance',
-    } as any)
-    const mptId = (objs.result as any).account_objects[0].mpt_issuance_id
-
-    await xrpl.submitAndWait(
-      {
-        TransactionType: 'MPTokenAuthorize' as any,
-        Account: mptRecipient.classicAddress,
-        MPTokenIssuanceID: mptId,
-      },
-      { wallet: mptRecipient },
-    )
+    const [mptIssuer, mptRecipient, mptClient] = await Promise.all([
+      Wallet.fromFaucet({ network: NETWORK }),
+      Wallet.fromFaucet({ network: NETWORK }),
+      Wallet.fromFaucet({ network: NETWORK }),
+    ])
+    const { mpt } = await mptIssuer.createToken({
+      assetScale: 2,
+      maximumAmount: '100000000',
+      network: NETWORK,
+    })
+    await mptRecipient.acceptToken(mpt, { network: NETWORK })
 
     log.loading('Attempting MPT payment without client authorization...')
-    const currencyJson = JSON.stringify({ mpt_issuance_id: mptId })
+    const currencyJson = JSON.stringify(mpt)
     try {
       await runChargeFlow({
         clientSeed: mptClient.seed!,
-        recipient: mptRecipient.classicAddress,
+        recipient: mptRecipient.address,
         amount: '100',
         currency: currencyJson,
-        serverCurrency: { mpt_issuance_id: mptId },
+        serverCurrency: mpt,
       })
       log.error('Expected error but succeeded')
     } catch (err: any) {
@@ -471,32 +368,17 @@ async function main() {
     }
 
     log.fix('Authorizing client + issuing tokens...')
-    await xrpl.submitAndWait(
-      {
-        TransactionType: 'MPTokenAuthorize' as any,
-        Account: mptClient.classicAddress,
-        MPTokenIssuanceID: mptId,
-      },
-      { wallet: mptClient },
-    )
-    await xrpl.submitAndWait(
-      {
-        TransactionType: 'Payment',
-        Account: mptIssuer.classicAddress,
-        Destination: mptClient.classicAddress,
-        Amount: { mpt_issuance_id: mptId, value: '10000' } as any,
-      },
-      { wallet: mptIssuer },
-    )
+    await mptClient.acceptToken(mpt, { network: NETWORK })
+    await mptIssuer.issue(mptClient.address, '10000', mpt, { network: NETWORK })
 
     log.loading('Retrying...')
     try {
       const { hash } = await runChargeFlow({
         clientSeed: mptClient.seed!,
-        recipient: mptRecipient.classicAddress,
+        recipient: mptRecipient.address,
         amount: '100',
         currency: currencyJson,
-        serverCurrency: { mpt_issuance_id: mptId },
+        serverCurrency: mpt,
       })
       log.success('Payment succeeded')
       log.tx(hash, log.explorerLink(hash))
@@ -508,53 +390,30 @@ async function main() {
   // ---- CASE 8 ----
   header('INSUFFICIENT_MPT_BALANCE')
   {
-    const { wallet: mptIssuer2 } = await xrpl.fundWallet()
-    const { wallet: mptRecip2 } = await xrpl.fundWallet()
-    const { wallet: mptEmpty } = await xrpl.fundWallet()
-
-    await xrpl.submitAndWait(
-      {
-        TransactionType: 'MPTokenIssuanceCreate' as any,
-        Account: mptIssuer2.classicAddress,
-        AssetScale: 2,
-        MaximumAmount: '100000000',
-        Flags: 0x00000020,
-      },
-      { wallet: mptIssuer2 },
-    )
-    const objs2 = await xrpl.request({
-      command: 'account_objects',
-      account: mptIssuer2.classicAddress,
-      type: 'mpt_issuance',
-    } as any)
-    const mptId2 = (objs2.result as any).account_objects[0].mpt_issuance_id
-
-    await xrpl.submitAndWait(
-      {
-        TransactionType: 'MPTokenAuthorize' as any,
-        Account: mptRecip2.classicAddress,
-        MPTokenIssuanceID: mptId2,
-      },
-      { wallet: mptRecip2 },
-    )
-    await xrpl.submitAndWait(
-      {
-        TransactionType: 'MPTokenAuthorize' as any,
-        Account: mptEmpty.classicAddress,
-        MPTokenIssuanceID: mptId2,
-      },
-      { wallet: mptEmpty },
-    )
+    const [mptIssuer2, mptRecip2, mptEmpty] = await Promise.all([
+      Wallet.fromFaucet({ network: NETWORK }),
+      Wallet.fromFaucet({ network: NETWORK }),
+      Wallet.fromFaucet({ network: NETWORK }),
+    ])
+    const { mpt: mpt2 } = await mptIssuer2.createToken({
+      assetScale: 2,
+      maximumAmount: '100000000',
+      network: NETWORK,
+    })
+    await Promise.all([
+      mptRecip2.acceptToken(mpt2, { network: NETWORK }),
+      mptEmpty.acceptToken(mpt2, { network: NETWORK }),
+    ])
 
     log.loading('Client authorized but has zero MPT balance...')
-    const currencyJson = JSON.stringify({ mpt_issuance_id: mptId2 })
+    const currencyJson = JSON.stringify(mpt2)
     try {
       await runChargeFlow({
         clientSeed: mptEmpty.seed!,
-        recipient: mptRecip2.classicAddress,
+        recipient: mptRecip2.address,
         amount: '100',
         currency: currencyJson,
-        serverCurrency: { mpt_issuance_id: mptId2 },
+        serverCurrency: mpt2,
       })
       log.error('Expected error but succeeded')
     } catch (err: any) {
@@ -562,24 +421,16 @@ async function main() {
     }
 
     log.fix('Issuer mints tokens to client...')
-    await xrpl.submitAndWait(
-      {
-        TransactionType: 'Payment',
-        Account: mptIssuer2.classicAddress,
-        Destination: mptEmpty.classicAddress,
-        Amount: { mpt_issuance_id: mptId2, value: '10000' } as any,
-      },
-      { wallet: mptIssuer2 },
-    )
+    await mptIssuer2.issue(mptEmpty.address, '10000', mpt2, { network: NETWORK })
 
     log.loading('Retrying...')
     try {
       const { hash } = await runChargeFlow({
         clientSeed: mptEmpty.seed!,
-        recipient: mptRecip2.classicAddress,
+        recipient: mptRecip2.address,
         amount: '100',
         currency: currencyJson,
-        serverCurrency: { mpt_issuance_id: mptId2 },
+        serverCurrency: mpt2,
       })
       log.success('Payment succeeded')
       log.tx(hash, log.explorerLink(hash))
@@ -594,7 +445,7 @@ async function main() {
     log.loading('Opening PayChannel...')
     const { channelId, txHash: createHash } = await openChannel({
       seed: channelFunder.seed!,
-      destination: channelReceiver.classicAddress,
+      destination: channelReceiver.address,
       amount: '5000000',
       settleDelay: 60,
       network: NETWORK,
@@ -605,11 +456,7 @@ async function main() {
     const srvMethod = serverChannel({ publicKey: channelFunder.publicKey, network: NETWORK, store })
 
     log.loading('Signing claim with WRONG wallet...')
-    const wrongSig = signPaymentChannelClaim(
-      channelId,
-      dropsToXrp('100000').toString(),
-      wrongSigner.privateKey,
-    )
+    const wrongSig = wrongSigner.signChannelClaim(channelId, '100000')
     const ch = {
       id: `err-chan-${Date.now()}`,
       realm: 'error-showcase',
@@ -618,14 +465,14 @@ async function main() {
       request: {
         amount: '100000',
         channelId,
-        recipient: channelReceiver.classicAddress,
+        recipient: channelReceiver.address,
         methodDetails: { network: NETWORK, reference: crypto.randomUUID(), cumulativeAmount: '0' },
       },
     }
     const wrongCred = Credential.from({
       challenge: ch as any,
       payload: { action: 'voucher', channelId, amount: '100000', signature: wrongSig },
-      source: `did:pkh:xrpl:${NETWORK}:${channelFunder.classicAddress}`,
+      source: `did:pkh:xrpl:${NETWORK}:${channelFunder.address}`,
     })
 
     try {
@@ -636,15 +483,11 @@ async function main() {
     }
 
     log.fix('Signing with correct wallet...')
-    const correctSig = signPaymentChannelClaim(
-      channelId,
-      dropsToXrp('100000').toString(),
-      channelFunder.privateKey,
-    )
+    const correctSig = channelFunder.signChannelClaim(channelId, '100000')
     const correctCred = Credential.from({
       challenge: { ...ch, id: `err-chan-fix-${Date.now()}` } as any,
       payload: { action: 'voucher', channelId, amount: '100000', signature: correctSig },
-      source: `did:pkh:xrpl:${NETWORK}:${channelFunder.classicAddress}`,
+      source: `did:pkh:xrpl:${NETWORK}:${channelFunder.address}`,
     })
 
     log.loading('Retrying...')
@@ -665,7 +508,7 @@ async function main() {
     log.loading('Opening PayChannel...')
     const { channelId } = await openChannel({
       seed: channelFunder.seed!,
-      destination: channelReceiver.classicAddress,
+      destination: channelReceiver.address,
       amount: '5000000',
       settleDelay: 60,
       network: NETWORK,
@@ -674,11 +517,7 @@ async function main() {
     const store = Store.memory()
     const srvMethod = serverChannel({ publicKey: channelFunder.publicKey, network: NETWORK, store })
 
-    const sig1 = signPaymentChannelClaim(
-      channelId,
-      dropsToXrp('100000').toString(),
-      channelFunder.privateKey,
-    )
+    const sig1 = channelFunder.signChannelClaim(channelId, '100000')
     const ch1 = {
       id: `replay-1-${Date.now()}`,
       realm: 'error-showcase',
@@ -687,14 +526,14 @@ async function main() {
       request: {
         amount: '100000',
         channelId,
-        recipient: channelReceiver.classicAddress,
+        recipient: channelReceiver.address,
         methodDetails: { network: NETWORK, reference: crypto.randomUUID(), cumulativeAmount: '0' },
       },
     }
     const cred1 = Credential.from({
       challenge: ch1 as any,
       payload: { action: 'voucher', channelId, amount: '100000', signature: sig1 },
-      source: `did:pkh:xrpl:${NETWORK}:${channelFunder.classicAddress}`,
+      source: `did:pkh:xrpl:${NETWORK}:${channelFunder.address}`,
     })
     await srvMethod.verify({ credential: cred1 as any, request: ch1.request })
     log.success('First claim (100,000 drops) accepted')
@@ -704,7 +543,7 @@ async function main() {
     const cred2 = Credential.from({
       challenge: ch2 as any,
       payload: { action: 'voucher', channelId, amount: '100000', signature: sig1 },
-      source: `did:pkh:xrpl:${NETWORK}:${channelFunder.classicAddress}`,
+      source: `did:pkh:xrpl:${NETWORK}:${channelFunder.address}`,
     })
     try {
       await srvMethod.verify({ credential: cred2 as any, request: ch2.request })
@@ -714,16 +553,12 @@ async function main() {
     }
 
     log.fix('Incrementing cumulative to 200,000 drops...')
-    const sig2 = signPaymentChannelClaim(
-      channelId,
-      dropsToXrp('200000').toString(),
-      channelFunder.privateKey,
-    )
+    const sig2 = channelFunder.signChannelClaim(channelId, '200000')
     const ch3 = { ...ch1, id: `replay-3-${Date.now()}` }
     const cred3 = Credential.from({
       challenge: ch3 as any,
       payload: { action: 'voucher', channelId, amount: '200000', signature: sig2 },
-      source: `did:pkh:xrpl:${NETWORK}:${channelFunder.classicAddress}`,
+      source: `did:pkh:xrpl:${NETWORK}:${channelFunder.address}`,
     })
 
     log.loading('Retrying...')
@@ -741,7 +576,7 @@ async function main() {
     log.loading('Opening 1 XRP channel (deposit: 1,000,000 drops)...')
     const { channelId } = await openChannel({
       seed: channelFunder.seed!,
-      destination: channelReceiver.classicAddress,
+      destination: channelReceiver.address,
       amount: '1000000',
       settleDelay: 60,
       network: NETWORK,
@@ -756,11 +591,7 @@ async function main() {
     })
 
     log.loading('Claiming 2,000,000 drops from a 1,000,000 drop channel...')
-    const overSig = signPaymentChannelClaim(
-      channelId,
-      dropsToXrp('2000000').toString(),
-      channelFunder.privateKey,
-    )
+    const overSig = channelFunder.signChannelClaim(channelId, '2000000')
     const chOver = {
       id: `over-${Date.now()}`,
       realm: 'error-showcase',
@@ -769,14 +600,14 @@ async function main() {
       request: {
         amount: '2000000',
         channelId,
-        recipient: channelReceiver.classicAddress,
+        recipient: channelReceiver.address,
         methodDetails: { network: NETWORK, reference: crypto.randomUUID(), cumulativeAmount: '0' },
       },
     }
     const credOver = Credential.from({
       challenge: chOver as any,
       payload: { action: 'voucher', channelId, amount: '2000000', signature: overSig },
-      source: `did:pkh:xrpl:${NETWORK}:${channelFunder.classicAddress}`,
+      source: `did:pkh:xrpl:${NETWORK}:${channelFunder.address}`,
     })
 
     try {
@@ -796,11 +627,7 @@ async function main() {
       store: retryStore,
     })
 
-    const goodSig = signPaymentChannelClaim(
-      channelId,
-      dropsToXrp('500000').toString(),
-      channelFunder.privateKey,
-    )
+    const goodSig = channelFunder.signChannelClaim(channelId, '500000')
     const chGood = {
       id: `over-fix-${Date.now()}`,
       realm: 'error-showcase',
@@ -809,14 +636,14 @@ async function main() {
       request: {
         amount: '500000',
         channelId,
-        recipient: channelReceiver.classicAddress,
+        recipient: channelReceiver.address,
         methodDetails: { network: NETWORK, reference: crypto.randomUUID(), cumulativeAmount: '0' },
       },
     }
     const credGood = Credential.from({
       challenge: chGood as any,
       payload: { action: 'voucher', channelId, amount: '500000', signature: goodSig },
-      source: `did:pkh:xrpl:${NETWORK}:${channelFunder.classicAddress}`,
+      source: `did:pkh:xrpl:${NETWORK}:${channelFunder.address}`,
     })
 
     log.loading('Retrying...')
@@ -837,7 +664,7 @@ async function main() {
     log.loading('Opening PayChannel (5 XRP)...')
     const { channelId, txHash: createHash } = await openChannel({
       seed: channelFunder.seed!,
-      destination: channelReceiver.classicAddress,
+      destination: channelReceiver.address,
       amount: '5000000',
       settleDelay: 60,
       network: NETWORK,
@@ -850,11 +677,7 @@ async function main() {
     // Client makes 3 claims then disappears
     let lastAmount = '0'
     for (const cumDrops of ['100000', '200000', '300000']) {
-      const sig = signPaymentChannelClaim(
-        channelId,
-        dropsToXrp(cumDrops).toString(),
-        channelFunder.privateKey,
-      )
+      const sig = channelFunder.signChannelClaim(channelId, cumDrops)
       const ch = {
         id: `redeem-${cumDrops}-${Date.now()}`,
         realm: 'error-showcase',
@@ -863,7 +686,7 @@ async function main() {
         request: {
           amount: '100000',
           channelId,
-          recipient: channelReceiver.classicAddress,
+          recipient: channelReceiver.address,
           methodDetails: {
             network: NETWORK,
             reference: crypto.randomUUID(),
@@ -874,7 +697,7 @@ async function main() {
       const cred = Credential.from({
         challenge: ch as any,
         payload: { action: 'voucher', channelId, amount: cumDrops, signature: sig },
-        source: `did:pkh:xrpl:${NETWORK}:${channelFunder.classicAddress}`,
+        source: `did:pkh:xrpl:${NETWORK}:${channelFunder.address}`,
       })
       await srvMethod.verify({ credential: cred as any, request: ch.request })
       lastAmount = cumDrops
@@ -902,13 +725,8 @@ async function main() {
     log.tx(redeemHash, log.explorerLink(redeemHash))
 
     // Verify receiver balance increased
-    const receiverInfo = await xrpl.request({
-      command: 'account_info',
-      account: channelReceiver.classicAddress,
-    })
-    log.info(
-      `Receiver balance: ${dropsToXrp(receiverInfo.result.account_data.Balance as string)} XRP`,
-    )
+    const receiverBalance = await channelReceiver.getXrpBalance({ network: NETWORK })
+    log.info(`Receiver balance: ${fromDrops(receiverBalance)} XRP`)
   }
 
   // ---- CASE 13 ----
@@ -917,7 +735,7 @@ async function main() {
     log.loading('Opening PayChannel (5 XRP)...')
     const { channelId, txHash: createHash } = await openChannel({
       seed: channelFunder.seed!,
-      destination: channelReceiver.classicAddress,
+      destination: channelReceiver.address,
       amount: '5000000',
       settleDelay: 60,
       network: NETWORK,
@@ -929,11 +747,7 @@ async function main() {
 
     // Make 1 successful voucher claim
     const cumDrops = '100000'
-    const sig = signPaymentChannelClaim(
-      channelId,
-      dropsToXrp(cumDrops).toString(),
-      channelFunder.privateKey,
-    )
+    const sig = channelFunder.signChannelClaim(channelId, cumDrops)
     const ch = {
       id: `finalized-1-${Date.now()}`,
       realm: 'error-showcase',
@@ -942,14 +756,14 @@ async function main() {
       request: {
         amount: cumDrops,
         channelId,
-        recipient: channelReceiver.classicAddress,
+        recipient: channelReceiver.address,
         methodDetails: { network: NETWORK, reference: crypto.randomUUID(), cumulativeAmount: '0' },
       },
     }
     const cred = Credential.from({
       challenge: ch as any,
       payload: { action: 'voucher', channelId, amount: cumDrops, signature: sig },
-      source: `did:pkh:xrpl:${NETWORK}:${channelFunder.classicAddress}`,
+      source: `did:pkh:xrpl:${NETWORK}:${channelFunder.address}`,
     })
     await srvMethod.verify({ credential: cred as any, request: ch.request })
     log.success(`First claim accepted (${cumDrops} drops)`)
@@ -974,11 +788,7 @@ async function main() {
     // Attempt another voucher on the finalized channel
     log.loading('Attempting another voucher on finalized channel...')
     const newCum = '200000'
-    const newSig = signPaymentChannelClaim(
-      channelId,
-      dropsToXrp(newCum).toString(),
-      channelFunder.privateKey,
-    )
+    const newSig = channelFunder.signChannelClaim(channelId, newCum)
     const ch2 = {
       id: `finalized-2-${Date.now()}`,
       realm: 'error-showcase',
@@ -987,7 +797,7 @@ async function main() {
       request: {
         amount: '100000',
         channelId,
-        recipient: channelReceiver.classicAddress,
+        recipient: channelReceiver.address,
         methodDetails: {
           network: NETWORK,
           reference: crypto.randomUUID(),
@@ -998,7 +808,7 @@ async function main() {
     const cred2 = Credential.from({
       challenge: ch2 as any,
       payload: { action: 'voucher', channelId, amount: newCum, signature: newSig },
-      source: `did:pkh:xrpl:${NETWORK}:${channelFunder.classicAddress}`,
+      source: `did:pkh:xrpl:${NETWORK}:${channelFunder.address}`,
     })
 
     try {
@@ -1009,9 +819,205 @@ async function main() {
     }
   }
 
-  await xrpl.disconnect()
+  // ---- CASE 14 ----
+  header('INSUFFICIENT_RESERVE')
+  {
+    log.loading('Funding a fresh wallet via faucet (~100 XRP)...')
+    const reserveTester = await Wallet.fromFaucet({ network: NETWORK })
+    const initialBalance = await reserveTester.getXrpBalance({ network: NETWORK })
+    log.info(`Tester balance: ${fromDrops(initialBalance)} XRP`)
+
+    // Try to open a channel that locks more XRP than the wallet has free
+    // after the base + owner reserve. The SDK runs an owner-reserve preflight
+    // inside `openChannel` and surfaces a typed INSUFFICIENT_RESERVE before
+    // the tx is even signed.
+    const oversizedDeposit = '99000000'
+    log.loading(
+      `Attempting to open a PayChannel locking ${fromDrops(oversizedDeposit)} XRP (would leave the wallet under the reserve floor)...`,
+    )
+    try {
+      await openChannel({
+        wallet: reserveTester,
+        destination: recipientWallet.address,
+        amount: oversizedDeposit,
+        settleDelay: 60,
+        network: NETWORK,
+      })
+      log.error('Expected INSUFFICIENT_RESERVE but the channel opened anyway.')
+    } catch (err: any) {
+      log.error(err.message.slice(0, 220))
+    }
+
+    log.fix('Top up the wallet via the faucet to cover the deposit + owner reserve...')
+    await reserveTester.fundFromFaucet({ network: NETWORK })
+    const toppedBalance = await reserveTester.getXrpBalance({ network: NETWORK })
+    log.info(`Tester balance now: ${fromDrops(toppedBalance)} XRP`)
+
+    log.loading('Retrying the channel open with the same deposit...')
+    try {
+      const { channelId, txHash } = await openChannel({
+        wallet: reserveTester,
+        destination: recipientWallet.address,
+        amount: oversizedDeposit,
+        settleDelay: 60,
+        network: NETWORK,
+      })
+      log.success(`Channel opened: ${channelId}`)
+      log.tx(txHash, log.explorerLink(txHash))
+    } catch (err: any) {
+      log.error(`Retry failed: ${err.message.slice(0, 200)}`)
+    }
+  }
+
+  // ---- CASE 15 ----
+  header('PARTIAL_PAYMENT_REJECTED')
+  {
+    // The SDK's high-level Wallet API never sets tfPartialPayment, so we have
+    // to drop down to xrpl.js to simulate a malicious client that hand-crafts
+    // a Payment with the flag set. This is the only place in `error-showcase`
+    // that imports `Client` from xrpl, and it does so on purpose: it exists to
+    // prove that the *server* defends against this attack regardless of how
+    // the client built the tx.
+    log.loading('Crafting a Payment with tfPartialPayment (simulated malicious client)...')
+    const xrpl = new Client(XRPL_RPC_URLS[NETWORK])
+    await xrpl.connect()
+    let blob: string
+    try {
+      const tx: any = {
+        TransactionType: 'Payment',
+        Account: mainWallet.address,
+        Destination: recipientWallet.address,
+        Amount: '1000000',
+        Flags: TF_PARTIAL_PAYMENT,
+      }
+      const prepared = await xrpl.autofill(tx)
+      const signed = mainWallet._xrplWallet.sign(prepared)
+      blob = signed.tx_blob
+    } finally {
+      await xrpl.disconnect()
+    }
+
+    const store = Store.memory()
+    const srv = serverCharge({ recipient: recipientWallet.address, network: NETWORK, store })
+
+    const ch = {
+      id: `partial-${Date.now()}`,
+      realm: 'error-showcase',
+      method: 'xrpl' as const,
+      intent: 'charge' as const,
+      request: {
+        amount: '1000000',
+        currency: 'XRP',
+        recipient: recipientWallet.address,
+        methodDetails: { network: NETWORK, reference: crypto.randomUUID() },
+      },
+    }
+    const partialCred = Credential.from({
+      challenge: ch as any,
+      payload: { type: 'transaction', blob },
+      source: `did:pkh:xrpl:${NETWORK}:${mainWallet.address}`,
+    })
+
+    log.loading('Server verifies the malicious credential (must reject)...')
+    try {
+      await srv.verify({ credential: partialCred as any, request: ch.request })
+      log.error('Server unexpectedly accepted a tfPartialPayment credential.')
+    } catch (err: any) {
+      log.error(err.message.slice(0, 200))
+    }
+
+    log.fix('Client signs WITHOUT tfPartialPayment (the standard SDK path)...')
+    log.loading('Retrying via the regular charge flow...')
+    try {
+      const { hash } = await runChargeFlow({
+        clientSeed: mainWallet.seed!,
+        recipient: recipientWallet.address,
+        amount: '1000000',
+        currency: 'XRP',
+      })
+      log.success('Standard payment accepted')
+      log.tx(hash, log.explorerLink(hash))
+    } catch (err: any) {
+      log.error(`Retry failed: ${err.message}`)
+    }
+  }
+
+  // ---- CASE 16 ----
+  header('DESTINATION_TAG_MISMATCH')
+  {
+    // The server's challenge requires a specific DestinationTag. The client
+    // signs a Payment without it -- the server's verify catches the mismatch
+    // before submitting and surfaces a typed SUBMISSION_FAILED ('DestinationTag
+    // mismatch ...'). Then we retry with the matching tag and confirm
+    // settlement.
+    const expectedTag = 1234567
+
+    const store = Store.memory()
+    const srv = serverCharge({ recipient: recipientWallet.address, network: NETWORK, store })
+    const cli = clientCharge({ wallet: mainWallet, mode: 'pull', network: NETWORK })
+
+    log.loading(`Server expects DestinationTag=${expectedTag} on the inbound Payment...`)
+    log.loading('Client builds a credential WITHOUT the tag (the request lies about the schema)...')
+    const wrongCh = {
+      id: `tag-bad-${Date.now()}`,
+      realm: 'error-showcase',
+      method: 'xrpl' as const,
+      intent: 'charge' as const,
+      request: {
+        amount: '1000000',
+        currency: 'XRP',
+        recipient: recipientWallet.address,
+        methodDetails: { network: NETWORK, reference: crypto.randomUUID() },
+      },
+    }
+    const wrongCredStr = await cli.createCredential({ challenge: wrongCh })
+    const wrongCred = Credential.deserialize(wrongCredStr)
+
+    try {
+      await srv.verify({
+        credential: wrongCred as any,
+        request: {
+          ...wrongCh.request,
+          methodDetails: { ...wrongCh.request.methodDetails, destinationTag: expectedTag },
+        },
+      })
+      log.error('Server unexpectedly accepted a Payment that lacked the required tag.')
+    } catch (err: any) {
+      log.error(err.message.slice(0, 200))
+    }
+
+    log.fix(`Client now signs WITH DestinationTag=${expectedTag}...`)
+    const okCh = {
+      id: `tag-ok-${Date.now()}`,
+      realm: 'error-showcase',
+      method: 'xrpl' as const,
+      intent: 'charge' as const,
+      request: {
+        amount: '1000000',
+        currency: 'XRP',
+        recipient: recipientWallet.address,
+        methodDetails: {
+          network: NETWORK,
+          reference: crypto.randomUUID(),
+          destinationTag: expectedTag,
+        },
+      },
+    }
+    const okCredStr = await cli.createCredential({ challenge: okCh })
+    const okCred = Credential.deserialize(okCredStr)
+
+    log.loading('Retrying with the matching tag...')
+    try {
+      const receipt = await srv.verify({ credential: okCred as any, request: okCh.request })
+      log.success(`Tagged payment accepted (ref: ${receipt.reference})`)
+      log.tx(receipt.reference, log.explorerLink(receipt.reference))
+    } catch (err: any) {
+      log.error(`Retry failed: ${err.message.slice(0, 200)}`)
+    }
+  }
+
   log.separator()
-  log.box(['All 13 error cases completed'])
+  log.box([`All ${total} error cases completed`])
   process.exit(0)
 }
 

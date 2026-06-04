@@ -1,13 +1,15 @@
 import { Method, Receipt, type Store } from 'mppx'
-import { Client, decode, hashes, Wallet } from 'xrpl'
+import { Client, decode, hashes } from 'xrpl'
 import { XRPL_RPC_URLS } from '../constants.js'
 import { fromTecResult, replayDetected, verificationFailed } from '../errors.js'
 import * as Methods from '../Methods.js'
 import type { ChargeServerConfig, XrplCurrency } from '../types.js'
 import { isIOU, isMPT, parseCurrency, serializeCurrency } from '../utils/currency.js'
 import { classicAddressFromDID } from '../utils/did.js'
+import { assertTxExpiresWithinChallenge, readCurrentLedgerIndex } from '../utils/ledger-time.js'
 import { ensureMPTHolding } from '../utils/mpt.js'
 import { ensureTrustline } from '../utils/trustline.js'
+import { Wallet } from '../utils/wallet.js'
 
 /** Default max challenge age: 5 minutes. */
 const DEFAULT_MAX_CHALLENGE_AGE_MS = 5 * 60 * 1000
@@ -47,6 +49,7 @@ export function charge(parameters: charge.Parameters) {
     autoTrustline = false,
     autoTrustlineLimit,
     autoMPTAuthorize = false,
+    wallet: walletInput,
     seed,
     network = 'testnet',
     rpcUrl: customRpcUrl,
@@ -58,21 +61,21 @@ export function charge(parameters: charge.Parameters) {
     pollInterval = 1_000,
   } = parameters
 
-  if ((autoTrustline || autoMPTAuthorize) && !seed) {
+  const recipientWallet: Wallet | undefined =
+    walletInput ?? (seed ? Wallet.fromSeed(seed) : undefined)
+
+  if ((autoTrustline || autoMPTAuthorize) && !recipientWallet) {
     throw new Error(
-      '[xrpl-mpp-sdk] seed is required when autoTrustline or autoMPTAuthorize is enabled. ' +
+      '[xrpl-mpp-sdk] wallet (or seed) is required when autoTrustline or autoMPTAuthorize is enabled. ' +
         'The server needs to sign TrustSet/MPTokenAuthorize transactions for the recipient account.',
     )
   }
 
-  if (seed) {
-    const recipientWallet = Wallet.fromSeed(seed)
-    if (recipientWallet.classicAddress !== recipient) {
-      throw new Error(
-        `[xrpl-mpp-sdk] seed does not match recipient. ` +
-          `Seed derives ${recipientWallet.classicAddress}, but recipient is ${recipient}.`,
-      )
-    }
+  if (recipientWallet && recipientWallet.address !== recipient) {
+    throw new Error(
+      `[xrpl-mpp-sdk] recipient wallet does not match recipient address. ` +
+        `Wallet derives ${recipientWallet.address}, but recipient is ${recipient}.`,
+    )
   }
 
   if (!store && requireStore) {
@@ -87,32 +90,21 @@ export function charge(parameters: charge.Parameters) {
 
   // Auto-setup runs at most once per process: trustline / MPT auth on the
   // recipient is created lazily on first verify rather than at boot, so a
-  // restart with no traffic doesn't burn a TrustSet fee.
+  // restart with no traffic doesn't burn a TrustSet fee. For end-to-end
+  // IOU charge against a fresh recipient, the path resolver on the client
+  // requires the trustline to exist before signing -- in that case the
+  // server should call {@link prepareRecipient} eagerly at boot instead
+  // of relying on this lazy setup.
   let recipientSetupDone = false
   async function ensureRecipientSetup(client: Client): Promise<void> {
-    if (recipientSetupDone || !currency) return
-    const wallet = seed ? Wallet.fromSeed(seed) : undefined
-    if (!wallet) return
-
-    if (isIOU(currency) && autoTrustline) {
-      await ensureTrustline({
-        client,
-        wallet,
-        currency,
-        autoTrustline: true,
-        trustlineLimit: autoTrustlineLimit,
-      })
-    }
-
-    if (isMPT(currency) && autoMPTAuthorize) {
-      await ensureMPTHolding({
-        client,
-        wallet,
-        mpt: currency,
-        autoMPTAuthorize: true,
-      })
-    }
-
+    if (recipientSetupDone) return
+    await runRecipientSetup(client, {
+      currency,
+      recipientWallet,
+      autoTrustline,
+      autoTrustlineLimit,
+      autoMPTAuthorize,
+    })
     recipientSetupDone = true
   }
 
@@ -228,11 +220,20 @@ export function charge(parameters: charge.Parameters) {
       }
     }
 
+    const challengeExpires = (challenge as { expires?: string }).expires
+
     const client = new Client(rpcUrl)
     await client.connect()
 
     try {
       await ensureRecipientSetup(client)
+
+      // Pull mode: reject blobs whose LastLedgerSequence would let them
+      // land past challenge.expires *before* spending a submit. Push mode
+      // does the same check after fetching the validated tx in verifyPush.
+      if (preDecodedTx && challengeExpires) {
+        await assertChallengeExpiryRespected(client, preDecodedTx, challengeExpires)
+      }
 
       switch (payload.type) {
         case 'hash': {
@@ -248,6 +249,7 @@ export function charge(parameters: charge.Parameters) {
             expectedDestinationTag,
             expectedSourceTag,
             challengeId,
+            challengeExpires,
           )
         }
         case 'transaction': {
@@ -274,6 +276,40 @@ export function charge(parameters: charge.Parameters) {
 }
 
 /**
+ * Run the LastLedgerSequence vs `challenge.expires` check, wrapping any
+ * failure into a typed `VerificationFailedError` (`SUBMISSION_FAILED`).
+ *
+ * No-op when `tx.LastLedgerSequence` is missing -- the field is
+ * technically optional; xrpl.js's autofill always sets it but a
+ * hand-crafted tx might not.
+ */
+async function assertChallengeExpiryRespected(
+  client: Client,
+  tx: { LastLedgerSequence?: number },
+  expiresIso: string,
+): Promise<void> {
+  const txLLS = tx.LastLedgerSequence
+  if (typeof txLLS !== 'number') return
+  const currentLedgerIndex = await readCurrentLedgerIndex(client)
+  try {
+    assertTxExpiresWithinChallenge({
+      txLastLedgerSequence: txLLS,
+      currentLedgerIndex,
+      expiresIso,
+    })
+  } catch (err: any) {
+    const reason =
+      typeof err?.message === 'string'
+        ? err.message
+        : 'LastLedgerSequence vs challenge expiry check failed'
+    // Strip the `[CODE] ` prefix the helper adds so verificationFailed's
+    // own prefix is not duplicated.
+    const detail = reason.replace(/^\[[^\]]+\]\s*/, '')
+    throw verificationFailed('SUBMISSION_FAILED', detail)
+  }
+}
+
+/**
  * Verify a push-mode credential (client already submitted, we have the hash).
  */
 async function verifyPush(
@@ -288,6 +324,7 @@ async function verifyPush(
   expectedDestinationTag?: number,
   expectedSourceTag?: number,
   challengeId?: string,
+  expiresIso?: string,
 ): Promise<Receipt.Receipt> {
   // Claim the tx hash before verification to close the TOCTOU window: in
   // distributed deployments two instances could otherwise both pass the
@@ -314,6 +351,10 @@ async function verifyPush(
   if (!meta || meta.TransactionResult !== 'tesSUCCESS') {
     const tecResult = meta?.TransactionResult ?? 'unknown'
     throw fromTecResult(tecResult, `Transaction ${txHash} did not succeed`)
+  }
+
+  if (expiresIso) {
+    await assertChallengeExpiryRespected(client, tx, expiresIso)
   }
 
   validatePaymentFields(
@@ -551,5 +592,137 @@ export declare namespace charge {
     pollTimeout?: number
     /** Polling interval for tx validation in milliseconds. @default 1000 */
     pollInterval?: number
+  }
+}
+
+/**
+ * Run the recipient-side trustline / MPT-auth setup once. Shared between
+ * the lazy path inside `charge()` and the eager `prepareRecipient()`.
+ */
+async function runRecipientSetup(
+  client: Client,
+  config: {
+    currency?: XrplCurrency
+    recipientWallet?: Wallet
+    autoTrustline: boolean
+    autoTrustlineLimit?: string
+    autoMPTAuthorize: boolean
+  },
+): Promise<void> {
+  const { currency, recipientWallet, autoTrustline, autoTrustlineLimit, autoMPTAuthorize } = config
+  if (!currency || !recipientWallet) return
+  const xrplWallet = recipientWallet._xrplWallet
+
+  if (isIOU(currency) && autoTrustline) {
+    await ensureTrustline({
+      client,
+      wallet: xrplWallet,
+      currency,
+      autoTrustline: true,
+      trustlineLimit: autoTrustlineLimit,
+    })
+  }
+
+  if (isMPT(currency) && autoMPTAuthorize) {
+    await ensureMPTHolding({
+      client,
+      wallet: xrplWallet,
+      mpt: currency,
+      autoMPTAuthorize: true,
+    })
+  }
+}
+
+/**
+ * Eagerly run the recipient-side `TrustSet` (when {@link charge.Parameters.autoTrustline}
+ * is on and the currency is an IOU) and `MPTokenAuthorize` (when
+ * {@link charge.Parameters.autoMPTAuthorize} is on and the currency is
+ * an MPT) for the recipient wallet.
+ *
+ * Why call this instead of relying on lazy setup inside `verify()`?
+ *
+ * For IOU charges, the client-side path resolver requires the recipient's
+ * trustline to *already* exist in order to find a viable
+ * `ripple_path_find` alternative or to fall through to the direct-trustline
+ * shortcut. If the trustline only appears in `verify()` (after the client
+ * has already signed), the client throws `PAYMENT_PATH_FAILED` before the
+ * server ever sees the credential. Calling `prepareRecipient()` once at
+ * boot (or before issuing the first 402 in this currency) fixes that
+ * chicken-and-egg.
+ *
+ * For MPT charges, lazy setup works end-to-end (MPTs do not go through
+ * the path resolver), but eager setup is still useful to fail fast at
+ * boot if the wallet cannot cover the owner reserve increment.
+ *
+ * Idempotent: returns immediately on a second call once the trustline
+ * or MPT holding is in place. Opens and closes its own xrpl.Client.
+ *
+ * Throws when no `wallet` (or `seed`) is configured -- the function needs
+ * to sign on behalf of the recipient. Returns silently when the configured
+ * `currency` is XRP (nothing to set up) or when both auto-setup flags
+ * are off.
+ *
+ * @example
+ * ```ts
+ * import { charge, prepareRecipient } from 'xrpl-mpp-sdk/server'
+ *
+ * const params = {
+ *   recipient: recipient.address,
+ *   wallet: recipient,
+ *   currency: { currency: 'USD', issuer: 'rIssuer...' },
+ *   autoTrustline: true,
+ *   network: 'testnet',
+ *   store: Store.memory(),
+ * } satisfies charge.Parameters
+ *
+ * await prepareRecipient(params)   // creates the trustline once at boot
+ * const method = charge(params)    // method is now ready to verify
+ * ```
+ */
+export async function prepareRecipient(parameters: charge.Parameters): Promise<void> {
+  const {
+    recipient,
+    currency,
+    autoTrustline = false,
+    autoTrustlineLimit,
+    autoMPTAuthorize = false,
+    wallet: walletInput,
+    seed,
+    network = 'testnet',
+    rpcUrl: customRpcUrl,
+  } = parameters
+
+  const recipientWallet: Wallet | undefined =
+    walletInput ?? (seed ? Wallet.fromSeed(seed) : undefined)
+
+  if (!recipientWallet) {
+    throw new Error(
+      '[xrpl-mpp-sdk] wallet (or seed) is required to call prepareRecipient. ' +
+        'The function signs TrustSet / MPTokenAuthorize on the recipient account.',
+    )
+  }
+
+  if (recipientWallet.address !== recipient) {
+    throw new Error(
+      `[xrpl-mpp-sdk] recipient wallet does not match recipient address. ` +
+        `Wallet derives ${recipientWallet.address}, but recipient is ${recipient}.`,
+    )
+  }
+
+  if (!currency || (!autoTrustline && !autoMPTAuthorize)) return
+
+  const rpcUrl = customRpcUrl ?? XRPL_RPC_URLS[network]
+  const client = new Client(rpcUrl)
+  await client.connect()
+  try {
+    await runRecipientSetup(client, {
+      currency,
+      recipientWallet,
+      autoTrustline,
+      autoTrustlineLimit,
+      autoMPTAuthorize,
+    })
+  } finally {
+    await client.disconnect()
   }
 }

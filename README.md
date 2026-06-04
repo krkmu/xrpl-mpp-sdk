@@ -100,6 +100,121 @@ pnpm install
 pnpm build
 ```
 
+## AI agent template
+
+A minimal but **real-life** end-to-end starter for AI agent integrators lives
+at [`examples/agent-template`](examples/agent-template). It demonstrates an
+autonomous agent (Claude with tool-use) that **discovers, pays, and consumes a
+paid HTTP API** -- no API keys, no monthly invoices, no Stripe -- just a
+per-call XRPL Payment settled through the MPP HTTP 402 flow.
+
+```
++---------------------------+                  +---------------------------+
+|      AI agent process     |                  |      Express server       |
+|                           |                  |                           |
+|  - Claude (tool-use)      |   POST           |  - holds recipient wallet |
+|  - holds payer wallet     |   /linkedin-post |  - mppx-gated endpoint    |
+|  - mppx patches fetch()   | ---------------> |  - calls Claude to draft  |
+|                           | <- 402 (price) - |    the post once paid     |
+|                           | -- sign tx ----> |                           |
+|                           | <- 200 + post +  |                           |
+|                           |    receipt ----- |                           |
++---------------------------+                  +---------------------------+
+              \                                            /
+               \           XRPL testnet (real chain)      /
+                +------------------------------------------+
+```
+
+### What's wired up
+
+- **Express marketplace server** ([`src/server.ts`](examples/agent-template/src/server.ts))
+  -- holds the recipient wallet, exposes a free `GET /info` for price discovery
+  and a paid `POST /linkedin-post` endpoint gated by mppx + the
+  `xrpl-mpp-sdk` charge method. The server-side workload is itself a Claude
+  call that drafts the post once payment is validated on-chain.
+- **AI agent process** ([`src/agent.ts`](examples/agent-template/src/agent.ts))
+  -- a Claude model (Haiku 4.5 by default) with one tool,
+  `generate_linkedin_post`. Holds the payer wallet and signs the XRPL Payment
+  transparently when the server replies `402`.
+- **Paid fetch helper** ([`src/client.ts`](examples/agent-template/src/client.ts))
+  -- installs mppx's fetch middleware so the agent's tool just calls `fetch()`
+  and the 402 handshake is handled under the hood.
+- **One-command orchestrator** ([`src/run-demo.ts`](examples/agent-template/src/run-demo.ts))
+  -- spawns the server as a child process, funds ephemeral testnet wallets,
+  runs the agent once with a hard-coded prompt, prints the receipt + explorer
+  link, and exits cleanly.
+
+### Prerequisites
+
+You need an Anthropic API key (new accounts get $5 of trial credit, more than
+enough for hundreds of Haiku runs of this demo):
+
+```bash
+pnpm install
+cp examples/agent-template/.env.example examples/agent-template/.env
+# then edit examples/agent-template/.env and paste your sk-ant-api03-... key
+```
+
+Everything else (wallets, network, pricing) has sensible testnet defaults --
+ephemeral wallets are auto-funded via the faucet on each run unless you pin
+seeds in `.env`.
+
+### Option A -- run everything in one command
+
+```bash
+pnpm agent-template
+```
+
+That single command:
+
+1. spawns `src/server.ts` as a **child process** -- it auto-funds the
+   recipient wallet, boots Express on `http://localhost:3000`, and waits for
+   incoming requests;
+2. auto-funds the agent's payer wallet;
+3. runs the Claude agent with a hard-coded "write me a LinkedIn post" request;
+4. the agent decides on its own to call its tool, mppx pays the 402
+   transparently on testnet, the server submits the tx, polls until validated,
+   then calls Anthropic and returns the post;
+5. prints the agent's final message, the generated post, and the on-chain
+   receipt(s) with explorer link(s);
+6. kills the server subprocess and exits.
+
+Use this when you just want to see the full happy path once.
+
+### Option B -- run server and agent in two terminals
+
+This mirrors the real deployment shape (two independent processes, two
+independent organisations) and lets you fire repeated paid calls against a
+long-running server:
+
+```bash
+# terminal 1 -- boots the marketplace on :3000, holds the recipient wallet
+pnpm agent-template:server
+```
+
+Wait for the `listening on http://localhost:3000` banner, then in another
+terminal:
+
+```bash
+# terminal 2 -- run the agent once with your own prompt
+pnpm agent-template:agent \
+  "Write a LinkedIn post about our SDK release for MPP."
+```
+
+The agent prompt is taken from CLI args (everything after the script name is
+joined and sent to Claude). The server keeps running between invocations, so
+you can repeat the second command as many times as you like and watch each
+XRPL Payment accumulate on the explorer.
+
+> Server and agent run in two **separate Node processes** on purpose -- that's
+> the real deployment shape, and it avoids cross-contamination of mppx's
+> patched `globalThis.fetch` between client and server sides.
+
+See [`examples/agent-template/README.md`](examples/agent-template/README.md)
+for the detailed architecture diagram, env-based wallet management, production
+caveats (KMS-backed signing, rate-limiting, persistent replay store), and how
+to lift the folder out of the monorepo as a standalone starter project.
+
 ## Quick start
 
 ### Server (charge)
@@ -198,7 +313,7 @@ const response = await fetch('https://api.example.com/resource')
 
 | Path | Exports |
 |---|---|
-| `xrpl-mpp-sdk` | Methods, ChannelMethods, constants, toDrops, fromDrops, error helpers, types |
+| `xrpl-mpp-sdk` | Methods, ChannelMethods, Wallet (high-level wallet API), constants (RPC/faucet/explorer URLs, `XRP`, `XRPL_NETWORK_IDS`, `XRP_DECIMALS`, `DEFAULT_TIMEOUT`, `BASE_RESERVE_DROPS`, `OWNER_RESERVE_DROPS`, `RLUSD_MAINNET`, `RLUSD_TESTNET`), toDrops, fromDrops, error helpers, types (incl. `NetworkId`, wallet/trustline option types), generatePreimageCondition |
 | `xrpl-mpp-sdk/client` | charge, xrpl, Mppx |
 | `xrpl-mpp-sdk/server` | charge, xrpl, Mppx, Store, Expires |
 | `xrpl-mpp-sdk/channel` | channel (schema), ChannelStream, ChannelSession |
@@ -333,6 +448,47 @@ const mppx = Mppx.create({
 const res = await mppx.fetch('https://example.com/resource')
 ```
 
+### Escrows
+
+Lock XRP (or post-`TokenEscrow` IOU/MPT) until either a time has passed or a crypto-condition is satisfied. The Wallet API exposes the full lifecycle without ever touching `xrpl.js`:
+
+```ts
+import { generatePreimageCondition, Wallet } from 'xrpl-mpp-sdk'
+
+const creator = await Wallet.fromFaucet({ network: 'devnet' })
+const recipient = await Wallet.fromFaucet({ network: 'devnet' })
+
+// 1. Time-locked: anyone can finish after `finishAfter`.
+const { sequence, escrowId } = await creator.createEscrow({
+  destination: recipient.address,
+  amount: '5000000', // 5 XRP, or { currency, issuer, value } / { mpt_issuance_id, value }
+  finishAfter: new Date(Date.now() + 60_000),
+})
+
+// 2. Crypto-condition gated: only the holder of `fulfillment` can finish.
+const { condition, fulfillment } = generatePreimageCondition()
+await creator.createEscrow({
+  destination: recipient.address,
+  amount: '5000000',
+  condition,
+  cancelAfter: new Date(Date.now() + 24 * 60 * 60 * 1000),
+})
+
+// Inspect / list outstanding escrows.
+const info = await creator.getEscrow({ owner: creator.address, sequence })
+const all = await creator.listEscrows()
+
+// Finish (anyone may submit -- funds always go to `Destination`).
+await recipient.finishEscrow({ owner: creator.address, sequence })
+// Or with a fulfillment:
+// await recipient.finishEscrow({ owner: creator.address, sequence, condition, fulfillment })
+
+// Cancel after `CancelAfter` -- refunds the creator (anyone may submit).
+await creator.cancelEscrow({ owner: creator.address, sequence })
+```
+
+The SDK preflights every operation: reserve coverage on `createEscrow`, `FinishAfter` cutoff on `finishEscrow` (typed `ESCROW_NOT_READY` instead of a raw `tecNO_PERMISSION`), `CancelAfter` cutoff and "no `CancelAfter` set" on `cancelEscrow`, and on-chain condition match on the fulfillment path. Time fields accept `Date`, Unix milliseconds, or ISO-8601 strings; the SDK converts to ripple time internally and surfaces JS `Date`s on read.
+
 ### Opening and closing channels
 
 ```ts
@@ -451,6 +607,8 @@ XRPL transaction engine results are mapped to MPP error types (RFC 9457 Problem 
 | `tefALREADY` | `SUBMISSION_FAILED` | VerificationFailedError |
 | `tefBAD_AUTH` | `INVALID_SIGNATURE` | VerificationFailedError |
 | `tefMASTER_DISABLED` | `INVALID_SIGNATURE` | VerificationFailedError |
+| `tecCRYPTOCONDITION_ERROR` | `ESCROW_INVALID_FULFILLMENT` | VerificationFailedError |
+| `tecNO_TARGET` | `ESCROW_NOT_FOUND` | VerificationFailedError |
 
 Additional SDK-level error codes (raised before submit, no tecResult):
 - `SOURCE_MISMATCH` -- VerificationFailedError, the on-chain payer or channel funder does not match the credential's `did:pkh:xrpl:...` source
@@ -482,8 +640,8 @@ All errors extend mppx's `PaymentError` base class and serialize to RFC 9457 Pro
 | `XRPL_EXPLORER_URLS.mainnet` | `https://xrpl.org/transactions/` |
 | `XRPL_EXPLORER_URLS.testnet` | `https://testnet.xrpl.org/transactions/` |
 | `XRPL_EXPLORER_URLS.devnet`  | `https://devnet.xrpl.org/transactions/` |
-| `RLUSD_MAINNET` | `{ currency: 'RLUSD', issuer: 'rMxWzrBMyeKR9oJfYBrhAEGsxwsdLFSfim' }` |
-| `RLUSD_TESTNET` | `{ currency: 'RLUSD', issuer: 'rQhWct2fTR9z7bBQaflfqMEr2u8avFFpKH' }` |
+| `RLUSD_MAINNET` | `{ currency: '524C555344...0000' (hex `RLUSD`), issuer: 'rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De' }` |
+| `RLUSD_TESTNET` | `{ currency: '524C555344...0000' (hex `RLUSD`), issuer: 'rQhWct2fv4Vc4KRjRgMrxa8xPN9Zx9iLKV' }` |
 | `XRP_DECIMALS` | `6` |
 | `BASE_RESERVE_DROPS` | `'1000000'` (1 XRP, current mainnet) |
 | `OWNER_RESERVE_DROPS` | `'200000'` (0.2 XRP, current mainnet) |
@@ -492,33 +650,32 @@ The reserve constants are static fallbacks. The SDK's preflight reads live value
 
 ## Demos
 
-Most demos run on XRPL testnet; the cross-issuer demo runs on devnet (rationale below). Zero env vars -- every script generates wallets and funds them automatically via the network's faucet. See [demo/README.md](demo/README.md) for details.
+Every demo is self-contained: zero env vars, ephemeral wallets funded automatically via the network's faucet, single command to run. Most run on testnet; the cross-issuer one runs on devnet (rationale at the bottom of this section). See [demo/README.md](demo/README.md) for the per-demo walkthrough.
 
-```bash
-# XRP charge (two terminals)
-npx tsx demo/xrp-server.ts          # Terminal 1
-npx tsx demo/xrp-client.ts          # Terminal 2
+### Pick a demo by use case
 
-# IOU charge (all-in-one: issuer + trustlines + issuance + charge)
-npx tsx demo/iou-charge.ts
+| If you want to... | Run | Network |
+|---|---|---|
+| Charge an API in **native XRP** | `npx tsx demo/xrp-server.ts` + `npx tsx demo/xrp-client.ts` (two terminals) | testnet |
+| Charge an API in a **fiat-backed token / stablecoin** (auto-trustline) | `npx tsx demo/iou-charge.ts` | testnet |
+| Charge with an **allowlisted IOU** (`RequireAuth`, issuer-controlled allowlist) | `npx tsx demo/iou-allowlist.ts` | testnet |
+| Charge across two **different stablecoin issuers** (auto path-find + slippage) | `npx tsx demo/iou-cross-issuer.ts` | devnet |
+| Charge with a **permissioned / allowlisted token** (MPT) | `npx tsx demo/mpt-charge.ts` | testnet |
+| Stream **off-chain micropayments** (PayChannel: open, claim N times, close) | `npx tsx demo/channel-server.ts` + `npx tsx demo/channel-client.ts` (two terminals) | testnet |
+| **Top up / recover** an exhausted PayChannel (open + `PaymentChannelFund` + close) | `npx tsx demo/channel-fund.ts` | testnet |
+| Pay a **Claude LLM** per prompt in **native XRP** (SSE token stream back) | `npx tsx demo/llm-marketplace/charge/server.ts` + `npx tsx demo/llm-marketplace/charge/client.ts` (two terminals) | testnet |
+| Pay a **Claude LLM** per prompt in an **IOU** (test `USD`, swap in any issuer) | `npx tsx demo/llm-marketplace/charge-iou/server.ts` + `npx tsx demo/llm-marketplace/charge-iou/client.ts` (two terminals) | testnet |
+| Pay a **Claude LLM** per prompt in **MPT credits** (`CRED`, allowlisted) | `npx tsx demo/llm-marketplace/charge-mpt/server.ts` + `npx tsx demo/llm-marketplace/charge-mpt/client.ts` (two terminals) | testnet |
+| Bill **N Claude prompts on one PayChannel** (2 on-chain txs total, eager deposit) | `npx tsx demo/llm-marketplace/channel/server.ts` + `npx tsx demo/llm-marketplace/channel/client.ts` (two terminals) | testnet |
+| Bill **N Claude prompts on one PayChannel** with **just-in-time `PaymentChannelFund`** | `npx tsx demo/llm-marketplace/channel-fund/server.ts` + `npx tsx demo/llm-marketplace/channel-fund/client.ts` (two terminals) | testnet |
+| Run a **paid HTTP API** (no API keys) billed in the API's own IOU (`WTH`) | `npx tsx demo/weather-api/server.ts` + `npx tsx demo/weather-api/client.ts` (two terminals) | testnet |
+| Run a **paid HTTP API** billed in **real testnet RLUSD** (Ripple's stablecoin) | `npx tsx demo/weather-api-rlusd/server.ts` + `npx tsx demo/weather-api-rlusd/client.ts` (two terminals) | testnet |
+| See a **full Claude agent with tool-use** paying an MPP-gated endpoint end-to-end | `pnpm agent-template` (one command) -- see [`examples/agent-template`](examples/agent-template) | testnet |
+| Lock funds in **escrow** (time-lock, crypto-condition, cancellable refund) | `npx tsx demo/escrow-lifecycle.ts` | testnet |
+| See **every failure mode** and how the SDK surfaces it (16 cases, fail-fix-validate) | `npx tsx demo/error-showcase.ts` | testnet |
+| Simulate **pay-per-token LLM streaming** (offline, no network) | `npx tsx examples/stream-llm.ts` | none |
 
-# Cross-issuer IOU (devnet -- faster path-find indexer; sender holds USD.A,
-# recipient holds USD.B, market-maker bridges; SDK auto-resolves the path)
-npx tsx demo/iou-cross-issuer.ts
-
-# MPT charge (all-in-one: MPT issuance + authorize + charge)
-npx tsx demo/mpt-charge.ts
-
-# PayChannel (two terminals: open, 5 off-chain claims, close)
-npx tsx demo/channel-server.ts      # Terminal 1
-npx tsx demo/channel-client.ts      # Terminal 2
-
-# Error showcase (13 cases, fail-fix-validate)
-npx tsx demo/error-showcase.ts
-
-# Streaming simulation (offline)
-npx tsx examples/stream-llm.ts
-```
+Each script generates fresh wallets via faucet, prints colored progress and explorer links, and exits cleanly. Nothing to clean up.
 
 The cross-issuer demo runs on devnet because public testnet's path indexer is materially slower at surfacing freshly-created orderbooks; on devnet a fresh `OfferCreate` is visible to `ripple_path_find` within seconds.
 
@@ -535,11 +692,14 @@ xrpl-mpp-sdk/
     utils/
       currency.ts            # parseCurrency, buildAmount, isXrp/isIOU/isMPT
       did.ts                 # classicAddressFromDID, classicAddressFromPublicKey (source binding)
+      escrow.ts              # createEscrow / finishEscrow / cancelEscrow + PREIMAGE-SHA-256 helper
+      ledger-time.ts         # ripple-time <-> Date / ms / ISO conversions (escrow + channel timings)
+      mpt.ts                 # ensureMPTHolding, lsfMPTRequireAuth detection
       paths.ts               # resolveIouPaymentExtras (ripple_path_find + SendMax + slippage)
       reserves.ts            # getReserveState, assertReserveCovers (owner-reserve preflight)
       trustline.ts           # ensureTrustline, checkRippling, freeze + RequireAuth detection
-      mpt.ts                 # ensureMPTHolding, lsfMPTRequireAuth detection
       validation.ts          # runPreflight, assertIssuerHealth (rippling, global freeze, RequireAuth)
+      wallet.ts              # High-level Wallet API: fromSeed / fromFaucet, escrow + IOU + MPT + channel ops
     client/
       Charge.ts              # Client charge: preflight, IOU path resolve, sign, push/pull
       Methods.ts             # xrpl.charge() convenience wrapper
@@ -566,20 +726,37 @@ xrpl-mpp-sdk/
     xrpl/                    # Charge, channel, paths, reserves, trustline freeze, MPT auth, stream, dual-curve
     integration/             # Devnet end-to-end (gated)
       devnet-helpers.ts
-      charge.devnet.test.ts
+      auto-setup.devnet.test.ts
       channel.devnet.test.ts
+      charge.devnet.test.ts
+      charge-push.devnet.test.ts
+      escrow.devnet.test.ts
       iou-cross-issuer.devnet.test.ts
+      mpt-lifecycle.devnet.test.ts
     utils/test-helpers.ts
   demo/
     log.ts                   # Shared styled terminal output utility
     xrp-server.ts            # XRP charge server (two-terminal)
     xrp-client.ts            # XRP charge client (two-terminal)
     iou-charge.ts            # Same-issuer IOU charge all-in-one
+    iou-allowlist.ts         # IOU + RequireAuth (issuer-controlled allowlist) all-in-one
     iou-cross-issuer.ts      # Cross-issuer IOU charge (devnet, all-in-one)
     mpt-charge.ts            # MPT charge all-in-one
     channel-server.ts        # PayChannel server (two-terminal)
     channel-client.ts        # PayChannel client (two-terminal)
-    error-showcase.ts        # 13 error cases, fail-fix-validate
+    channel-server-open.ts   # PayChannel server demonstrating MPP-managed channel open
+    channel-fund.ts          # PayChannel top-up lifecycle: open + claim + fund + recover + close (all-in-one)
+    escrow-lifecycle.ts      # Escrow lifecycle: time-locked, crypto-condition, cancellable
+    error-showcase.ts        # 16 error cases, fail-fix-validate
+    llm-marketplace/         # Anthropic Claude over MPP -- five paid-LLM patterns
+      charge/                #   one prompt = one on-chain Payment, native XRP
+      charge-iou/            #   one prompt = one on-chain Payment, IOU (test USD; swap any issuer)
+      charge-mpt/            #   one prompt = one on-chain Payment, MPT credits (allowlisted)
+      channel/               #   N prompts amortised on a single PayChannel (eager deposit)
+      channel-fund/          #   N prompts on a PayChannel + just-in-time PaymentChannelFund
+      shared/anthropic.ts    #   shared Anthropic client, pricing constants, streaming helpers
+    weather-api/             # Paid HTTP API (no API key), per-call billing in the API's own IOU (WTH)
+    weather-api-rlusd/       # Paid HTTP API, per-call billing in real testnet RLUSD (production shape)
   examples/
     server.ts                # Minimal charge server (env var config)
     client.ts                # Minimal charge client (env var config)
@@ -587,14 +764,13 @@ xrpl-mpp-sdk/
     channel-client.ts        # Minimal channel client (env var config)
     stream-llm.ts            # Pay-per-token streaming simulation (offline)
     channel-open-mpp.ts      # Channel open via MPP 402 flow (concept example)
+    agent-template/          # Real-life starter: Claude agent (tool-use) paying a Claude-backed MPP service
+      src/                   #   server.ts + agent.ts + client.ts + run-demo.ts + env.ts + intent.ts + log.ts
+      package.json           #   standalone deps (folder can be lifted out of the monorepo)
+      .env.example
   vitest.config.ts            # Unit suite + coverage threshold (80% on core modules)
   vitest.integration.config.ts # Devnet integration suite (single-fork, no coverage)
   .github/workflows/ci.yml    # Two jobs: unit (every push/PR) + integration (gated)
-  docs/
-    audit.md                 # Module-by-module gap analysis and PR sequence
-    open-flow-check.md       # Channel open placeholder-signature analysis
-    security-pass.md         # Targeted private-key-handling review
-    session-report.md        # Per-session change log
 ```
 
 ## Development
@@ -615,6 +791,50 @@ CI runs `unit` on every push and PR; `integration` is gated to push-to-main, PRs
 
 This SDK implements the [Machine Payments Protocol (MPP)](https://mpp.dev) HTTP 402 flow as specified in [draft-httpauth-payment-00](https://github.com/tempoxyz/mpp-specs). It extends the [mppx](https://github.com/wevm/mppx) framework with XRPL-specific payment methods.
 
+XRPL's native PayChannel primitive cannot offer the spec's atomic, either-party channel `close()` (settle + refund in one call), so the SDK adds server-side claim/auto-close recovery instead. See [MPP spec deviations](#mpp-spec-deviations) at the end of this README.
+
 ## License
 
 MIT
+
+## MPP spec deviations
+
+`xrpl-mpp-sdk` follows the [Machine Payments Protocol (MPP)](https://mpp.dev) to the letter for the handshake, the `Credential` / `Receipt` envelopes, single-use proof semantics, and the cumulative-voucher session model. The deviations below all trace to a single root: XRPL exposes a **native [PayChannel](https://xrpl.org/payment-channels.html) primitive**, not the programmable escrow contract the spec's `session` intent was written against (Tempo's `TempoStreamChannel`).
+
+### 1. Channel close: two transactions, not one
+
+The MPP [`session` intent](https://mpp.dev/payment-methods/tempo/session) describes settlement as a single, symmetric operation:
+
+> *"Either party can close the channel. The server calls `close()` on the escrow contract with the highest voucher, **settling the final balance on-chain and refunding any unused deposit** to the client."*
+
+So in the reference model one `close()` call, callable by either side, atomically (a) pays the server what it earned and (b) refunds the client's unused deposit. XRPL has no escrow contract to do this — its native PayChannel splits "settle" and "refund" into two separate transactions, and restricts who may send each:
+
+- `PaymentChannelClaim` **without** `tfClose` — pays the cumulative amount to the **destination** (server). The server may submit this. It does **not** refund the deposit and does **not** delete the channel.
+- `PaymentChannelClaim` **with** `tfClose` — only the channel **source** (funder/client) may set this flag. It starts the `SettleDelay`, after which the channel is deleted and the unspent deposit is returned to the funder.
+
+There is no single transaction, available to the server, that both pays the server and refunds the client. The spec's atomic, either-party `close()` simply does not exist on this primitive.
+
+**What the SDK does about it.** Because off-chain vouchers are worthless until someone posts a `PaymentChannelClaim` on-chain, a client that just walks away would leave the server holding signed claims and no money. To preserve the spec's guarantee ("the server can always recover what it earned"), the SDK adds server-side recovery the contract specs get for free:
+
+- **`closeFromStore()`** reads the highest cumulative voucher persisted for a channel and submits a `PaymentChannelClaim` (no `tfClose`) to pull those funds to the recipient. Idempotent -- no-ops if already finalized/redeemed.
+- **Auto-close sweeper** (`autoClose`, on by default when a recipient `wallet` is provided) runs `closeFromStore` for any channel idle longer than `idleMs` (default 30s), then marks it finalized so later vouchers are rejected with `CHANNEL_CLOSED`.
+
+```ts
+channel({
+  publicKey,
+  store,
+  wallet,          // recipient wallet -- required to sign the on-chain claim
+  autoClose: { idleMs: 30_000 },
+})
+```
+
+Two consequences, both following directly from the split above:
+
+1. **The deposit refund is not automatic.** The server's claim leaves the channel object alive; the funder's unused deposit is only returned when the funder submits `tfClose` or a `CancelAfter` elapses. Set `cancelAfter` at channel creation so a channel cannot leak the funder's reserve indefinitely.
+2. **The server needs the recipient wallet.** The spec's `close()` works from either side because the contract enforces correctness; here the server must actually sign an XRPL transaction.
+
+Implementation: `close`, `closeFromStore`, and the sweeper live in [`sdk/src/channel/server/Channel.ts`](sdk/src/channel/server/Channel.ts); a real usage example is in [`demo/llm-marketplace/channel/server.ts`](demo/llm-marketplace/channel/server.ts).
+
+### 2. Voucher verification is not strictly off-chain
+
+The same "native primitive, no escrow contract" root produces one more deviation. The spec's `session` intent promises that the server verifies each voucher with *"fast signature checks -- no RPC or blockchain calls"*: with a smart-contract escrow, a valid signature is sufficient proof, because the contract guarantees the channel exists and is funded. XRPL has no such contract, so a cryptographically valid claim alone says nothing about whether the `channelId` is real or solvent. By default (`verifyChannelOnChain: true`) the SDK therefore pairs the local signature check with an on-chain `ledger_entry` lookup that confirms the channel exists, has not expired, and is funded above the claimed cumulative. The lookup is cached per channel (`channelMetadataTtlMs`, default 60s), so in practice it costs roughly one RPC on the first voucher and signature-only checks thereafter -- but it is still a departure from the spec's strictly off-chain critical path. Set `verifyChannelOnChain: false` to recover the spec's behaviour at the cost of accepting claims against unverified channels.
