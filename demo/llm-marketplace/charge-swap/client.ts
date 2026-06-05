@@ -156,11 +156,7 @@ type AmmQuote = {
  *
  * (matches rippled's AMM math; see XLS-30d).
  */
-async function quoteSwap(
-  xrpl: Client,
-  info: Info,
-  requestedCred: string,
-): Promise<AmmQuote> {
+async function quoteSwap(xrpl: Client, info: Info, requestedCred: string): Promise<AmmQuote> {
   // The pool address is never advertised: we discover the pool purely
   // from the token PAIR we want to trade (USD we hold, CRD we owe).
   const ammInfo = (await xrpl.request({
@@ -174,15 +170,16 @@ async function quoteSwap(
   // The response may return assets in either field order. Pick by currency.
   const sideA = a.amount
   const sideB = a.amount2
-  const sideAcurrency =
-    typeof sideA === 'object' ? sideA.currency : null
+  const sideAcurrency = typeof sideA === 'object' ? sideA.currency : null
   const usdSide = sideAcurrency === info.bootstrapCurrency.currency ? sideA : sideB
   const credSide = sideAcurrency === info.bootstrapCurrency.currency ? sideB : sideA
   const X = Number(usdSide.value)
   const Y = Number(credSide.value)
   const dy = Number(requestedCred)
   if (dy >= Y) {
-    throw new Error(`Pool too shallow: want ${dy} ${info.chargeCurrencyLabel} but only ${Y} available.`)
+    throw new Error(
+      `Pool too shallow: want ${dy} ${info.chargeCurrencyLabel} but only ${Y} available.`,
+    )
   }
   const dxPreFee = (X * dy) / (Y - dy)
   // Trading fee comes from the on-chain pool itself, not from /info.
@@ -258,9 +255,7 @@ async function swapUsdToCred(
 }
 
 async function main() {
-  log.box([
-    'XRPL MPP -- LLM Marketplace (charge client, IOU-only, agent swaps USD -> CRD)',
-  ])
+  log.box(['XRPL MPP -- LLM Marketplace (charge client, IOU-only, agent swaps USD -> CRD)'])
   log.separator()
 
   log.loading('Funding payer wallet via testnet faucet...')
@@ -276,9 +271,7 @@ async function main() {
   log.info(
     `Charging in: ${info.chargeCurrencyLabel} (issuer ${info.chargeCurrency.issuer.slice(0, 6)}…${info.chargeCurrency.issuer.slice(-4)})`,
   )
-  log.info(
-    `Bootstrap (faucet): ${info.bootstrapCurrencyLabel} (same issuer)`,
-  )
+  log.info(`Bootstrap (faucet): ${info.bootstrapCurrencyLabel} (same issuer)`)
   log.info(
     `DEX pool address: not advertised -- discovered from the ` +
       `${info.bootstrapCurrencyLabel}/${info.chargeCurrencyLabel} pair`,
@@ -353,7 +346,8 @@ async function main() {
     onProgress: (evt) => {
       if (evt.type === 'preflight') log.info('Running preflight (balance/path checks)...')
       else if (evt.type === 'pathfinding') log.info('ripple_path_find (IOU only)...')
-      else if (evt.type === 'signing') log.info(`Signing the ${info.chargeCurrencyLabel} Payment tx...`)
+      else if (evt.type === 'signing')
+        log.info(`Signing the ${info.chargeCurrencyLabel} Payment tx...`)
       else if (evt.type === 'confirmed') log.info(`Tx submitted: ${evt.hash}`)
     },
   })
@@ -405,9 +399,7 @@ async function main() {
   let quote: AmmQuote
   try {
     quote = await quoteSwap(xrpl, info, requestedCred)
-    const usdWithSlippage = iouValue(
-      Number(quote.usdQuotedForRequest) * (1 + SLIPPAGE_PCT / 100),
-    )
+    const usdWithSlippage = iouValue(Number(quote.usdQuotedForRequest) * (1 + SLIPPAGE_PCT / 100))
 
     log.info(
       `AMM depth: ${quote.usdReserve} ${info.bootstrapCurrencyLabel} : ` +
@@ -431,9 +423,7 @@ async function main() {
     )
     swap = await swapUsdToCred(xrpl, wallet, info, requestedCred, usdWithSlippage)
     log.tx(swap.hash, log.explorerLink(swap.hash))
-    log.success(
-      `Swap settled -- delivered ${swap.deliveredCred} ${info.chargeCurrencyLabel}`,
-    )
+    log.success(`Swap settled -- delivered ${swap.deliveredCred} ${info.chargeCurrencyLabel}`)
   } finally {
     await xrpl.disconnect()
   }
@@ -518,9 +508,10 @@ async function main() {
     readIouBalance(wallet, info.chargeCurrency),
   ])
 
-  const overpayPct = Number(done.paid) > 0
-    ? ((Number(done.overpayment) / Number(done.paid)) * 100).toFixed(1)
-    : '0.0'
+  const overpayPct =
+    Number(done.paid) > 0
+      ? ((Number(done.overpayment) / Number(done.paid)) * 100).toFixed(1)
+      : '0.0'
 
   log.box([
     'Settlement -- charge (paid in CRD, agent sourced CRD via DEX swap)',

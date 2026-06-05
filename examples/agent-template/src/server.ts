@@ -129,7 +129,11 @@ export function createApp(config: Config, recipient: Wallet, anthropic: Anthropi
     }
 
     log.arrow('server', '..', `payment validated on-chain in ${handlerMs}ms`)
-    log.arrow('server', '->', `calling Anthropic Claude (${config.anthropicModel}) to write the post...`)
+    log.arrow(
+      'server',
+      '->',
+      `calling Anthropic Claude (${config.anthropicModel}) to write the post...`,
+    )
 
     let post: GeneratedPost
     const ta = Date.now()
@@ -152,7 +156,11 @@ export function createApp(config: Config, recipient: Wallet, anthropic: Anthropi
       `Claude returned: ${post.usage.inputTokens}in + ${post.usage.outputTokens}out tokens, ` +
         `${post.characterCount} chars, ${post.hashtags.length} hashtag(s)  (${claudeMs}ms)`,
     )
-    log.arrow('server', '->', `200 + Payment-Receipt header  total handler time ${Date.now() - t0}ms`)
+    log.arrow(
+      'server',
+      '->',
+      `200 + Payment-Receipt header  total handler time ${Date.now() - t0}ms`,
+    )
 
     const webRes = result.withReceipt(
       Response.json({
@@ -314,7 +322,10 @@ async function sendWebResponse(webRes: globalThis.Response, res: Response): Prom
 
 /** Make a string safe for the WWW-Authenticate quoted-string format. */
 function sanitizeHeaderValue(s: string): string {
-  return s.replace(/[",\\\r\n]/g, ' ').replace(/\s+/g, ' ').trim()
+  return s
+    .replace(/[",\\\r\n]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 // Allow `tsx src/server.ts` directly.

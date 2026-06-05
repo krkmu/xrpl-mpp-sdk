@@ -35,7 +35,7 @@
  */
 import { spawn } from 'node:child_process'
 import { resolve } from 'node:path'
-import Anthropic from '@anthropic-ai/sdk'
+import type Anthropic from '@anthropic-ai/sdk'
 import { Challenge, Receipt } from 'mppx'
 import { charge } from '../../../sdk/src/client/Charge.js'
 import { Wallet } from '../../../sdk/src/utils/wallet.js'
@@ -352,13 +352,19 @@ async function toolOpenTrustline(input: {
 }) {
   const challenge = input.getChallenge()
   if (!challenge) {
-    return { ok: false, reason: 'Fetch the invoice first (probe_invoice) so I know which token to trust.' }
+    return {
+      ok: false,
+      reason: 'Fetch the invoice first (probe_invoice) so I know which token to trust.',
+    }
   }
   let parsed: { currency: string; issuer: string }
   try {
     parsed = JSON.parse(challenge.request.currency)
   } catch {
-    return { ok: false, reason: `Invoice currency was not a JSON IOU descriptor: ${challenge.request.currency}` }
+    return {
+      ok: false,
+      reason: `Invoice currency was not a JSON IOU descriptor: ${challenge.request.currency}`,
+    }
   }
   const label = decodeCurrencyCode(parsed.currency)
   const limit = typeof input.limit === 'string' && input.limit ? input.limit : PAYER_TRUSTLINE_LIMIT
@@ -441,13 +447,19 @@ async function toolAcquireToken(input: {
 }) {
   const challenge = input.getChallenge()
   if (!challenge) {
-    return { ok: false, reason: 'Fetch the invoice first (probe_invoice) so I know what to acquire.' }
+    return {
+      ok: false,
+      reason: 'Fetch the invoice first (probe_invoice) so I know what to acquire.',
+    }
   }
   let parsed: { currency: string; issuer: string }
   try {
     parsed = JSON.parse(challenge.request.currency)
   } catch {
-    return { ok: false, reason: `Invoice currency was not a JSON IOU descriptor: ${challenge.request.currency}` }
+    return {
+      ok: false,
+      reason: `Invoice currency was not a JSON IOU descriptor: ${challenge.request.currency}`,
+    }
   }
   const label = decodeCurrencyCode(parsed.currency)
   const amountDue = challenge.request.amount
@@ -460,9 +472,17 @@ async function toolAcquireToken(input: {
   const asset2 = `${parsed.currency}/${parsed.issuer}`
 
   // --- 1. Discover the pool with `xrpl-up amm info`. ---
-  const ammRes = await runXrplUp(
-    ['amm', 'info', '--asset', 'XRP', '--asset2', asset2, '--json', '--node', NETWORK],
-  )
+  const ammRes = await runXrplUp([
+    'amm',
+    'info',
+    '--asset',
+    'XRP',
+    '--asset2',
+    asset2,
+    '--json',
+    '--node',
+    NETWORK,
+  ])
   if (ammRes.exitCode !== 0) {
     log.error(`exit ${ammRes.exitCode}`)
     const detail = (ammRes.stderr || ammRes.stdout).trim()
@@ -496,11 +516,16 @@ async function toolAcquireToken(input: {
   const swapRes = await runXrplUp(
     [
       'payment',
-      '--to', input.wallet.address,
-      '--amount', `${targetToken}/${parsed.currency}/${parsed.issuer}`,
-      '--send-max', `${xrpDropsMax}drops`,
-      '--node', NETWORK,
-      '--seed', input.wallet.seed,
+      '--to',
+      input.wallet.address,
+      '--amount',
+      `${targetToken}/${parsed.currency}/${parsed.issuer}`,
+      '--send-max',
+      `${xrpDropsMax}drops`,
+      '--node',
+      NETWORK,
+      '--seed',
+      input.wallet.seed,
     ],
     { hideArgs: ['--seed'] },
   )
@@ -622,8 +647,7 @@ async function toolAttemptPayment(input: {
     real_cost: done.actual_cost,
     overpayment: done.overpayment,
     currency_label: done.currency_label,
-    note:
-      'Payment settled on-chain and the marketplace streamed the LLM answer. Your task is complete.',
+    note: 'Payment settled on-chain and the marketplace streamed the LLM answer. Your task is complete.',
   }
 }
 
@@ -683,7 +707,7 @@ async function runAgent(input: {
     {
       name: 'acquire_token',
       description:
-        'Acquire enough of the invoice\'s token to pay it, by swapping your XRP on the ' +
+        "Acquire enough of the invoice's token to pay it, by swapping your XRP on the " +
         'public on-chain AMM. It drives `xrpl-up` for both steps: `amm info` to discover ' +
         'the live XRP/<token> pool, then `payment` (a cross-currency Payment capped by ' +
         'SendMax) to execute the swap. It sizes the trade to cover the amount due (plus a ' +
@@ -719,8 +743,7 @@ async function runAgent(input: {
           args: {
             type: 'array',
             items: { type: 'string' },
-            description:
-              'The xrpl-up arguments, tokenized as an array (no leading "xrpl-up").',
+            description: 'The xrpl-up arguments, tokenized as an array (no leading "xrpl-up").',
           },
         },
         required: ['args'],
@@ -789,9 +812,7 @@ async function runAgent(input: {
       messages,
     })
 
-    const textBlocks = response.content.filter(
-      (b): b is Anthropic.TextBlock => b.type === 'text',
-    )
+    const textBlocks = response.content.filter((b): b is Anthropic.TextBlock => b.type === 'text')
     for (const tb of textBlocks) {
       if (tb.text.trim()) {
         log.agent(tb.text.trim())
@@ -963,9 +984,10 @@ async function main() {
   log.separator()
   const label = outcome.doneEvent.currency_label
   const currencyWire = challenge.request.currency
-  const overpayPct = Number(outcome.doneEvent.paid) > 0
-    ? ((Number(outcome.doneEvent.overpayment) / Number(outcome.doneEvent.paid)) * 100).toFixed(1)
-    : '0.0'
+  const overpayPct =
+    Number(outcome.doneEvent.paid) > 0
+      ? ((Number(outcome.doneEvent.overpayment) / Number(outcome.doneEvent.paid)) * 100).toFixed(1)
+      : '0.0'
 
   // Final post-state balances -- read via the same CLI the agent used.
   const finalBalance = await toolXrplUp({

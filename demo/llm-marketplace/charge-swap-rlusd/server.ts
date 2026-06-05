@@ -40,15 +40,11 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { Credential, Receipt } from 'mppx'
 import { Mppx, Store } from 'mppx/server'
-import { charge } from '../../../sdk/src/server/Charge.js'
 import { RLUSD_TESTNET } from '../../../sdk/src/constants.js'
+import { charge } from '../../../sdk/src/server/Charge.js'
 import { Wallet } from '../../../sdk/src/utils/wallet.js'
 import * as log from '../../log.js'
-import {
-  createAnthropic,
-  estimateInputTokens,
-  MODEL,
-} from '../shared/anthropic.js'
+import { createAnthropic, estimateInputTokens, MODEL } from '../shared/anthropic.js'
 
 const PORT = 3012
 const NETWORK = 'testnet' as const
@@ -75,15 +71,11 @@ function iouValue(value: number): string {
 }
 
 function quoteRlusd(inputEstimate: number, maxOutputTokens: number): string {
-  return iouValue(
-    inputEstimate * RLUSD_PER_INPUT_TOKEN + maxOutputTokens * RLUSD_PER_OUTPUT_TOKEN,
-  )
+  return iouValue(inputEstimate * RLUSD_PER_INPUT_TOKEN + maxOutputTokens * RLUSD_PER_OUTPUT_TOKEN)
 }
 
 function actualCostRlusd(inputTokens: number, outputTokens: number): string {
-  return iouValue(
-    inputTokens * RLUSD_PER_INPUT_TOKEN + outputTokens * RLUSD_PER_OUTPUT_TOKEN,
-  )
+  return iouValue(inputTokens * RLUSD_PER_INPUT_TOKEN + outputTokens * RLUSD_PER_OUTPUT_TOKEN)
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -130,9 +122,7 @@ async function sendBuffered(webRes: Response, res: ServerResponse): Promise<void
 }
 
 async function main() {
-  log.box([
-    'XRPL MPP -- LLM Marketplace (charge, RLUSD-only billing, agent swaps XRP -> RLUSD)',
-  ])
+  log.box(['XRPL MPP -- LLM Marketplace (charge, RLUSD-only billing, agent swaps XRP -> RLUSD)'])
   log.separator()
 
   try {

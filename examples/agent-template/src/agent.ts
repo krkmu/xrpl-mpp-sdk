@@ -21,7 +21,7 @@
  */
 import Anthropic from '@anthropic-ai/sdk'
 import { type ChargeProgressEvent, fromDrops, type NetworkId, type Wallet } from 'xrpl-mpp-sdk'
-import { attachPayer, callPostService, type CallServiceResult } from './client.js'
+import { attachPayer, type CallServiceResult, callPostService } from './client.js'
 import { PostBrief } from './intent.js'
 
 /** Anthropic tool schema. The keys mirror PostBrief from src/intent.ts. */
@@ -175,9 +175,7 @@ export async function runAgent(args: AgentArgs): Promise<AgentRunResult> {
 
     // Surface any text Claude emitted this turn (could be reasoning or the
     // final answer if no tool was called).
-    const textBlocks = response.content.filter(
-      (b): b is Anthropic.TextBlock => b.type === 'text',
-    )
+    const textBlocks = response.content.filter((b): b is Anthropic.TextBlock => b.type === 'text')
     const roundText = textBlocks
       .map((b) => b.text)
       .join('\n')
@@ -352,8 +350,11 @@ async function main(): Promise<void> {
 
   if (result.receipts.length > 0) {
     log.blank()
-    log.line('demo', `total spent: ${result.totalDropsSpent} drops ` +
-      `(${fromDrops(result.totalDropsSpent.toString())} XRP) across ${result.toolCalls.length} call(s)`)
+    log.line(
+      'demo',
+      `total spent: ${result.totalDropsSpent} drops ` +
+        `(${fromDrops(result.totalDropsSpent.toString())} XRP) across ${result.toolCalls.length} call(s)`,
+    )
     for (const r of result.receipts) {
       log.line('demo', `tx ${r.reference}`)
       log.line('demo', `   ${r.explorerUrl}`)
@@ -393,9 +394,7 @@ export function renderAgentEvent(e: AgentEvent, log: typeof import('./log.js')):
     case 'http_receive': {
       const okStr = e.status === 200 ? 'OK' : `FAIL ${e.status}`
       const paidStr = e.paid ? `  paid=${e.paid.amountXrp} XRP` : ''
-      const recStr = e.receipt
-        ? `  tx=${log.shorten(e.receipt.reference, 8, 8)}`
-        : ''
+      const recStr = e.receipt ? `  tx=${log.shorten(e.receipt.reference, 8, 8)}` : ''
       log.arrow('agent', '<-', `${okStr}  (${e.ms}ms)${paidStr}${recStr}`)
       if (e.receipt) log.line('agent', `   ${log.dim(e.receipt.explorerUrl)}`)
       break
@@ -411,7 +410,11 @@ export function renderAgentEvent(e: AgentEvent, log: typeof import('./log.js')):
       )
       break
     case 'agent_finished':
-      log.arrow('agent', '..', `Claude returned without calling a new tool -- loop ends after ${e.rounds} round(s)`)
+      log.arrow(
+        'agent',
+        '..',
+        `Claude returned without calling a new tool -- loop ends after ${e.rounds} round(s)`,
+      )
       break
   }
 }
@@ -447,7 +450,9 @@ function formatPaymentProgress(p: ChargeProgressEvent): string {
   switch (p.type) {
     case 'challenge': {
       const amount =
-        p.currency === 'XRP' ? `${p.amount} drops (${fromDrops(p.amount)} XRP)` : `${p.amount} ${p.currency}`
+        p.currency === 'XRP'
+          ? `${p.amount} drops (${fromDrops(p.amount)} XRP)`
+          : `${p.amount} ${p.currency}`
       return `[mppx] 402 challenge parsed: pay ${amount} to ${p.recipient}`
     }
     case 'preflight':

@@ -37,8 +37,8 @@ import { Receipt } from 'mppx'
 import { Mppx } from 'mppx/client'
 import { charge } from '../../sdk/src/client/Charge.js'
 import { Wallet } from '../../sdk/src/utils/wallet.js'
-import * as log from '../log.js'
 import { formatAmount } from '../llm-marketplace/shared/format.js'
+import * as log from '../log.js'
 
 const PORT = 3007
 const BASE = `http://localhost:${PORT}`

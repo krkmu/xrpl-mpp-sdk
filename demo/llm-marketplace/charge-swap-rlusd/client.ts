@@ -197,10 +197,7 @@ async function quoteSwap(
 }
 
 /** Read the wallet's balance of `currency` toward its issuer; '0' if none. */
-async function readTokenBalance(
-  wallet: Wallet,
-  currency: ChargeCurrency,
-): Promise<string> {
+async function readTokenBalance(wallet: Wallet, currency: ChargeCurrency): Promise<string> {
   const h = await wallet.holdsToken(currency, { network: NETWORK })
   if (h && 'balance' in h && h.balance) return h.balance
   return '0'
@@ -248,9 +245,7 @@ async function swapXrpToToken(
 }
 
 async function main() {
-  log.box([
-    'XRPL MPP -- LLM Marketplace (charge client, RLUSD, agent swaps XRP -> RLUSD)',
-  ])
+  log.box(['XRPL MPP -- LLM Marketplace (charge client, RLUSD, agent swaps XRP -> RLUSD)'])
   log.separator()
 
   log.loading('Funding payer wallet via testnet faucet (XRP only)...')
@@ -475,9 +470,10 @@ async function main() {
     readTokenBalance(wallet, chargeCurrency),
   ])
 
-  const overpayPct = Number(done.paid) > 0
-    ? ((Number(done.overpayment) / Number(done.paid)) * 100).toFixed(1)
-    : '0.0'
+  const overpayPct =
+    Number(done.paid) > 0
+      ? ((Number(done.overpayment) / Number(done.paid)) * 100).toFixed(1)
+      : '0.0'
 
   log.box([
     'Settlement -- charge (paid in RLUSD, agent sourced RLUSD via XRP swap)',

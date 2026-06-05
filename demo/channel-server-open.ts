@@ -34,8 +34,6 @@ import * as log from './log.js'
 const PORT = 3004
 const NETWORK = 'testnet' as const
 
-const rawFetch = globalThis.fetch
-
 function toWebRequest(req: IncomingMessage): Request {
   const host = req.headers.host ?? `localhost:${PORT}`
   const url = `http://${host}${req.url ?? '/'}`

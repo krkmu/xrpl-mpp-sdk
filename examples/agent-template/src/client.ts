@@ -15,8 +15,8 @@ import { Receipt } from 'mppx'
 import { Mppx } from 'mppx/client'
 import type { ChargeProgressEvent, NetworkId, Wallet } from 'xrpl-mpp-sdk'
 import { charge } from 'xrpl-mpp-sdk/client'
-import type { GeneratedPost } from './server.js'
 import type { PostBrief } from './intent.js'
+import type { GeneratedPost } from './server.js'
 
 export type CallServiceArgs = {
   serverUrl: string

@@ -76,7 +76,11 @@ async function main(): Promise<void> {
     log.arrow('demo', '->', `GET http://localhost:${config.port}/info`)
     const infoRes = await fetch(`http://localhost:${config.port}/info`)
     const info = (await infoRes.json()) as Record<string, unknown>
-    log.arrow('demo', '<-', `${infoRes.status} -- service=${info.service} recipient=${info.recipient}`)
+    log.arrow(
+      'demo',
+      '<-',
+      `${infoRes.status} -- service=${info.service} recipient=${info.recipient}`,
+    )
 
     log.step(3, TOTAL_STEPS, "fund the agent's payer wallet (skip if PAYER_SEED set)")
     const { payer } = await loadWallets('payer', config.network)
@@ -127,10 +131,7 @@ async function main(): Promise<void> {
           ['characters', String(post.characterCount)],
           ['hashtags', post.hashtags.join(' ') || '(none)'],
           ['model', post.model],
-          [
-            'anthropic usage',
-            `${post.usage.inputTokens}in + ${post.usage.outputTokens}out tokens`,
-          ],
+          ['anthropic usage', `${post.usage.inputTokens}in + ${post.usage.outputTokens}out tokens`],
         ])
       }
     }

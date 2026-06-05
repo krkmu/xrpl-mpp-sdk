@@ -44,15 +44,11 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { Credential, Receipt } from 'mppx'
 import { Mppx, Store } from 'mppx/server'
 import { Client } from 'xrpl'
-import { charge } from '../../../sdk/src/server/Charge.js'
 import { XRPL_RPC_URLS } from '../../../sdk/src/constants.js'
+import { charge } from '../../../sdk/src/server/Charge.js'
 import { Wallet } from '../../../sdk/src/utils/wallet.js'
 import * as log from '../../log.js'
-import {
-  createAnthropic,
-  estimateInputTokens,
-  MODEL,
-} from '../shared/anthropic.js'
+import { createAnthropic, estimateInputTokens, MODEL } from '../shared/anthropic.js'
 
 const PORT = 3011
 const NETWORK = 'testnet' as const
@@ -101,9 +97,7 @@ function iouValue(value: number): string {
 }
 
 function quoteCred(inputEstimate: number, maxOutputTokens: number): string {
-  return iouValue(
-    inputEstimate * CRED_PER_INPUT_TOKEN + maxOutputTokens * CRED_PER_OUTPUT_TOKEN,
-  )
+  return iouValue(inputEstimate * CRED_PER_INPUT_TOKEN + maxOutputTokens * CRED_PER_OUTPUT_TOKEN)
 }
 
 function actualCostCred(inputTokens: number, outputTokens: number): string {
@@ -154,9 +148,7 @@ async function pipeStream(webRes: Response, res: ServerResponse): Promise<void> 
 }
 
 async function main() {
-  log.box([
-    'XRPL MPP -- LLM Marketplace (charge, IOU-only billing, agent swaps USD -> CRD)',
-  ])
+  log.box(['XRPL MPP -- LLM Marketplace (charge, IOU-only billing, agent swaps USD -> CRD)'])
   log.separator()
 
   try {
@@ -212,9 +204,7 @@ async function main() {
   log.success('All trustlines open')
   log.separator()
 
-  log.loading(
-    `Issuer credits LP with ${LP_SEED_USD} ${USD_CODE} + ${LP_SEED_CRD} ${CRED_CODE}...`,
-  )
+  log.loading(`Issuer credits LP with ${LP_SEED_USD} ${USD_CODE} + ${LP_SEED_CRD} ${CRED_CODE}...`)
   const [seedUsd, seedCred] = await Promise.all([
     issuer.issue(lp.address, LP_SEED_USD, usd, { network: NETWORK }),
     issuer.issue(lp.address, LP_SEED_CRD, cred, { network: NETWORK }),

@@ -31,7 +31,7 @@
  */
 import { spawn } from 'node:child_process'
 import { resolve } from 'node:path'
-import Anthropic from '@anthropic-ai/sdk'
+import type Anthropic from '@anthropic-ai/sdk'
 import { Challenge, Receipt } from 'mppx'
 import { charge } from '../../../sdk/src/client/Charge.js'
 import { Wallet } from '../../../sdk/src/utils/wallet.js'
@@ -180,7 +180,9 @@ async function toolCheckBalances(input: { walletAddress: string; info: Info }) {
     '--json',
   ])
   if (res.exitCode !== 0) {
-    return { error: `xrpl-up account trust-lines failed: ${res.stderr.trim() || res.stdout.trim()}` }
+    return {
+      error: `xrpl-up account trust-lines failed: ${res.stderr.trim() || res.stdout.trim()}`,
+    }
   }
   const lines = JSON.parse(res.stdout) as Array<{
     currency: string
@@ -189,7 +191,8 @@ async function toolCheckBalances(input: { walletAddress: string; info: Info }) {
     limit: string
   }>
   const usdLine = lines.find(
-    (l) => l.currency === info.bootstrapCurrency.currency && l.account === info.bootstrapCurrency.issuer,
+    (l) =>
+      l.currency === info.bootstrapCurrency.currency && l.account === info.bootstrapCurrency.issuer,
   )
   const credLine = lines.find(
     (l) => l.currency === info.chargeCurrency.currency && l.account === info.chargeCurrency.issuer,
@@ -398,8 +401,7 @@ async function toolAttemptPayment(input: {
     real_cost: done.actual_cost,
     overpayment: done.overpayment,
     currency_label: done.currency_label,
-    note:
-      'Payment settled on-chain and the marketplace streamed the LLM answer. Your task is complete.',
+    note: 'Payment settled on-chain and the marketplace streamed the LLM answer. Your task is complete.',
   }
 }
 
@@ -448,8 +450,7 @@ async function runAgent(input: {
           },
           usd_max: {
             type: 'string',
-            description:
-              `Maximum ${info.bootstrapCurrencyLabel} you'll spend (decimal string). Include a slippage buffer.`,
+            description: `Maximum ${info.bootstrapCurrencyLabel} you'll spend (decimal string). Include a slippage buffer.`,
           },
         },
         required: ['target_cred', 'usd_max'],
@@ -503,9 +504,7 @@ async function runAgent(input: {
     })
 
     // Print Claude's text reasoning, if any.
-    const textBlocks = response.content.filter(
-      (b): b is Anthropic.TextBlock => b.type === 'text',
-    )
+    const textBlocks = response.content.filter((b): b is Anthropic.TextBlock => b.type === 'text')
     for (const tb of textBlocks) {
       if (tb.text.trim()) {
         log.info(`Claude: ${tb.text.trim()}`)
@@ -603,9 +602,7 @@ async function runAgent(input: {
 // ---------- Main ----------
 
 async function main() {
-  log.box([
-    'XRPL MPP -- LLM Marketplace (charge client, AGENTIC: Claude decides + xrpl-up tools)',
-  ])
+  log.box(['XRPL MPP -- LLM Marketplace (charge client, AGENTIC: Claude decides + xrpl-up tools)'])
   log.separator()
 
   const anthropic = createAnthropic()
@@ -727,9 +724,10 @@ async function main() {
   })
 
   log.separator()
-  const overpayPct = Number(outcome.doneEvent.paid) > 0
-    ? ((Number(outcome.doneEvent.overpayment) / Number(outcome.doneEvent.paid)) * 100).toFixed(1)
-    : '0.0'
+  const overpayPct =
+    Number(outcome.doneEvent.paid) > 0
+      ? ((Number(outcome.doneEvent.overpayment) / Number(outcome.doneEvent.paid)) * 100).toFixed(1)
+      : '0.0'
 
   // Final post-state balances via xrpl-up so the user sees the agent's
   // tool surface one more time even after success.
@@ -749,7 +747,7 @@ async function main() {
     `   ${info.bootstrapCurrencyLabel}: ${(finalBalances as any)[info.bootstrapCurrencyLabel]}`,
     `   ${info.chargeCurrencyLabel}: ${(finalBalances as any)[info.chargeCurrencyLabel]}`,
     '',
-    "Every XRPL-touching operation in this run -- balance reads, AMM",
+    'Every XRPL-touching operation in this run -- balance reads, AMM',
     'queries, and the swap itself -- was performed by Claude invoking',
     '`xrpl-up` through the tool-use API. The script never decided what to',
     'do; it only executed the commands the agent asked for.',

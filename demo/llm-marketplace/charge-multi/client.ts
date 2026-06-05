@@ -169,7 +169,9 @@ function decideViaOverride(input: {
   const { preference, offers, xrpBalanceDrops, iouBalance } = input
   const offer = offers.find((c) => challengeKind(c) === preference)
   if (!offer) {
-    throw new Error(`PAY_WITH=${preference} but marketplace did not offer a ${preference} challenge.`)
+    throw new Error(
+      `PAY_WITH=${preference} but marketplace did not offer a ${preference} challenge.`,
+    )
   }
   const balance = preference === 'XRP' ? xrpBalanceDrops : iouBalance
   if (Number(balance) < Number(offer.request.amount)) {

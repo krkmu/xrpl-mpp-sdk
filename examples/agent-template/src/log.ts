@@ -66,10 +66,7 @@ export function bullet(label: string, value?: string): void {
 }
 
 /** A one-line log tagged with an actor prefix. */
-export function line(
-  actor: 'agent' | 'server' | 'demo' | 'user',
-  msg: string,
-): void {
+export function line(actor: 'agent' | 'server' | 'demo' | 'user', msg: string): void {
   console.log(`  ${actorTag(actor)}  ${msg}`)
 }
 
