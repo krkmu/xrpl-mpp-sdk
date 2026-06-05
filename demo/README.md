@@ -3,7 +3,7 @@
 All demos run on XRPL testnet. Most need **zero environment variables** -- each
 script generates and faucet-funds its own wallets. The only exceptions: the LLM
 marketplace and agent demos need an Anthropic API key, and the RLUSD demo needs a
-pre-funded testnet seed (Ripple has no RLUSD faucet). Output is styled with
+pre-funded testnet seed (Ripple has no API based RLUSD faucet, you can get some on Testnet here https://tryrlusd.com/). Output is styled with
 timestamps, colored tags, and box-drawn headers.
 
 ## Prerequisites
