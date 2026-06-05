@@ -118,6 +118,21 @@ export async function createEscrow(
     throw new Error(`[INVALID_AMOUNT] EscrowCreate amount must be > 0 drops, got ${amount}.`)
   }
 
+  // XLS-85 (TokenEscrow): a token escrow (IOU or MPT `Amount` object) must
+  // always carry an expiration. Without a `CancelAfter` the ledger accepts
+  // the EscrowCreate and locks the tokens, but every later EscrowFinish is
+  // rejected with `tecNO_PERMISSION` -- the escrow is unfinishable. Reject
+  // upfront so callers never lock tokens they cannot release. (XRP escrows
+  // are unaffected: they finish fine on `finishAfter` alone.)
+  if (typeof amount === 'object' && cancelAfterRipple === undefined) {
+    throw new Error(
+      '[INVALID_AMOUNT] EscrowCreate for a token escrow (IOU/MPT) requires `cancelAfter`. ' +
+        'Per the TokenEscrow amendment a token escrow with no expiration can never be finished ' +
+        '(the ledger rejects EscrowFinish with tecNO_PERMISSION). Pass a `cancelAfter` strictly ' +
+        'later than `finishAfter`.',
+    )
+  }
+
   if (condition !== undefined && !/^[0-9A-Fa-f]+$/.test(condition)) {
     throw new Error('[INVALID_AMOUNT] EscrowCreate `condition` must be a hex string.')
   }

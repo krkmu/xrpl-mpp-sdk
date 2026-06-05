@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import { Client } from 'xrpl'
 import { generatePreimageCondition } from '../../sdk/src/utils/escrow.js'
 import { Wallet } from '../../sdk/src/utils/wallet.js'
-import { DEVNET_WS, IT_NETWORK } from './devnet-helpers.ts'
+import { DEVNET_WS, IT_NETWORK, waitForLedgerCloseTimePast } from './devnet-helpers.ts'
 
 /**
  * Devnet end-to-end for the Escrow Wallet API.
@@ -129,9 +129,10 @@ describe('integration: Escrow lifecycle on devnet', () => {
       }),
     ).rejects.toThrow(/ESCROW_NOT_READY/)
 
-    // Wait out the cutoff (plus a small margin for ledger time skew).
-    const remaining = finishAfter.getTime() - Date.now()
-    if (remaining > 0) await new Promise((r) => setTimeout(r, remaining + 2_000))
+    // Wait until the ledger's close time (not just wall-clock) has passed
+    // FinishAfter -- escrow finish is gated on parentCloseTime, which lags
+    // wall-clock by up to one close interval.
+    await waitForLedgerCloseTimePast(finishAfter)
 
     const before = await balanceDrops(recipient)
 
@@ -238,9 +239,10 @@ describe('integration: Escrow lifecycle on devnet', () => {
       }),
     ).rejects.toThrow(/ESCROW_NOT_READY/)
 
-    // Wait past cancelAfter (plus margin for ledger time skew).
-    const remaining = cancelAfter.getTime() - Date.now()
-    if (remaining > 0) await new Promise((r) => setTimeout(r, remaining + 5_000))
+    // Wait until the ledger's close time (not just wall-clock) has passed
+    // CancelAfter -- escrow cancel is gated on parentCloseTime, which lags
+    // wall-clock by up to one close interval.
+    await waitForLedgerCloseTimePast(cancelAfter)
 
     const before = await balanceDrops(creator)
 
@@ -311,11 +313,17 @@ describe('integration: Escrow lifecycle on devnet', () => {
     // Issuer credits the creator with 1000 units to escrow.
     await issuer.issue(creator.address, '1000', mpt, { network: NETWORK })
 
+    // Token escrows (XLS-85) must carry an expiration: a token escrow with
+    // no `cancelAfter` locks fine but can never be finished (the ledger
+    // rejects EscrowFinish with tecNO_PERMISSION). Finish well before the
+    // far-future cancel cutoff.
     const finishAfter = new Date(Date.now() + ESCROW_WAIT_MS)
+    const cancelAfter = new Date(Date.now() + 2 * 60 * 60 * 1000)
     const created = await creator.createEscrow({
       destination: recipient.address,
       amount: { mpt_issuance_id: mpt.mpt_issuance_id, value: '500' },
       finishAfter,
+      cancelAfter,
       network: NETWORK,
     })
     expect(created.hash).toMatch(/^[0-9A-F]{64}$/)
@@ -335,9 +343,10 @@ describe('integration: Escrow lifecycle on devnet', () => {
       )
     }
 
-    // Wait out the cutoff (plus a small margin for ledger time skew).
-    const remaining = finishAfter.getTime() - Date.now()
-    if (remaining > 0) await new Promise((r) => setTimeout(r, remaining + 2_000))
+    // Wait until the ledger's close time (not just wall-clock) has passed
+    // FinishAfter -- escrow finish is gated on parentCloseTime, which lags
+    // wall-clock by up to one close interval.
+    await waitForLedgerCloseTimePast(finishAfter)
 
     await recipient.finishEscrow({
       owner: creator.address,

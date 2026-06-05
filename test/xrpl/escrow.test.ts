@@ -90,6 +90,30 @@ describe('createEscrow -- validation', () => {
     ).rejects.toThrow(/INVALID_AMOUNT.*finishAfter.*strictly less than.*cancelAfter/)
   })
 
+  it('rejects a token (IOU/MPT) escrow created without cancelAfter', async () => {
+    // XLS-85: token escrows must always carry an expiration (CancelAfter).
+    // Without it the token locks on create but EscrowFinish is rejected
+    // on-chain with tecNO_PERMISSION. We surface that as a typed error
+    // upfront instead of letting the holder fund an unfinishable escrow.
+    const wallet = Wallet.generate()
+    const client = mockClient({})
+    await expect(
+      createEscrow(client, wallet, {
+        destination: 'rDest',
+        amount: { mpt_issuance_id: '00'.repeat(24), value: '500' },
+        finishAfter: new Date(FUTURE),
+      }),
+    ).rejects.toThrow(/INVALID_AMOUNT.*token escrow.*cancelAfter/)
+
+    await expect(
+      createEscrow(client, wallet, {
+        destination: 'rDest',
+        amount: { currency: 'USD', issuer: OWNER_ADDR, value: '10' },
+        finishAfter: new Date(FUTURE),
+      }),
+    ).rejects.toThrow(/INVALID_AMOUNT.*token escrow.*cancelAfter/)
+  })
+
   it('rejects past timestamps', async () => {
     const wallet = Wallet.generate()
     const client = mockClient({})

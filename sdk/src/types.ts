@@ -223,6 +223,12 @@ export type CreateEscrowOptions = {
    * Earliest moment the escrow can be **cancelled** (refunded to the
    * creator). Same accepted shapes as `finishAfter`. Must be strictly
    * greater than `finishAfter` when both are provided.
+   *
+   * **Required for token escrows.** Under the `TokenEscrow` amendment an
+   * IOU/MPT escrow with no `cancelAfter` locks on create but can never be
+   * finished (the ledger rejects `EscrowFinish` with `tecNO_PERMISSION`),
+   * so the SDK rejects such a `createEscrow` upfront. Optional for XRP
+   * escrows.
    */
   cancelAfter?: Date | number | string
   /**

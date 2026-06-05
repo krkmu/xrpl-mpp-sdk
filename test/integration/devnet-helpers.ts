@@ -1,4 +1,4 @@
-import { Client } from 'xrpl'
+import { Client, unixTimeToRippleTime } from 'xrpl'
 import { type NetworkId, XRPL_RPC_URLS } from '../../sdk/src/constants.js'
 import { Wallet } from '../../sdk/src/utils/wallet.js'
 
@@ -53,6 +53,46 @@ export async function connectDevnet(): Promise<Client> {
  */
 export async function createFundedWallet(): Promise<Wallet> {
   return Wallet.fromFaucet({ network: IT_NETWORK })
+}
+
+/**
+ * Block until the selected network's latest *validated* ledger has a close
+ * time strictly after `target`.
+ *
+ * XRPL escrow time-locks (`FinishAfter` / `CancelAfter`) are gated on the
+ * ledger's `parentCloseTime`, not on wall-clock time -- and the ledger close
+ * time lags wall-clock by up to one close interval (~4s). A finish/cancel
+ * submitted the instant wall-clock passes the cutoff can therefore land in a
+ * ledger whose `parentCloseTime` has not yet caught up, and the ledger
+ * rejects it with `tecNO_PERMISSION`. Polling the validated close time before
+ * submitting removes that race: once the latest validated ledger has closed
+ * after `target`, the next ledger's `parentCloseTime` is guaranteed to be
+ * past the cutoff too.
+ */
+export async function waitForLedgerCloseTimePast(target: Date, timeoutMs = 60_000): Promise<void> {
+  const targetRipple = unixTimeToRippleTime(target.getTime())
+  const client = await connectDevnet()
+  const deadline = Date.now() + timeoutMs
+  try {
+    while (true) {
+      const r = await client.request({ command: 'ledger', ledger_index: 'validated' } as any)
+      const closeTime = (r.result as any).ledger?.close_time as number | undefined
+      if (typeof closeTime === 'number' && closeTime > targetRipple) return
+      if (Date.now() > deadline) {
+        throw new Error(
+          `waitForLedgerCloseTimePast: validated ledger close time did not pass ` +
+            `${target.toISOString()} within ${timeoutMs}ms.`,
+        )
+      }
+      await new Promise((res) => setTimeout(res, 2_000))
+    }
+  } finally {
+    try {
+      await client.disconnect()
+    } catch {
+      // best-effort
+    }
+  }
 }
 
 /**
