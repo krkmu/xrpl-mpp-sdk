@@ -795,7 +795,7 @@ XRPL's native PayChannel primitive cannot offer the spec's atomic, either-party 
 
 ## License
 
-MIT
+Apache License 2.0. See [LICENSE](./LICENSE) and [NOTICE](./NOTICE).
 
 ## MPP spec deviations
 
