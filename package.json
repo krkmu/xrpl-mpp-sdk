@@ -47,11 +47,11 @@
     "agent-template:agent": "tsx --tsconfig examples/agent-template/tsconfig.json examples/agent-template/src/agent.ts"
   },
   "peerDependencies": {
-    "mppx": ">=0.4.0",
+    "mppx": ">=0.8.0",
     "xrpl": ">=4.0.0"
   },
   "dependencies": {
-    "zod": "^4.3.6"
+    "zod": "^4.4.3"
   },
   "license": "Apache-2.0",
   "sideEffects": false,
@@ -63,6 +63,7 @@
     "@types/node": "^25.5.0",
     "dotenv": "^16.4.7",
     "express": "^5.0.0",
+    "mppx": "0.8.5",
     "picocolors": "^1.1.1",
     "tsup": "^8.5.1",
     "tsx": "^4.21.0",
