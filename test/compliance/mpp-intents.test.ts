@@ -48,9 +48,22 @@ describe('MPP Intent Schemas', () => {
   })
 
   describe('channel intent', () => {
-    it('has name "xrpl" and intent "channel"', () => {
+    it('has name "xrpl" and the canonical MPP intent "session"', () => {
+      // mpp.dev defines the pay-as-you-go / payment-channel flow under the
+      // canonical `session` intent. The XRPL PayChannel mechanism keeps the
+      // "channel" name internally, but the wire intent must be `session`.
       expect(channel.name).toBe('xrpl')
-      expect(channel.intent).toBe('channel')
+      expect(channel.intent).toBe('session')
+    })
+
+    it('request schema carries a currency field (session intent requires it)', () => {
+      const parsed = channel.schema.request.parse({
+        amount: '500000',
+        channelId: '0'.repeat(64),
+        recipient: 'rN7bRFgBrNZKoY2uu015bdjah11UbRZYuk',
+        currency: 'XRP',
+      })
+      expect((parsed as { currency?: string }).currency).toBe('XRP')
     })
 
     it('open credential contains transaction blob, amount, signature', () => {

@@ -17,7 +17,7 @@ describe('MPP Interop with mppx', () => {
 
     it('channel method is a valid Method', () => {
       expect(channel.name).toBe('xrpl')
-      expect(channel.intent).toBe('channel')
+      expect(channel.intent).toBe('session')
       expect(channel.schema).toBeDefined()
     })
   })

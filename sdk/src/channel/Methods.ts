@@ -1,10 +1,19 @@
 import { Method } from 'mppx'
 import { z } from 'zod/mini'
 
-/** XRPL channel intent -- off-chain PayChannel claims (XRP-only, both ed25519 and secp256k1). */
+/**
+ * XRPL session intent -- off-chain PayChannel claims (XRP-only, both ed25519
+ * and secp256k1).
+ *
+ * The wire `intent` is the canonical MPP `session` intent (mpp.dev: pay-as-you-go
+ * over a payment channel). The underlying mechanism is an XRPL Payment Channel,
+ * so the SDK keeps the "channel" name for its own API, exports, and helpers.
+ * The server/client wrappers register `alias: 'channel'` so credentials issued
+ * against the pre-`session` wire intent still route and verify.
+ */
 export const channel = Method.from({
   name: 'xrpl',
-  intent: 'channel',
+  intent: 'session',
   schema: {
     credential: {
       payload: z.union([
@@ -34,6 +43,13 @@ export const channel = Method.from({
     request: z.object({
       /** Incremental payment amount in drops. */
       amount: z.string(),
+      /**
+       * Currency identifier. XRPL PayChannels are XRP-only, so this is always
+       * `"XRP"`. Present because the canonical MPP `session` request carries a
+       * `currency`; optional here to stay backward-compatible with challenges
+       * issued before the field existed.
+       */
+      currency: z.optional(z.string()),
       /** PayChannel ID (64 hex chars). */
       channelId: z.string(),
       /** Recipient XRPL classic address (r...). */

@@ -108,6 +108,9 @@ export function channel(parameters: channel.Parameters) {
   let verifyLock: Promise<unknown> = Promise.resolve()
 
   const method = Method.toServer(ChannelMethod, {
+    // Wire intent is the canonical `session`; keep `channel` as a routing alias
+    // so credentials issued against the pre-`session` wire intent still verify.
+    alias: 'channel',
     async request({ request }) {
       // Surface the current cumulative so clients know where to resume.
       let cumulativeAmount = '0'
