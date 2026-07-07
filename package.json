@@ -63,11 +63,13 @@
     "@types/node": "^25.5.0",
     "dotenv": "^16.4.7",
     "express": "^5.0.0",
+    "hono": "^4.12.28",
     "mppx": "0.8.5",
     "picocolors": "^1.1.1",
     "tsup": "^8.5.1",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
+    "viem": "^2.54.6",
     "vitest": "^3.2.4",
     "xrpl-up": "0.2.0-beta.0"
   }
