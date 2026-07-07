@@ -78,6 +78,7 @@ export type XrplErrorCode =
   | 'ESCROW_NOT_READY'
   | 'ESCROW_INVALID_FULFILLMENT'
   | 'ESCROW_FAILED'
+  | 'CHALLENGE_REJECTED'
 
 export function mapTecResult(tecResult: string): XrplErrorCode | undefined {
   return TEC_RESULT_MAP[tecResult] as XrplErrorCode | undefined
@@ -103,6 +104,19 @@ export function insufficientBalance(
 
 export function invalidSignature(detail: string): Errors.InvalidSignatureError {
   return new Errors.InvalidSignatureError({ reason: `[INVALID_SIGNATURE] ${detail}` })
+}
+
+/**
+ * Client-side refusal to authorize a payment whose challenge terms fall
+ * outside the caller's configured guardrails (`expectedRecipient`,
+ * `maxAmount`, `allowedCurrencies`).
+ *
+ * Per mpp.dev (Amount verification), clients must verify the amount,
+ * recipient, and currency before authorizing. This surfaces that refusal as
+ * a typed error thrown before any transaction is signed or submitted.
+ */
+export function challengeRejected(detail: string): Error {
+  return new Error(`[CHALLENGE_REJECTED] ${detail}`)
 }
 
 export function channelNotFound(channelId: string): Errors.ChannelNotFoundError {

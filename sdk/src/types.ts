@@ -363,6 +363,23 @@ export type ChargeClientConfig = {
   rpcUrl?: string
   /** Callback invoked at each lifecycle stage. */
   onProgress?: (event: ChargeProgressEvent) => void
+  /**
+   * Client-side authorization guardrails, enforced against the 402 challenge
+   * before anything is signed or submitted (mpp.dev, Amount verification: the
+   * client must verify amount, recipient, and currency before authorizing).
+   * All are optional; when omitted the SDK signs whatever the server asks and
+   * the agent-policy layer owns limits. When set, a challenge outside these
+   * bounds throws a `CHALLENGE_REJECTED` error and fails closed.
+   */
+  /** Only sign when the challenge recipient equals this address (or is in this allowlist). */
+  expectedRecipient?: string | string[]
+  /**
+   * Reject a challenge whose `amount` exceeds this ceiling. Same units as the
+   * challenge `amount` (drops for XRP, base units for IOU/MPT).
+   */
+  maxAmount?: string
+  /** Reject a challenge whose `currency` string is not in this allowlist. */
+  allowedCurrencies?: string[]
 }
 
 export type ChargeServerConfig = {

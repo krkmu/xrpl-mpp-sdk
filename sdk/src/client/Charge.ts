@@ -3,7 +3,7 @@ import type { Payment } from 'xrpl'
 import { Client } from 'xrpl'
 import { z } from 'zod/mini'
 import { type NetworkId, XRPL_RPC_URLS } from '../constants.js'
-import { fromTecResult } from '../errors.js'
+import { challengeRejected, fromTecResult } from '../errors.js'
 import * as Methods from '../Methods.js'
 import type { ChargeClientConfig, PaymentMode } from '../types.js'
 import { buildAmount, isIOU, parseCurrency } from '../utils/currency.js'
@@ -38,6 +38,9 @@ export function charge(parameters: charge.Parameters) {
     network: defaultNetwork = 'testnet',
     rpcUrl: defaultRpcUrl,
     onProgress,
+    expectedRecipient,
+    maxAmount,
+    allowedCurrencies,
   } = parameters
 
   if (!walletInput && !seed) {
@@ -55,6 +58,31 @@ export function charge(parameters: charge.Parameters) {
     async createCredential({ challenge, context }) {
       const { request } = challenge
       const { amount, currency: currencyStr, recipient } = request
+
+      // Client-side authorization guardrails (mpp.dev, Amount verification):
+      // fail closed before signing or connecting when the challenge terms fall
+      // outside the caller's configured bounds. Runs before parseCurrency so an
+      // out-of-allowlist currency is reported as CHALLENGE_REJECTED, not a parse
+      // error.
+      if (expectedRecipient !== undefined) {
+        const allowed = Array.isArray(expectedRecipient) ? expectedRecipient : [expectedRecipient]
+        if (!allowed.includes(recipient)) {
+          throw challengeRejected(
+            `challenge recipient ${recipient} is not in the expected recipient allowlist.`,
+          )
+        }
+      }
+      if (maxAmount !== undefined && BigInt(amount) > BigInt(maxAmount)) {
+        throw challengeRejected(
+          `challenge amount ${amount} exceeds the configured maxAmount ${maxAmount}.`,
+        )
+      }
+      if (allowedCurrencies !== undefined && !allowedCurrencies.includes(currencyStr)) {
+        throw challengeRejected(
+          `challenge currency ${currencyStr} is not in the allowed currencies list.`,
+        )
+      }
+
       const network = (request.methodDetails?.network as NetworkId) ?? defaultNetwork
       const rpcUrl = defaultRpcUrl ?? XRPL_RPC_URLS[network]
 

@@ -235,3 +235,104 @@ describe('charge client createCredential() -- pull mode happy path', () => {
     )
   })
 })
+
+// mpp.dev, Protocol overview, Security considerations, Amount verification:
+// "Clients must verify before authorizing payment: (1) requested amount is
+// reasonable, (2) recipient/address is expected, (3) currency/asset is as
+// expected." These guardrails let the SDK fail closed on a challenge whose
+// terms fall outside client-configured bounds, before signing anything.
+describe('charge client -- authorization guardrails (mpp.dev Amount verification)', () => {
+  const payer = Wallet.generate()
+  const goodRecipient = Wallet.generate().classicAddress
+  const otherRecipient = Wallet.generate().classicAddress
+
+  function makeChallenge(
+    overrides: { amount?: string; currency?: string; recipient?: string } = {},
+  ) {
+    return {
+      id: 'guard-1',
+      realm: 'test',
+      method: 'xrpl' as const,
+      intent: 'charge' as const,
+      createdAt: new Date().toISOString(),
+      request: {
+        amount: overrides.amount ?? '500000',
+        currency: overrides.currency ?? 'XRP',
+        recipient: overrides.recipient ?? goodRecipient,
+        methodDetails: { network: 'devnet' as const },
+      },
+    }
+  }
+
+  it('rejects a challenge whose recipient is not the expectedRecipient', async () => {
+    const method = charge({
+      seed: payer.seed!,
+      network: 'devnet',
+      preflight: false,
+      expectedRecipient: goodRecipient,
+    })
+    await expect(
+      method.createCredential({
+        challenge: makeChallenge({ recipient: otherRecipient }) as any,
+      } as any),
+    ).rejects.toThrow(/CHALLENGE_REJECTED.*recipient/)
+  })
+
+  it('accepts a challenge whose recipient is in the expectedRecipient allowlist', async () => {
+    const method = charge({
+      seed: payer.seed!,
+      network: 'devnet',
+      preflight: false,
+      expectedRecipient: [otherRecipient, goodRecipient],
+    })
+    const blob = await method.createCredential({ challenge: makeChallenge() as any } as any)
+    expect(blob).toMatch(/^Payment\s+/)
+  })
+
+  it('rejects a challenge whose amount exceeds maxAmount', async () => {
+    const method = charge({
+      seed: payer.seed!,
+      network: 'devnet',
+      preflight: false,
+      maxAmount: '100000',
+    })
+    await expect(
+      method.createCredential({ challenge: makeChallenge({ amount: '500000' }) as any } as any),
+    ).rejects.toThrow(/CHALLENGE_REJECTED.*exceeds/)
+  })
+
+  it('accepts a challenge whose amount is within maxAmount', async () => {
+    const method = charge({
+      seed: payer.seed!,
+      network: 'devnet',
+      preflight: false,
+      maxAmount: '500000',
+    })
+    const blob = await method.createCredential({
+      challenge: makeChallenge({ amount: '500000' }) as any,
+    } as any)
+    expect(blob).toMatch(/^Payment\s+/)
+  })
+
+  it('rejects a challenge whose currency is not in allowedCurrencies', async () => {
+    const method = charge({
+      seed: payer.seed!,
+      network: 'devnet',
+      preflight: false,
+      allowedCurrencies: ['XRP'],
+    })
+    await expect(
+      method.createCredential({
+        challenge: makeChallenge({ currency: 'USD.rISSUER' }) as any,
+      } as any),
+    ).rejects.toThrow(/CHALLENGE_REJECTED.*currency/)
+  })
+
+  it('signs normally when no guardrails are configured (backward compatible)', async () => {
+    const method = charge({ seed: payer.seed!, network: 'devnet', preflight: false })
+    const blob = await method.createCredential({
+      challenge: makeChallenge({ recipient: otherRecipient, amount: '999999' }) as any,
+    } as any)
+    expect(blob).toMatch(/^Payment\s+/)
+  })
+})
