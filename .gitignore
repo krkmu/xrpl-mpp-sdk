@@ -3,6 +3,9 @@ dist/
 coverage/
 docs/
 _reference/
+# This project uses pnpm (see packageManager). Never commit an npm lockfile --
+# a stray package-lock.json is a source of dependency drift.
+package-lock.json
 .env*
 !.env.example
 !**/.env.example
