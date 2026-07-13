@@ -13,6 +13,7 @@
 import type { IncomingHttpHeaders } from 'node:http'
 import Anthropic from '@anthropic-ai/sdk'
 import express, { type Express, type Request, type Response } from 'express'
+import { discovery } from 'mppx/express'
 import { Mppx, Store } from 'mppx/server'
 import { fromDrops, type Wallet } from 'xrpl-mpp-sdk'
 import { charge } from 'xrpl-mpp-sdk/server'
@@ -61,6 +62,7 @@ export function createApp(config: Config, recipient: Wallet, anthropic: Anthropi
       endpoints: {
         info: 'GET /info',
         post: 'POST /linkedin-post',
+        discovery: 'GET /openapi.json',
       },
     })
   })
@@ -96,6 +98,7 @@ export function createApp(config: Config, recipient: Wallet, anthropic: Anthropi
     const handler = mppx['xrpl/charge']({
       amount: amountDrops.toString(),
       currency: 'XRP',
+      recipient: recipient.address,
       // The description is serialised into a quoted-string inside the
       // WWW-Authenticate header, so it MUST NOT contain raw `"` / `\` / `,`
       // characters -- otherwise the echoed challenge fails HMAC verify on
@@ -175,6 +178,24 @@ export function createApp(config: Config, recipient: Wallet, anthropic: Anthropi
       }),
     )
     await sendWebResponse(webRes, res)
+  })
+
+  // MPP discovery: serve GET /openapi.json so agents and registries can learn
+  // the endpoint's payment terms before calling it. Pricing here is dynamic
+  // (it scales with maxTokens), so we advertise a representative base-price
+  // offer -- the runtime 402 challenge remains authoritative for the exact
+  // amount. The handler below is built only to carry the offer metadata; it is
+  // never mounted.
+  const discoveryOffer = mppx['xrpl/charge']({
+    amount: config.pricePer1kTokensDrops.toString(),
+    currency: 'XRP',
+    recipient: recipient.address,
+    description: 'LinkedIn post generation (price scales with maxTokens; see the 402 challenge)',
+  })
+  discovery(app, mppx, {
+    info: { title: 'LinkedIn Post Generator', version: '1.0.0' },
+    serviceInfo: { categories: ['ai'] },
+    routes: [{ handler: discoveryOffer, method: 'post', path: '/linkedin-post' }],
   })
 
   app.use((_req, res) => {
