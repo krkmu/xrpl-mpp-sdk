@@ -60,6 +60,9 @@ describe('MPP HTTP transport conformance (mpp.dev)', () => {
     expect(res.status).toBe(402)
     expect(res.headers.get('Content-Type')).toMatch(/application\/problem\+json/)
     expect(res.headers.get('Cache-Control')).toBe('no-store')
+    // mpp.dev: a failed-credential 402 must still carry a FRESH challenge in
+    // WWW-Authenticate alongside the problem body, so the client can retry.
+    expect(res.headers.get('WWW-Authenticate')).toMatch(/^Payment\b/)
 
     const body = (await res.json()) as { type?: string; status?: number }
     expect(body.type).toMatch(/^https:\/\/paymentauth\.org\/problems\//)
