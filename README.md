@@ -709,7 +709,7 @@ xrpl-mpp-sdk/
       Methods.ts
       index.ts
     channel/
-      Methods.ts             # Channel schema (name: 'xrpl', intent: 'channel')
+      Methods.ts             # Session schema (name: 'xrpl', intent: 'session'; 'channel' alias)
       stream.ts              # ChannelStream, ChannelSession
       index.ts
       client/
