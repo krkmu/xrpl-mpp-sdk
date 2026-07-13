@@ -779,10 +779,10 @@ xrpl-mpp-sdk/
 pnpm install
 pnpm check:types             # TypeScript strict mode
 pnpm lint                    # Biome lint + format
-pnpm test                    # Unit suite (~230 tests, ~2s)
-pnpm test:coverage           # Unit suite with v8 coverage (80% threshold on core modules)
+pnpm test                    # Unit suite (~2s)
 pnpm test:integration        # Devnet integration suite (real ledger, faucet-funded ephemeral wallets)
 pnpm build                   # tsup build to dist/
+pnpm docs                    # typedoc API reference to docs/api/ (gitignored)
 ```
 
 CI runs `unit` on every push and PR; `integration` is gated to push-to-main, PRs labelled `run-integration`, or manual `workflow_dispatch`. The integration job is informational only -- it does not block PRs because the public devnet faucet can be flaky.

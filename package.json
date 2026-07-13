@@ -38,6 +38,7 @@
   "scripts": {
     "build": "tsup",
     "check:types": "tsc --noEmit",
+    "docs": "typedoc",
     "lint": "biome check --write sdk/ test/ demo/ examples/",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -68,6 +69,7 @@
     "picocolors": "^1.1.1",
     "tsup": "^8.5.1",
     "tsx": "^4.21.0",
+    "typedoc": "^0.28.20",
     "typescript": "^5.9.3",
     "viem": "^2.54.6",
     "vitest": "^3.2.4",
